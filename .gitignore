@@ -1,0 +1,20 @@
+# 运行时数据（SQLite 数据库与媒体产物）
+data/
+
+# 本地配置（可能含 API Key）
+story.yaml
+config.sh
+
+# 编译产物
+story
+/bin/
+
+# 前端依赖（web/dist 构建产物需保留，供 go:embed 直接 go build）
+web/node_modules/
+web/npm-debug.log*
+
+# 系统文件
+.DS_Store
+*.swp
+*.swo
+*~

@@ -1,0 +1,272 @@
+// Package mock 提供 port 接口的内存 mock，实现用于 engine 单元测试。
+package mock
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+
+	"github.com/sjzsdu/story/internal/domain"
+	"github.com/sjzsdu/story/internal/port"
+)
+
+// ---- Repository ----
+
+// Repo 内存仓储。
+type Repo struct {
+	mu       sync.Mutex
+	Series   map[string]*domain.Series
+	Episodes map[string]*domain.Episode
+}
+
+// NewRepo 创建空内存仓储。
+func NewRepo() *Repo {
+	return &Repo{Series: map[string]*domain.Series{}, Episodes: map[string]*domain.Episode{}}
+}
+
+func (r *Repo) CreateSeries(_ context.Context, s *domain.Series) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.Series[s.ID]; ok {
+		return fmt.Errorf("系列已存在: %s", s.ID)
+	}
+	r.Series[s.ID] = s
+	return nil
+}
+
+func (r *Repo) GetSeries(_ context.Context, id string) (*domain.Series, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.Series[id]
+	if !ok {
+		return nil, fmt.Errorf("系列不存在: %s", id)
+	}
+	return s, nil
+}
+
+func (r *Repo) ListSeries(_ context.Context) ([]*domain.Series, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*domain.Series, 0, len(r.Series))
+	for _, s := range r.Series {
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+func (r *Repo) UpdateSeries(_ context.Context, s *domain.Series) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Series[s.ID] = s
+	return nil
+}
+
+func (r *Repo) DeleteSeries(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.Series[id]; !ok {
+		return fmt.Errorf("系列不存在: %s", id)
+	}
+	delete(r.Series, id)
+	// 级联删除该系列下的集
+	for eid, ep := range r.Episodes {
+		if ep.SeriesID == id {
+			delete(r.Episodes, eid)
+		}
+	}
+	return nil
+}
+
+func (r *Repo) CreateEpisode(_ context.Context, ep *domain.Episode) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.Episodes[ep.ID]; ok {
+		return fmt.Errorf("集已存在: %s", ep.ID)
+	}
+	r.Episodes[ep.ID] = ep
+	return nil
+}
+
+func (r *Repo) GetEpisode(_ context.Context, id string) (*domain.Episode, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ep, ok := r.Episodes[id]
+	if !ok {
+		return nil, fmt.Errorf("集不存在: %s", id)
+	}
+	return ep, nil
+}
+
+func (r *Repo) ListEpisodes(_ context.Context, seriesID string) ([]*domain.Episode, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*domain.Episode
+	for _, ep := range r.Episodes {
+		if ep.SeriesID == seriesID {
+			out = append(out, ep)
+		}
+	}
+	return out, nil
+}
+
+func (r *Repo) SaveEpisode(_ context.Context, ep *domain.Episode) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Episodes[ep.ID] = ep
+	return nil
+}
+
+func (r *Repo) DeleteEpisode(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.Episodes[id]; !ok {
+		return fmt.Errorf("集不存在: %s", id)
+	}
+	delete(r.Episodes, id)
+	return nil
+}
+
+func (r *Repo) NextEpisodeNumber(_ context.Context, seriesID string) (int, error) {
+	n := 0
+	for _, ep := range r.Episodes {
+		if ep.SeriesID == seriesID && ep.Number > n {
+			n = ep.Number
+		}
+	}
+	return n + 1, nil
+}
+
+func (r *Repo) Close() error { return nil }
+
+// ---- Story / Storyboard ----
+
+// StoryGen 候选故事 mock。
+type StoryGen struct {
+	Candidates []domain.StoryCandidate
+	Err        error
+	Calls      int
+}
+
+// GenerateCandidates 实现 port.StoryGenerator。
+func (m *StoryGen) GenerateCandidates(_ context.Context, _ port.StoryRequest) ([]domain.StoryCandidate, error) {
+	m.Calls++
+	return m.Candidates, m.Err
+}
+
+// BoardPlanner 分镜 mock。
+type BoardPlanner struct {
+	Storyboard *domain.Storyboard
+	Err        error
+	Calls      int
+}
+
+// PlanStoryboard 实现 port.StoryboardPlanner。
+func (m *BoardPlanner) PlanStoryboard(_ context.Context, _ port.StoryboardRequest) (*domain.Storyboard, error) {
+	m.Calls++
+	return m.Storyboard, m.Err
+}
+
+// ---- Video / Speech ----
+
+// VideoGen 视频生成 mock：在 OutPath 写入假文件；FailFirst 次调用失败以验证重试。
+type VideoGen struct {
+	mu        sync.Mutex
+	FailFirst int
+	Calls     int
+}
+
+// GenerateClip 实现 port.VideoGenerator。
+func (m *VideoGen) GenerateClip(_ context.Context, req port.ClipRequest) (port.ClipResult, error) {
+	m.mu.Lock()
+	m.Calls++
+	calls := m.Calls
+	fail := m.FailFirst
+	m.mu.Unlock()
+
+	if calls <= fail {
+		return port.ClipResult{}, fmt.Errorf("模拟视频失败 #%d", calls)
+	}
+	if err := os.MkdirAll(filepath.Dir(req.OutPath), 0o755); err != nil {
+		return port.ClipResult{}, err
+	}
+	if err := os.WriteFile(req.OutPath, []byte("fake-mp4"), 0o644); err != nil {
+		return port.ClipResult{}, err
+	}
+	return port.ClipResult{OutPath: req.OutPath}, nil
+}
+
+// CallsCount 线程安全地读取调用次数。
+func (m *VideoGen) CallsCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.Calls
+}
+
+// SpeechGen 语音合成 mock。
+type SpeechGen struct {
+	mu    sync.Mutex
+	Calls int
+}
+
+// Synthesize 实现 port.SpeechSynthesizer。
+func (m *SpeechGen) Synthesize(_ context.Context, req port.SpeechRequest) (port.SpeechResult, error) {
+	m.mu.Lock()
+	m.Calls++
+	m.mu.Unlock()
+	if err := os.MkdirAll(filepath.Dir(req.OutPath), 0o755); err != nil {
+		return port.SpeechResult{}, err
+	}
+	if err := os.WriteFile(req.OutPath, []byte("fake-mp3"), 0o644); err != nil {
+		return port.SpeechResult{}, err
+	}
+	return port.SpeechResult{OutPath: req.OutPath}, nil
+}
+
+// Composer 后处理 mock：对存在的文件返回固定时长，Compose 写一个假成片。
+type Composer struct {
+	SceneDuration float64
+	ComposeCalls  int
+	ExportCalls   int
+	FailCompose   bool
+}
+
+// ProbeDuration 实现 port.VideoComposer。
+func (m *Composer) ProbeDuration(_ context.Context, path string) (float64, error) {
+	if _, err := os.Stat(path); err != nil {
+		return 0, err
+	}
+	if m.SceneDuration <= 0 {
+		return 5, nil
+	}
+	return m.SceneDuration, nil
+}
+
+// Compose 实现 port.VideoComposer。
+func (m *Composer) Compose(_ context.Context, req port.ComposeRequest) (port.ComposeResult, error) {
+	m.ComposeCalls++
+	if m.FailCompose {
+		return port.ComposeResult{}, fmt.Errorf("模拟合成失败")
+	}
+	if err := os.MkdirAll(filepath.Dir(req.FinalPath), 0o755); err != nil {
+		return port.ComposeResult{}, err
+	}
+	if err := os.WriteFile(req.FinalPath, []byte("fake-final-mp4"), 0o644); err != nil {
+		return port.ComposeResult{}, err
+	}
+	dur := m.SceneDuration
+	if dur <= 0 {
+		dur = 5
+	}
+	return port.ComposeResult{FinalPath: req.FinalPath, DurationSec: dur * float64(len(req.Tracks)), Width: 1080, Height: 1920}, nil
+}
+
+// Export 实现 port.VideoComposer。
+func (m *Composer) Export(_ context.Context, req port.ExportRequest) error {
+	m.ExportCalls++
+	if err := os.MkdirAll(filepath.Dir(req.DstPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(req.DstPath, []byte("fake-export"), 0o644)
+}
