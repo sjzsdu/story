@@ -1,0 +1,111 @@
+name: Release
+
+# 推送 v* tag 时触发：构建多平台二进制并发布 GitHub Release。
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  # 1. 构建前端产物 web/dist（只构建一次，供各平台复用）
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: web
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: web
+        run: npm run build
+
+      - name: Upload web/dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          retention-days: 1
+
+  # 2. 多平台构建 Go 二进制
+  build:
+    needs: web
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64, ext: "" }
+          - { goos: linux,   goarch: arm64, ext: "" }
+          - { goos: darwin,  goarch: amd64, ext: "" }
+          - { goos: darwin,  goarch: arm64, ext: "" }
+          - { goos: windows, goarch: amd64, ext: ".exe" }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: Download web/dist
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ github.ref_name }}
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o "story_${VERSION}_${GOOS}_${GOARCH}${{ matrix.ext }}" \
+            ./cmd/story
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: story_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: story_*_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.ext }}
+          retention-days: 7
+
+  # 3. 汇总产物并创建 GitHub Release
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: |
+          sha256sum story_* > checksums.txt
+          ls -lh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: story ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/story_*
+            dist/checksums.txt

@@ -9,8 +9,9 @@ config.sh
 story
 /bin/
 
-# 前端依赖（web/dist 构建产物需保留，供 go:embed 直接 go build）
+# 前端依赖与构建产物
 web/node_modules/
+web/dist/
 web/npm-debug.log*
 
 # 系统文件
