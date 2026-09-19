@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjzsdu/story/internal/domain"
+	"github.com/sjzsdu/story/internal/port"
 	"github.com/sjzsdu/story/testutil/mock"
 )
 
@@ -18,6 +19,7 @@ type fixture struct {
 	videos  *mock.VideoGen
 	speech  *mock.SpeechGen
 	composr *mock.Composer
+	planner *mock.SeriesPlanner
 	eng     *Engine
 	epID    string
 }
@@ -73,8 +75,15 @@ func setup(t *testing.T) *fixture {
 		videos:  &mock.VideoGen{},
 		speech:  &mock.SpeechGen{},
 		composr: &mock.Composer{SceneDuration: 5},
+		planner: &mock.SeriesPlanner{Result: port.SeriesPlanResult{
+			Reply: "建议规划为 2 集。",
+			Drafts: []domain.EpisodeDraft{
+				{Title: "捭阖之术", Topic: "总论", Summary: "概述"},
+				{Title: "合纵连横", Topic: "展开", Summary: "展开"},
+			},
+		}},
 	}
-	f.eng = New(repo, f.stories, f.boards, f.videos, f.speech, f.composr, 2, 2, "longtian_v3", "沉稳")
+	f.eng = New(repo, f.stories, f.boards, f.videos, f.speech, f.composr, f.planner, 2, 2, "longtian_v3", "沉稳")
 	f.eng.runner.Backoff = time.Millisecond
 	f.epID = ep.ID
 	return f

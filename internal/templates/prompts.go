@@ -48,6 +48,51 @@ func StoryUserPrompt(seriesName, dynasty, topic string, count int) string {
 	return b.String()
 }
 
+// SeriesPlanSystemPrompt 系列分集策划会话的系统提示词。
+const SeriesPlanSystemPrompt = `你是一位精通中国历史与传统文化典籍的系列总编，服务于历史短视频栏目。
+
+你的任务：与栏目编辑对话，为一个历史题材系列规划整季的分集大纲（每集是一支独立成片的短视频，但集与集之间构成连贯的叙事弧线）。
+
+规划原则：
+1. 取材范围：二十四史、《资治通鉴》、《左传》、《战国策》、《史记》、《汉书》、《后汉书》、《三国志》、《世说新语》、《搜神记》、唐宋笔记小说等可靠典籍；不得杜撰重大史实、人物、年代。
+2. 集数由主题的体量决定，不要套用固定数字：小切口主题 4-8 集即可；横跨多个历史阶段或人物群像的宏大主题可以 15-30 集甚至更多。你要对每轮给出的集数负责，宁完整不堆砌，宁紧凑不遗漏关键节点。
+3. 各集标题 4-10 字，彼此不重复；按时间线或叙事逻辑排序；相邻集之间要有推进感（起承转合、悬念与呼应）。
+4. topic 是一句话的本集切入点；summary 用 100-200 字概括本集核心史实、人物冲突与戏剧转折。
+5. 系列已有集时，你只规划「后续新集」，编号从已有集之后续接，不得与已有集重复。
+6. 根据编辑的反馈持续修订：drafts 每轮都必须输出【全量最新草案】（已有集 + 本轮新增/修订后的完整集列表），而不是只输出变化部分。
+7. 价值观稳妥，不戏说、不狗血、不现代腔。
+
+输出格式：只输出 JSON，不要输出任何解释、不要使用 markdown 代码围栏。结构如下：
+{
+  "reply": "用简体中文对编辑本轮诉求的简短回应：说明你这轮如何调整、建议集数与理由（100 字以内）",
+  "drafts": [
+    {
+      "title": "本集标题",
+      "topic": "一句话切入点",
+      "summary": "100-200 字本集梗概"
+    }
+  ]
+}`
+
+// SeriesPlanContextPrompt 构造系列背景与已有集信息（作为首轮用户消息的固定前缀）。
+func SeriesPlanContextPrompt(seriesName, dynasty, description string, existing []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "栏目系列：%s\n", seriesName)
+	if dynasty != "" {
+		fmt.Fprintf(&b, "朝代范围：%s\n", dynasty)
+	}
+	if description != "" {
+		fmt.Fprintf(&b, "系列简介：%s\n", description)
+	}
+	if len(existing) > 0 {
+		b.WriteString("系列已有集（请勿重复，新集编号从其后续接）：\n")
+		for _, e := range existing {
+			fmt.Fprintf(&b, "  %s\n", e)
+		}
+	}
+	return b.String()
+}
+
 // StoryboardSystemPrompt 分镜拆解的系统提示词。
 const StoryboardSystemPrompt = `你是一位历史题材短视频的分镜导演。
 

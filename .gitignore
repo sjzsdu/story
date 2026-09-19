@@ -8,6 +8,7 @@ config.sh
 # 编译产物
 story
 /bin/
+.version-stamp
 
 # 前端依赖与构建产物
 web/node_modules/

@@ -25,6 +25,18 @@ func TestParseChatContentErrorEnvelope(t *testing.T) {
 	}
 }
 
+// quiet 形态：bl 直接打印模型正文（无 choices 信封）。
+func TestParseChatContentQuietBare(t *testing.T) {
+	raw := []byte(`{"reply":"ok","drafts":[]}`)
+	got, err := parseChatContent(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != `{"reply":"ok","drafts":[]}` {
+		t.Fatalf("bare content = %q", got)
+	}
+}
+
 func TestDecodeModelJSONWithFence(t *testing.T) {
 	content := "```json\n{\"candidates\": [{\"index\": 1, \"title\": \"t\"}]}\n```"
 	out, err := decodeModelJSON[candidatesResponse](content)

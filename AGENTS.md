@@ -21,7 +21,7 @@
 
 - `bl` 参数以**本机 `bl <cmd> --help` 的实际输出为准**，skill 参考文档可能滞后。
 - 已知差异（bl 1.25.0）：`bl video generate` 默认模型为 `wan3.0-video`；异步参数是 `--async`（没有 `--no-wait`）；`--resolution` 取值为 `720P` / `1080P`；`--watermark` 默认 true。
-- `bl text chat --output json` 返回 OpenAI 兼容信封，正文在 `choices[0].message.content`。
+- `bl text chat --output json` 兼容两种返回形态：不带 `--quiet` 时为 OpenAI 信封（正文在 `choices[0].message.content`）；**带 `--quiet` 时直接打印模型正文**（无 choices 信封），解析侧 `parseChatContent` 两种都接受。多轮对话用可重复的 `--message role:内容`（见 `internal/provider/bailian/plan.go`）。
 
 ## 3. 架构铁律：接口驱动（Ports & Adapters）
 

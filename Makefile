@@ -12,8 +12,17 @@
 
 # ---- 变量 ----
 BINARY       := story
-PREFIX       ?= /usr/local
+# 安装目录：显式指定 PREFIX 时用 $(PREFIX)/bin；
+# 否则自动挑选 PATH 中当前用户可写的 bin 目录（避免 sudo）；都不可写时回退 /usr/local/bin。
+PREFIX       ?=
+ifneq ($(PREFIX),)
 BINDIR       := $(PREFIX)/bin
+else
+BINDIR       := $(shell for d in /opt/homebrew/bin /usr/local/bin "$$HOME/.local/bin"; do [ -d "$$d" ] && [ -w "$$d" ] && echo "$$d" && break; done)
+ifeq ($(BINDIR),)
+BINDIR       := /usr/local/bin
+endif
+endif
 GOTOOLCHAIN  := local
 GO           := GOTOOLCHAIN=$(GOTOOLCHAIN) go
 GOFLAGS      :=
@@ -30,7 +39,7 @@ WEB_SRCS     := $(shell find $(WEB_DIR)/src $(WEB_DIR)/index.html $(WEB_DIR)/pac
 # Go 源文件
 GO_SRCS      := $(shell find . -name '*.go' -not -path './web/*' 2>/dev/null)
 
-.PHONY: all build web install run serve test vet fmt clean help
+.PHONY: all build web install uninstall run serve web-dev test test-integration vet fmt fmt-fix clean clean-all help
 
 # ---- 默认目标 ----
 all: build
@@ -43,19 +52,39 @@ $(WEB_DEPS): $(WEB_DIR)/package-lock.json
 $(WEB_DIST): $(WEB_DEPS) $(WEB_SRCS)
 	cd $(WEB_DIR) && npm run build
 
-web: $(WEB_DIST)
+# 完整性检查：dist 缺失、assets 为空或仍是占位页时自动重建。
+# 保证 make build / install 无需人工预构建前端，绝不把占位页嵌进二进制。
+web: FORCE
+	@if [ ! -f $(WEB_DIST) ] || [ -z "$$(ls $(WEB_DIR)/dist/assets 2>/dev/null)" ] || grep -q story-web-placeholder $(WEB_DIST); then \
+		echo ">>> 前端产物缺失/不完整/为占位页，自动构建..."; \
+		$(MAKE) --no-print-directory $(WEB_DEPS); \
+		cd $(WEB_DIR) && npm run build; \
+	fi
 
 # ---- Go 构建 ----
-build: $(BINARY)
+build: web $(BINARY)
 
-$(BINARY): $(WEB_DIST) $(GO_SRCS) go.mod go.sum
+$(BINARY): $(WEB_DIST) $(GO_SRCS) go.mod go.sum .version-stamp
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/story
+
+# 版本戳记：VERSION 变化时更新文件 mtime 触发重链接，未变化时不动作。
+.version-stamp: FORCE
+	@[ "$$(cat $@ 2>/dev/null)" = "$(VERSION)" ] || echo "$(VERSION)" > $@
+
+FORCE:
 
 # ---- 安装 ----
 install: build
 	@mkdir -p $(BINDIR)
+	@if [ ! -w "$(BINDIR)" ]; then \
+		echo "错误: $(BINDIR) 不可写，请改用: sudo make install PREFIX=/usr/local"; exit 1; \
+	fi
 	install -m 0755 $(BINARY) $(BINDIR)/$(BINARY)
 	@echo "已安装: $(BINDIR)/$(BINARY)"
+
+uninstall:
+	rm -f $(BINDIR)/$(BINARY)
+	@echo "已卸载: $(BINDIR)/$(BINARY)"
 
 # ---- 运行 ----
 run: build
@@ -87,6 +116,7 @@ fmt-fix:
 # ---- 清理 ----
 clean:
 	rm -f $(BINARY)
+	rm -f .version-stamp
 	rm -rf bin/
 	@echo "已清理 Go 构建产物（保留 web/dist 与 node_modules）"
 
@@ -101,7 +131,8 @@ help:
 	@echo "目标:"
 	@echo "  all / build     构建二进制 $(BINARY)（含前端嵌入）"
 	@echo "  web             仅构建前端到 $(WEB_DIR)/dist"
-	@echo "  install         构建并安装到 $(BINDIR)/$(BINARY)"
+	@echo "  install         完整安装：自动构建前端（缺失/占位页时）+ 编译 + 安装"
+	@echo "  uninstall       卸载已安装的二进制"
 	@echo "  run             构建并运行"
 	@echo "  serve           构建并启动 Web UI 服务"
 	@echo "  web-dev         前端开发服务器（Vite 热重载）"
@@ -114,5 +145,7 @@ help:
 	@echo "  clean-all       清理构建产物 + web/dist + node_modules"
 	@echo ""
 	@echo "变量:"
-	@echo "  PREFIX          安装前缀（默认 /usr/local）"
+	@echo "  PREFIX          安装前缀（默认自动探测可写 bin；如 make install PREFIX=\$$HOME/.local）"
+	@echo "  BINDIR          直接指定安装目录（优先级高于 PREFIX）"
+	@echo "  VERSION         注入的版本号（默认 git describe）"
 	@echo "  GOTOOLCHAIN     Go 工具链（默认 local）"

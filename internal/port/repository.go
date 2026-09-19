@@ -2,9 +2,13 @@ package port
 
 import (
 	"context"
+	"errors"
 
 	"github.com/sjzsdu/story/internal/domain"
 )
+
+// ErrNotFound 持久化层「记录不存在」的统一哨兵（各 store 实现的同名错误应等价于它）。
+var ErrNotFound = errors.New("记录不存在")
 
 // Repository 持久化端口。engine 只面向本接口，不感知 SQLite。
 type Repository interface {
@@ -27,6 +31,11 @@ type Repository interface {
 
 	// NextEpisodeNumber 返回该系列下一集的序号。
 	NextEpisodeNumber(ctx context.Context, seriesID string) (int, error)
+
+	// 系列分集策划会话（一个系列 1:1）。
+	GetPlanSession(ctx context.Context, seriesID string) (*domain.PlanSession, error)
+	SavePlanSession(ctx context.Context, session *domain.PlanSession) error
+	DeletePlanSession(ctx context.Context, seriesID string) error
 
 	Close() error
 }

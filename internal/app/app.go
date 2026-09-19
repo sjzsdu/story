@@ -52,7 +52,7 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*App, error) {
 	}
 
 	eng := engine.New(
-		store, bl, bl, bl, bl, composer,
+		store, bl, bl, bl, bl, composer, bl,
 		cfg.MaxConcurrency, cfg.MaxRetries,
 		cfg.TTSVoice, cfg.TTSInstruction,
 	)
@@ -204,6 +204,63 @@ func (a *App) DeleteEpisode(ctx context.Context, id string) error {
 	}
 	_ = os.RemoveAll(ep.WorkDir)
 	return nil
+}
+
+// ---- 分集策划 ----
+
+// GetSeriesPlan 读取系列的 AI 分集策划会话。
+func (a *App) GetSeriesPlan(ctx context.Context, seriesID string) (*domain.PlanSession, error) {
+	ps, err := a.Engine.GetSeriesPlan(ctx, seriesID)
+	return ps, translateErr(err)
+}
+
+// ChatSeriesPlan 向策划会话追加一条用户消息，返回更新后的会话（含最新草案）。
+func (a *App) ChatSeriesPlan(ctx context.Context, seriesID, message string) (*domain.PlanSession, error) {
+	ps, err := a.Engine.ChatSeriesPlan(ctx, seriesID, message)
+	return ps, translateErr(err)
+}
+
+// ResetSeriesPlan 清空策划会话，重新开始讨论。
+func (a *App) ResetSeriesPlan(ctx context.Context, seriesID string) error {
+	return translateErr(a.Engine.ResetSeriesPlan(ctx, seriesID))
+}
+
+// ApplyEpisodePlan 把分集草案批量落为集（只创建集，不触发视频生产）。
+// 已存在同标题集的草案会被跳过，因此全量草案与增量草案都可重复采纳；
+// 每集梗概写入工作目录 brief.md，供后续故事生成参考。
+func (a *App) ApplyEpisodePlan(ctx context.Context, seriesID string, drafts []domain.EpisodeDraft) ([]*domain.Episode, error) {
+	if err := engine.ValidateDrafts(drafts); err != nil {
+		return nil, err
+	}
+	existing, err := a.Repo.ListEpisodes(ctx, seriesID)
+	if err != nil {
+		return nil, translateErr(err)
+	}
+	existTitles := make(map[string]bool, len(existing))
+	for _, ep := range existing {
+		existTitles[strings.TrimSpace(ep.Title)] = true
+	}
+
+	created := make([]*domain.Episode, 0, len(drafts))
+	for _, d := range drafts {
+		title := strings.TrimSpace(d.Title)
+		if title == "" || existTitles[title] {
+			continue
+		}
+		ep, err := a.CreateEpisode(ctx, seriesID, title, strings.TrimSpace(d.Topic))
+		if err != nil {
+			return created, err
+		}
+		existTitles[title] = true
+		if summary := strings.TrimSpace(d.Summary); summary != "" {
+			brief := fmt.Sprintf("# 第%d集 %s\n\n- 主题：%s\n\n%s\n", ep.Number, ep.Title, ep.Topic, summary)
+			if err := os.WriteFile(filepath.Join(ep.WorkDir, "brief.md"), []byte(brief), 0o644); err != nil {
+				return created, err
+			}
+		}
+		created = append(created, ep)
+	}
+	return created, nil
 }
 
 func (a *App) uniqueSeriesID(ctx context.Context, base string) (string, error) {

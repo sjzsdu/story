@@ -20,6 +20,9 @@ type chatEnvelope struct {
 }
 
 // parseChatContent 从 bl 文本返回中取出模型正文。
+//
+// bl 版本差异：`--quiet` 时较新版本直接打印模型正文（无 choices 信封）；
+// 不带 quiet 时返回 OpenAI 兼容信封。两种形态都兼容。
 func parseChatContent(raw []byte) (string, error) {
 	var env chatEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -28,10 +31,15 @@ func parseChatContent(raw []byte) (string, error) {
 	if env.Error != nil {
 		return "", fmt.Errorf("bl 返回错误(code=%d): %s", env.Error.Code, env.Error.Message)
 	}
-	if len(env.Choices) == 0 {
-		return "", fmt.Errorf("bl 返回中没有 choices: %s", truncate(raw))
+	if len(env.Choices) > 0 {
+		return env.Choices[0].Message.Content, nil
 	}
-	return env.Choices[0].Message.Content, nil
+	// 无 choices：quiet 直出形态，整段 JSON 文本即模型正文（如 {"reply":...}）。
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return "", fmt.Errorf("bl 返回为空: %s", truncate(raw))
+	}
+	return trimmed, nil
 }
 
 // stripFence 去除模型可能包裹的 ```json ... ``` 围栏与前后空白。

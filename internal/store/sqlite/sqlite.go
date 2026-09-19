@@ -14,10 +14,11 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/sjzsdu/story/internal/domain"
+	"github.com/sjzsdu/story/internal/port"
 )
 
-// ErrNotFound 数据不存在。
-var ErrNotFound = errors.New("记录不存在")
+// ErrNotFound 数据不存在（等价于 port.ErrNotFound，保持对 app 层既有判断的兼容）。
+var ErrNotFound = port.ErrNotFound
 
 // Store SQLite 仓储。
 type Store struct {
@@ -45,6 +46,13 @@ CREATE TABLE IF NOT EXISTS episodes (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(series_id, number)
+);
+CREATE TABLE IF NOT EXISTS plan_sessions (
+    series_id     TEXT PRIMARY KEY REFERENCES series(id) ON DELETE CASCADE,
+    messages_json TEXT NOT NULL,
+    drafts_json   TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
 );
 `
 
@@ -251,6 +259,67 @@ func (s *Store) NextEpisodeNumber(ctx context.Context, seriesID string) (int, er
 		return 0, err
 	}
 	return n, nil
+}
+
+// ---- 系列分集策划会话 ----
+
+// GetPlanSession 读取系列的策划会话；不存在时返回 ErrNotFound。
+func (s *Store) GetPlanSession(ctx context.Context, seriesID string) (*domain.PlanSession, error) {
+	var ps domain.PlanSession
+	var messagesJSON, draftsJSON, created, updated string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT series_id, messages_json, drafts_json, created_at, updated_at
+		 FROM plan_sessions WHERE series_id = ?`, seriesID,
+	).Scan(&ps.SeriesID, &messagesJSON, &draftsJSON, &created, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: 策划会话 %s", ErrNotFound, seriesID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(messagesJSON), &ps.Messages); err != nil {
+		return nil, fmt.Errorf("解析策划会话消息 %s: %w", seriesID, err)
+	}
+	if err := json.Unmarshal([]byte(draftsJSON), &ps.Drafts); err != nil {
+		return nil, fmt.Errorf("解析分集草案 %s: %w", seriesID, err)
+	}
+	ps.CreatedAt = parseTime(created)
+	ps.UpdatedAt = parseTime(updated)
+	return &ps, nil
+}
+
+// SavePlanSession 创建或更新策划会话（upsert）。
+func (s *Store) SavePlanSession(ctx context.Context, ps *domain.PlanSession) error {
+	messages, err := json.Marshal(ps.Messages)
+	if err != nil {
+		return err
+	}
+	drafts, err := json.Marshal(ps.Drafts)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	if ps.CreatedAt.IsZero() {
+		ps.CreatedAt = now
+	}
+	ps.UpdatedAt = now
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO plan_sessions (series_id, messages_json, drafts_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(series_id) DO UPDATE SET
+		   messages_json = excluded.messages_json,
+		   drafts_json   = excluded.drafts_json,
+		   updated_at    = excluded.updated_at`,
+		ps.SeriesID, string(messages), string(drafts),
+		formatTime(ps.CreatedAt), formatTime(ps.UpdatedAt),
+	)
+	return err
+}
+
+// DeletePlanSession 删除系列的策划会话；不存在不报错。
+func (s *Store) DeletePlanSession(ctx context.Context, seriesID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM plan_sessions WHERE series_id = ?`, seriesID)
+	return err
 }
 
 // ---- row scanner 适配 ----

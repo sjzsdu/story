@@ -1,6 +1,8 @@
 import type {
   ActionName,
   Episode,
+  EpisodeDraft,
+  PlanSession,
   Series,
   SeriesDetail,
 } from './types'
@@ -55,6 +57,27 @@ export const api = {
     request<{ job: unknown }>(`/api/episodes/${encodeURIComponent(id)}/actions`, {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+
+  // ---- AI 分集策划 ----
+  getPlan: (seriesId: string) =>
+    request<PlanSession>(`/api/series/${encodeURIComponent(seriesId)}/plan`),
+
+  planChat: (seriesId: string, message: string) =>
+    request<PlanSession>(`/api/series/${encodeURIComponent(seriesId)}/plan/chat`, {
+      method: 'POST',
+      body: JSON.stringify({ message }),
+    }),
+
+  planApply: (seriesId: string, drafts: EpisodeDraft[]) =>
+    request<{ episodes: Episode[] }>(`/api/series/${encodeURIComponent(seriesId)}/plan/apply`, {
+      method: 'POST',
+      body: JSON.stringify({ drafts }),
+    }),
+
+  planReset: (seriesId: string) =>
+    request<{ ok: boolean }>(`/api/series/${encodeURIComponent(seriesId)}/plan`, {
+      method: 'DELETE',
     }),
 }
 

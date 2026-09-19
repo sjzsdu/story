@@ -5,6 +5,7 @@ import { api } from '../api'
 import type { Episode } from '../types'
 import { Button, Card, Empty, ErrorBox, Field, Spinner, TextInput } from '../components/ui'
 import { StatusBadge } from '../components/ui'
+import PlanPanel from '../components/PlanPanel'
 
 function episodeProgress(ep: Episode) {
   if (ep.state.steps.compose.status === 'done') {
@@ -100,6 +101,8 @@ export default function SeriesDetailPage() {
           <p className="text-sm text-paper-300/70 leading-relaxed">{s.config.tts_instruction}</p>
         </Card>
       )}
+
+      <PlanPanel seriesId={s.id} existingTitles={episodes.map((e) => e.title)} />
 
       {creating && <CreateEpisodeCard seriesId={s.id} onDone={() => setCreating(false)} />}
 

@@ -44,6 +44,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/series/{id}", s.deleteSeries)
 	s.mux.HandleFunc("POST /api/series/{id}/episodes", s.createEpisode)
 	s.mux.HandleFunc("GET /api/series/{id}/episodes", s.listEpisodes)
+	s.registerPlanRoutes()
 	s.mux.HandleFunc("GET /api/episodes/{id}", s.getEpisode)
 	s.mux.HandleFunc("DELETE /api/episodes/{id}", s.deleteEpisode)
 	s.mux.HandleFunc("POST /api/episodes/{id}/actions", s.runActionHTTP)
@@ -170,6 +171,9 @@ func (s *Server) getSeries(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if eps == nil {
+		eps = []*domain.Episode{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"series": se, "episodes": eps})
 }

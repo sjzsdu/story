@@ -96,6 +96,27 @@ export interface SeriesDetail {
   episodes: Episode[]
 }
 
+// ---- AI 分集策划 ----
+
+export interface EpisodeDraft {
+  title: string
+  topic: string
+  summary: string
+}
+
+export interface PlanMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface PlanSession {
+  series_id: string
+  messages: PlanMessage[]
+  drafts: EpisodeDraft[]
+  created_at: string
+  updated_at: string
+}
+
 export type ActionName =
   | 'candidates'
   | 'pick'

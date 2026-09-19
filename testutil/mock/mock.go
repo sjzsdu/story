@@ -19,11 +19,16 @@ type Repo struct {
 	mu       sync.Mutex
 	Series   map[string]*domain.Series
 	Episodes map[string]*domain.Episode
+	Plans    map[string]*domain.PlanSession
 }
 
 // NewRepo 创建空内存仓储。
 func NewRepo() *Repo {
-	return &Repo{Series: map[string]*domain.Series{}, Episodes: map[string]*domain.Episode{}}
+	return &Repo{
+		Series:   map[string]*domain.Series{},
+		Episodes: map[string]*domain.Episode{},
+		Plans:    map[string]*domain.PlanSession{},
+	}
 }
 
 func (r *Repo) CreateSeries(_ context.Context, s *domain.Series) error {
@@ -70,12 +75,13 @@ func (r *Repo) DeleteSeries(_ context.Context, id string) error {
 		return fmt.Errorf("系列不存在: %s", id)
 	}
 	delete(r.Series, id)
-	// 级联删除该系列下的集
+	// 级联删除该系列下的集与策划会话
 	for eid, ep := range r.Episodes {
 		if ep.SeriesID == id {
 			delete(r.Episodes, eid)
 		}
 	}
+	delete(r.Plans, id)
 	return nil
 }
 
@@ -139,6 +145,46 @@ func (r *Repo) NextEpisodeNumber(_ context.Context, seriesID string) (int, error
 }
 
 func (r *Repo) Close() error { return nil }
+
+// ---- 系列分集策划会话 ----
+
+func (r *Repo) GetPlanSession(_ context.Context, seriesID string) (*domain.PlanSession, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ps, ok := r.Plans[seriesID]
+	if !ok {
+		return nil, fmt.Errorf("%w: 策划会话 %s", port.ErrNotFound, seriesID)
+	}
+	return ps, nil
+}
+
+func (r *Repo) SavePlanSession(_ context.Context, ps *domain.PlanSession) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := *ps
+	r.Plans[ps.SeriesID] = &cp
+	return nil
+}
+
+func (r *Repo) DeletePlanSession(_ context.Context, seriesID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.Plans, seriesID)
+	return nil
+}
+
+// SeriesPlanner 分集策划 mock。
+type SeriesPlanner struct {
+	Result port.SeriesPlanResult
+	Err    error
+	Calls  int
+}
+
+// PlanEpisodes 实现 port.SeriesPlanner。
+func (m *SeriesPlanner) PlanEpisodes(_ context.Context, _ port.SeriesPlanRequest) (port.SeriesPlanResult, error) {
+	m.Calls++
+	return m.Result, m.Err
+}
 
 // ---- Story / Storyboard ----
 

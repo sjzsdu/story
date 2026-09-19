@@ -21,6 +21,7 @@ type Engine struct {
 	videos   port.VideoGenerator
 	speech   port.SpeechSynthesizer
 	composer port.VideoComposer
+	planner  port.SeriesPlanner
 
 	runner      *Runner
 	voice       string
@@ -35,6 +36,7 @@ func New(
 	videos port.VideoGenerator,
 	speech port.SpeechSynthesizer,
 	composer port.VideoComposer,
+	planner port.SeriesPlanner,
 	concurrency, retries int,
 	voice, instruction string,
 ) *Engine {
@@ -45,6 +47,7 @@ func New(
 		videos:      videos,
 		speech:      speech,
 		composer:    composer,
+		planner:     planner,
 		runner:      NewRunner(concurrency, retries),
 		voice:       voice,
 		instruction: instruction,
