@@ -26,8 +26,11 @@ func (c *Client) PlanStoryboard(ctx context.Context, req port.StoryboardRequest)
 			req.Ratio,
 			req.Resolution,
 			req.VideoStyle,
+			req.Characters,
 		),
 		"--temperature", "0.7",
+		// 6-12 个镜头 ×（visual_prompt+narration），默认 4096 有截断风险。
+		"--max-tokens", "16384",
 	}
 	args = appendModel(args, c.TextModel)
 

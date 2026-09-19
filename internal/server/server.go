@@ -45,6 +45,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/series/{id}/episodes", s.createEpisode)
 	s.mux.HandleFunc("GET /api/series/{id}/episodes", s.listEpisodes)
 	s.registerPlanRoutes()
+	s.registerSeriesExtraRoutes()
 	s.mux.HandleFunc("GET /api/episodes/{id}", s.getEpisode)
 	s.mux.HandleFunc("DELETE /api/episodes/{id}", s.deleteEpisode)
 	s.mux.HandleFunc("POST /api/episodes/{id}/actions", s.runActionHTTP)
@@ -405,6 +406,7 @@ func writeSSE(w http.ResponseWriter, kind eventKind, payload any) {
 // ---------- 媒体文件 ----------
 
 // serveMedia 只允许访问该集 WorkDir 之内的文件（clips/audio/tmp/output）。
+// 路径可能是绝对或相对（取决于服务端 DataDir 配置），统一归一到绝对路径后比对。
 func (s *Server) serveMedia(w http.ResponseWriter, r *http.Request) {
 	ep, ok := s.episodeOrError(w, r)
 	if !ok {
@@ -415,8 +417,15 @@ func (s *Server) serveMedia(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "缺少 path 参数")
 		return
 	}
-	abs := filepath.Clean(raw)
-	base := filepath.Clean(ep.WorkDir)
+	base, err := filepath.Abs(ep.WorkDir)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	abs := raw
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(base, filepath.Clean(raw))
+	}
 	rel, err := filepath.Rel(base, abs)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		writeErr(w, http.StatusForbidden, "禁止访问工作目录之外的文件")

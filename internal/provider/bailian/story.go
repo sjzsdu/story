@@ -24,6 +24,8 @@ func (c *Client) GenerateCandidates(ctx context.Context, req port.StoryRequest) 
 		"--system", templates.StorySystemPrompt,
 		"--message", templates.StoryUserPrompt(req.SeriesName, req.Dynasty, req.Topic, count),
 		"--temperature", "0.9",
+		// 多个候选故事每篇数百字，默认 4096 有截断风险。
+		"--max-tokens", "16384",
 	}
 	args = appendModel(args, c.TextModel)
 

@@ -20,9 +20,10 @@ type PlanMessage struct {
 
 // PlanSession 某个系列的分集策划会话（一个系列当前仅保留一个会话，1:1）。
 type PlanSession struct {
-	SeriesID  string         `json:"series_id"`
-	Messages  []PlanMessage  `json:"messages"`
-	Drafts    []EpisodeDraft `json:"drafts"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	SeriesID   string             `json:"series_id"`
+	Messages   []PlanMessage      `json:"messages"`
+	Drafts     []EpisodeDraft     `json:"drafts"`
+	Characters []CharacterSetting `json:"characters"`
+	CreatedAt  time.Time          `json:"created_at"`
+	UpdatedAt  time.Time          `json:"updated_at"`
 }

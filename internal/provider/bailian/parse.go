@@ -19,10 +19,17 @@ type chatEnvelope struct {
 	} `json:"error"`
 }
 
+// contentWrapper `--stream --quiet` 时直接打印 `{"content": ...}` 包装（无 choices）。
+type contentWrapper struct {
+	Content string `json:"content"`
+}
+
 // parseChatContent 从 bl 文本返回中取出模型正文。
 //
-// bl 版本差异：`--quiet` 时较新版本直接打印模型正文（无 choices 信封）；
-// 不带 quiet 时返回 OpenAI 兼容信封。两种形态都兼容。
+// bl 版本差异，共三种形态都兼容：
+//  1. 不带 --quiet：OpenAI 兼容信封（choices[0].message.content）；
+//  2. --quiet 非 stream：直接打印模型正文；
+//  3. --stream --quiet：打印 `{"content": ...}` 包装（见 runJSON 注释）。
 func parseChatContent(raw []byte) (string, error) {
 	var env chatEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -33,6 +40,11 @@ func parseChatContent(raw []byte) (string, error) {
 	}
 	if len(env.Choices) > 0 {
 		return env.Choices[0].Message.Content, nil
+	}
+	// --stream 包装形态：{"content": "..."}。
+	var wrapper contentWrapper
+	if err := json.Unmarshal(raw, &wrapper); err == nil && wrapper.Content != "" {
+		return wrapper.Content, nil
 	}
 	// 无 choices：quiet 直出形态，整段 JSON 文本即模型正文（如 {"reply":...}）。
 	trimmed := strings.TrimSpace(string(raw))

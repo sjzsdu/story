@@ -41,7 +41,7 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*App, error) {
 		return nil, err
 	}
 
-	bl := bailianprov.NewClient(cfg.BLBin, cfg.TextModel, cfg.VideoModel, cfg.TTSModel)
+	bl := bailianprov.NewClient(cfg.BLBin, cfg.TextModel, cfg.VideoModel, cfg.TTSModel, cfg.ImageModel)
 	composer := ffmpegprov.New(cfg.FFMPEGBin, cfg.FFProbeBin())
 	if cfg.SubtitleFont != "" {
 		r, err := subtitle.NewRenderer(cfg.SubtitleFont)
@@ -52,7 +52,8 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*App, error) {
 	}
 
 	eng := engine.New(
-		store, bl, bl, bl, bl, composer, bl,
+		store, bl, bl, bl, bl, composer, bl, bl,
+		cfg.ProjectsDir(),
 		cfg.MaxConcurrency, cfg.MaxRetries,
 		cfg.TTSVoice, cfg.TTSInstruction,
 	)
@@ -225,12 +226,38 @@ func (a *App) ResetSeriesPlan(ctx context.Context, seriesID string) error {
 	return translateErr(a.Engine.ResetSeriesPlan(ctx, seriesID))
 }
 
+// UpdateSeriesCharacters 覆盖系列的人物设定集（供策划采纳与人工编辑入口）。
+func (a *App) UpdateSeriesCharacters(ctx context.Context, seriesID string, characters []domain.CharacterSetting) error {
+	s, err := a.Repo.GetSeries(ctx, seriesID)
+	if err != nil {
+		return translateErr(err)
+	}
+	if characters == nil {
+		characters = []domain.CharacterSetting{}
+	}
+	s.Characters = characters
+	s.UpdatedAt = time.Now()
+	return translateErr(a.Repo.UpdateSeries(ctx, s))
+}
+
+// GenerateSeriesKeyframes 为系列人物设定集批量生成定妆照（透传 engine）。
+func (a *App) GenerateSeriesKeyframes(ctx context.Context, seriesID string, force bool) ([]domain.CharacterSetting, error) {
+	cs, err := a.Engine.GenerateSeriesKeyframes(ctx, seriesID, force)
+	return cs, translateErr(err)
+}
+
 // ApplyEpisodePlan 把分集草案批量落为集（只创建集，不触发视频生产）。
 // 已存在同标题集的草案会被跳过，因此全量草案与增量草案都可重复采纳；
 // 每集梗概写入工作目录 brief.md，供后续故事生成参考。
-func (a *App) ApplyEpisodePlan(ctx context.Context, seriesID string, drafts []domain.EpisodeDraft) ([]*domain.Episode, error) {
+// characters 非 nil 时同步覆盖系列人物设定集（策划会话产出或用户编辑后的版本）。
+func (a *App) ApplyEpisodePlan(ctx context.Context, seriesID string, drafts []domain.EpisodeDraft, characters []domain.CharacterSetting) ([]*domain.Episode, error) {
 	if err := engine.ValidateDrafts(drafts); err != nil {
 		return nil, err
+	}
+	if characters != nil {
+		if err := a.UpdateSeriesCharacters(ctx, seriesID, characters); err != nil {
+			return nil, err
+		}
 	}
 	existing, err := a.Repo.ListEpisodes(ctx, seriesID)
 	if err != nil {

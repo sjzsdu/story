@@ -9,7 +9,19 @@ import (
 )
 
 // Synthesize 实现 port.SpeechSynthesizer。
+//
+// 注意：部分音色（实测 longtian_v3 + cosyvoice-v3-flash）不支持 --instruction
+// 风格指令，引擎报 428 InvalidParameter；此时自动去掉指令降级重试一次。
 func (c *Client) Synthesize(ctx context.Context, req port.SpeechRequest) (port.SpeechResult, error) {
+	res, err := c.synthesize(ctx, req)
+	if err != nil && req.Instruction != "" {
+		req.Instruction = ""
+		return c.synthesize(ctx, req)
+	}
+	return res, err
+}
+
+func (c *Client) synthesize(ctx context.Context, req port.SpeechRequest) (port.SpeechResult, error) {
 	if err := os.MkdirAll(filepath.Dir(req.OutPath), 0o755); err != nil {
 		return port.SpeechResult{}, err
 	}

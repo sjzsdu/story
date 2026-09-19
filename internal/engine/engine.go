@@ -22,6 +22,11 @@ type Engine struct {
 	speech   port.SpeechSynthesizer
 	composer port.VideoComposer
 	planner  port.SeriesPlanner
+	images   port.ImageGenerator
+
+	// projectsDir 媒体项目根目录（data/projects），用于系列级产物（定妆照）落盘。
+	// 构造时归一为绝对路径：定妆照会以绝对路径写进 bl 命令与持久化数据，避免受服务进程 cwd 影响。
+	projectsDir string
 
 	runner      *Runner
 	voice       string
@@ -37,9 +42,16 @@ func New(
 	speech port.SpeechSynthesizer,
 	composer port.VideoComposer,
 	planner port.SeriesPlanner,
+	images port.ImageGenerator,
+	projectsDir string,
 	concurrency, retries int,
 	voice, instruction string,
 ) *Engine {
+	if projectsDir != "" {
+		if abs, err := filepath.Abs(projectsDir); err == nil {
+			projectsDir = abs
+		}
+	}
 	return &Engine{
 		repo:        repo,
 		stories:     stories,
@@ -48,6 +60,8 @@ func New(
 		speech:      speech,
 		composer:    composer,
 		planner:     planner,
+		images:      images,
+		projectsDir: projectsDir,
 		runner:      NewRunner(concurrency, retries),
 		voice:       voice,
 		instruction: instruction,
@@ -70,7 +84,7 @@ func (e *Engine) GenerateCandidates(ctx context.Context, episodeID string) ([]do
 		SeriesName: series.Name,
 		Dynasty:    series.Config.Dynasty,
 		Topic:      ep.Topic,
-		Count:      5,
+		Count:      3, // bl 侧 HTTP 头超时约 300s 且不可调：候选越多生成越久越容易整体超时，取验收下限
 	})
 	if err != nil {
 		return nil, e.fail(ctx, ep, domain.StepGenerate, err)
@@ -135,6 +149,7 @@ func (e *Engine) PlanStoryboard(ctx context.Context, episodeID string) (*domain.
 		Ratio:      series.Config.Ratio,
 		Resolution: series.Config.Resolution,
 		VideoStyle: series.Config.VideoStyle,
+		Characters: characterLines(series.Characters),
 	})
 	if err != nil {
 		return nil, e.fail(ctx, ep, domain.StepStoryboard, err)
@@ -201,9 +216,16 @@ func (e *Engine) Produce(ctx context.Context, episodeID string) error {
 					dur, _ := e.composer.ProbeDuration(ctx, clipPath)
 					clipResults[i] = domain.MediaResult{SceneID: sc.ID, Path: clipPath, DurationSec: dur, Skipped: true}
 				} else {
+					prompt := buildVideoPrompt(sc)
+					// 人物一致性：分镜画面含设定集人物且已有定妆照时，走参考图生视频。
+					refImgs := refImagesForScene(sc.VisualPrompt, series.Characters)
+					if len(refImgs) > 0 {
+						prompt = refPromptPrefix(series.Characters, refImgs) + prompt
+					}
 					if _, err := e.videos.GenerateClip(ctx, port.ClipRequest{
 						OutPath:     clipPath,
-						Prompt:      buildVideoPrompt(sc),
+						Prompt:      prompt,
+						RefImages:   refImgs,
 						DurationSec: sc.DurationSec,
 						Ratio:       series.Config.Ratio,
 						Resolution:  series.Config.Resolution,

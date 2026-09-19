@@ -16,6 +16,9 @@ type ClipRequest struct {
 	Resolution string
 	// ImagePath 参考图路径（可空，空为文生视频）。
 	ImagePath string
+	// RefImages 人物定妆照参考图（本地路径，可多张）。非空时走参考图生视频
+	//（bl video ref），Prompt 需用 "Image 1/名称" 标记指代；优先于 ImagePath。
+	RefImages []string
 	// Watermark 是否保留 AI 生成水印（合规要求，默认 true）。
 	Watermark bool
 }

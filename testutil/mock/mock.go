@@ -214,6 +214,42 @@ func (m *BoardPlanner) PlanStoryboard(_ context.Context, _ port.StoryboardReques
 	return m.Storyboard, m.Err
 }
 
+// ---- Image ----
+
+// ImageGen 图片生成 mock：在 OutPath 写入假 png，记录请求。
+type ImageGen struct {
+	mu       sync.Mutex
+	FailN    int // 前 N 次调用失败（验证重试）
+	Calls    int
+	Requests []port.ImageRequest
+}
+
+// GenerateImage 实现 port.ImageGenerator。
+func (m *ImageGen) GenerateImage(_ context.Context, req port.ImageRequest) (port.ImageResult, error) {
+	m.mu.Lock()
+	m.Calls++
+	calls := m.Calls
+	m.Requests = append(m.Requests, req)
+	m.mu.Unlock()
+	if calls <= m.FailN {
+		return port.ImageResult{}, fmt.Errorf("模拟图片失败 #%d", calls)
+	}
+	if err := os.MkdirAll(filepath.Dir(req.OutPath), 0o755); err != nil {
+		return port.ImageResult{}, err
+	}
+	if err := os.WriteFile(req.OutPath, []byte("fake-png"), 0o644); err != nil {
+		return port.ImageResult{}, err
+	}
+	return port.ImageResult{OutPath: req.OutPath}, nil
+}
+
+// CallsCount 线程安全地读取调用次数。
+func (m *ImageGen) CallsCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.Calls
+}
+
 // ---- Video / Speech ----
 
 // VideoGen 视频生成 mock：在 OutPath 写入假文件；FailFirst 次调用失败以验证重试。
@@ -221,12 +257,14 @@ type VideoGen struct {
 	mu        sync.Mutex
 	FailFirst int
 	Calls     int
+	Requests  []port.ClipRequest
 }
 
 // GenerateClip 实现 port.VideoGenerator。
 func (m *VideoGen) GenerateClip(_ context.Context, req port.ClipRequest) (port.ClipResult, error) {
 	m.mu.Lock()
 	m.Calls++
+	m.Requests = append(m.Requests, req)
 	calls := m.Calls
 	fail := m.FailFirst
 	m.mu.Unlock()

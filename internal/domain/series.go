@@ -4,13 +4,14 @@ import "time"
 
 // Series 系列（如「鬼谷子」），包含若干集。
 type Series struct {
-	ID          string       `json:"id"`
-	Name        string       `json:"name"`
-	Dynasty     string       `json:"dynasty"`
-	Description string       `json:"description"`
-	Config      SeriesConfig `json:"config"`
-	CreatedAt   time.Time    `json:"created_at"`
-	UpdatedAt   time.Time    `json:"updated_at"`
+	ID          string             `json:"id"`
+	Name        string             `json:"name"`
+	Dynasty     string             `json:"dynasty"`
+	Description string             `json:"description"`
+	Config      SeriesConfig       `json:"config"`
+	Characters  []CharacterSetting `json:"characters"`
+	CreatedAt   time.Time          `json:"created_at"`
+	UpdatedAt   time.Time          `json:"updated_at"`
 }
 
 // SeriesConfig 系列级配置，同一系列各集共享。

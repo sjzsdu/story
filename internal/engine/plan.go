@@ -44,9 +44,10 @@ func (e *Engine) ChatSeriesPlan(ctx context.Context, seriesID, userText string) 
 	if err != nil {
 		if errors.Is(err, port.ErrNotFound) {
 			ps = &domain.PlanSession{
-				SeriesID: seriesID,
-				Messages: []domain.PlanMessage{},
-				Drafts:   []domain.EpisodeDraft{},
+				SeriesID:   seriesID,
+				Messages:   []domain.PlanMessage{},
+				Drafts:     []domain.EpisodeDraft{},
+				Characters: []domain.CharacterSetting{},
 			}
 		} else {
 			return nil, err
@@ -72,6 +73,7 @@ func (e *Engine) ChatSeriesPlan(ctx context.Context, seriesID, userText string) 
 		Dynasty:     series.Config.Dynasty,
 		Description: series.Description,
 		Existing:    existing,
+		Characters:  series.Characters,
 		Messages:    ps.Messages,
 	})
 	if err != nil {
@@ -90,6 +92,10 @@ func (e *Engine) ChatSeriesPlan(ctx context.Context, seriesID, userText string) 
 	}
 	ps.Messages = append(ps.Messages, domain.PlanMessage{Role: "assistant", Content: reply})
 	ps.Drafts = result.Drafts
+	// 人物设定：模型返回了才覆盖（允许用户只调集数不动人物）。
+	if len(result.Characters) > 0 {
+		ps.Characters = result.Characters
+	}
 	if err := e.repo.SavePlanSession(ctx, ps); err != nil {
 		return nil, err
 	}
@@ -131,5 +137,8 @@ func ensurePlanSlices(ps *domain.PlanSession) {
 	}
 	if ps.Drafts == nil {
 		ps.Drafts = []domain.EpisodeDraft{}
+	}
+	if ps.Characters == nil {
+		ps.Characters = []domain.CharacterSetting{}
 	}
 }

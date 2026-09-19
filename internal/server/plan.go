@@ -13,9 +13,10 @@ type planChatRequest struct {
 	Message string `json:"message"`
 }
 
-// planApplyRequest 采纳请求体：客户端可编辑草案后提交。
+// planApplyRequest 采纳请求体：客户端可编辑草案后提交；characters 非空时同步覆盖系列人物设定集。
 type planApplyRequest struct {
-	Drafts []domain.EpisodeDraft `json:"drafts"`
+	Drafts     []domain.EpisodeDraft     `json:"drafts"`
+	Characters []domain.CharacterSetting `json:"characters,omitempty"`
 }
 
 func (s *Server) registerPlanRoutes() {
@@ -65,7 +66,7 @@ func (s *Server) planApply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
 		return
 	}
-	eps, err := s.app.ApplyEpisodePlan(r.Context(), r.PathValue("id"), req.Drafts)
+	eps, err := s.app.ApplyEpisodePlan(r.Context(), r.PathValue("id"), req.Drafts, req.Characters)
 	if err != nil {
 		if errors.Is(err, app.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "系列不存在")

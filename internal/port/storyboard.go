@@ -13,6 +13,9 @@ type StoryboardRequest struct {
 	Ratio      string // 目标画面比例
 	Resolution string // 目标分辨率
 	VideoStyle string // 额外风格指令（可空）
+	// Characters 系列人物设定集（每项为「姓名：外貌」一行）。非空时分镜 prompt 注入，
+	// 要求同一人物跨镜头逐字复用外貌描述。
+	Characters []string
 }
 
 // StoryboardPlanner 将完整故事拆为可生产的分镜脚本。

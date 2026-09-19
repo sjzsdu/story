@@ -20,6 +20,7 @@ type fixture struct {
 	speech  *mock.SpeechGen
 	composr *mock.Composer
 	planner *mock.SeriesPlanner
+	images  *mock.ImageGen
 	eng     *Engine
 	epID    string
 }
@@ -82,8 +83,9 @@ func setup(t *testing.T) *fixture {
 				{Title: "合纵连横", Topic: "展开", Summary: "展开"},
 			},
 		}},
+		images: &mock.ImageGen{},
 	}
-	f.eng = New(repo, f.stories, f.boards, f.videos, f.speech, f.composr, f.planner, 2, 2, "longtian_v3", "沉稳")
+	f.eng = New(repo, f.stories, f.boards, f.videos, f.speech, f.composr, f.planner, f.images, workRoot, 2, 2, "longtian_v3", "沉稳")
 	f.eng.runner.Backoff = time.Millisecond
 	f.epID = ep.ID
 	return f

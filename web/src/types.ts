@@ -69,12 +69,21 @@ export interface SeriesConfig {
   max_retries: number
 }
 
+export interface CharacterSetting {
+  name: string
+  identity: string
+  appearance: string
+  temperament: string
+  ref_image?: string
+}
+
 export interface Series {
   id: string
   name: string
   dynasty: string
   description: string
   config: SeriesConfig
+  characters: CharacterSetting[]
   created_at: string
   updated_at: string
 }
@@ -113,6 +122,7 @@ export interface PlanSession {
   series_id: string
   messages: PlanMessage[]
   drafts: EpisodeDraft[]
+  characters: CharacterSetting[]
   created_at: string
   updated_at: string
 }
@@ -125,6 +135,7 @@ export type ActionName =
   | 'compose'
   | 'run'
   | 'export'
+  | 'keyframes'
 
 export interface JobEvent {
   id: string

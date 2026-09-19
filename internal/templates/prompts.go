@@ -60,7 +60,8 @@ const SeriesPlanSystemPrompt = `你是一位精通中国历史与传统文化典
 4. topic 是一句话的本集切入点；summary 用 100-200 字概括本集核心史实、人物冲突与戏剧转折。
 5. 系列已有集时，你只规划「后续新集」，编号从已有集之后续接，不得与已有集重复。
 6. 根据编辑的反馈持续修订：drafts 每轮都必须输出【全量最新草案】（已有集 + 本轮新增/修订后的完整集列表），而不是只输出变化部分。
-7. 价值观稳妥，不戏说、不狗血、不现代腔。
+7. 同时维护「人物设定集 characters」：列出贯穿系列的主要人物（含跨集反复出现的君主、谋士、将领等），每人给出 name（正史人名）、identity（身份）、appearance（外貌服饰固定描述：年龄感、体态、发式、服装款式与颜色，一句话）、temperament（气质神态基调）。appearance 一经确定不要无故改动；编辑要求换形象时才修订。次要龙套可不入集。
+8. 价值观稳妥，不戏说、不狗血、不现代腔。
 
 输出格式：只输出 JSON，不要输出任何解释、不要使用 markdown 代码围栏。结构如下：
 {
@@ -71,11 +72,19 @@ const SeriesPlanSystemPrompt = `你是一位精通中国历史与传统文化典
       "topic": "一句话切入点",
       "summary": "100-200 字本集梗概"
     }
+  ],
+  "characters": [
+    {
+      "name": "张仪",
+      "identity": "秦国相国，纵横家",
+      "appearance": "约四旬，清瘦挺拔，三缕短须，深青色深衣束发戴冠",
+      "temperament": "沉毅多智，眉宇含锋"
+    }
   ]
 }`
 
-// SeriesPlanContextPrompt 构造系列背景与已有集信息（作为首轮用户消息的固定前缀）。
-func SeriesPlanContextPrompt(seriesName, dynasty, description string, existing []string) string {
+// SeriesPlanContextPrompt 构造系列背景、已有集与既有人物设定（首轮用户消息的固定前缀）。
+func SeriesPlanContextPrompt(seriesName, dynasty, description string, existing, characters []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "栏目系列：%s\n", seriesName)
 	if dynasty != "" {
@@ -83,6 +92,12 @@ func SeriesPlanContextPrompt(seriesName, dynasty, description string, existing [
 	}
 	if description != "" {
 		fmt.Fprintf(&b, "系列简介：%s\n", description)
+	}
+	if len(characters) > 0 {
+		b.WriteString("已确立的人物设定（保持稳定，除非编辑要求修改）：\n")
+		for _, c := range characters {
+			fmt.Fprintf(&b, "  %s\n", c)
+		}
 	}
 	if len(existing) > 0 {
 		b.WriteString("系列已有集（请勿重复，新集编号从其后续接）：\n")
@@ -99,12 +114,13 @@ const StoryboardSystemPrompt = `你是一位历史题材短视频的分镜导演
 你的任务：把给定的白话历史故事拆分为 6-12 个连续镜头，供 AI 视频生成与旁白配音使用。
 
 硬性要求：
-1. 每个镜头包含：视觉画面（visual_prompt）、旁白（narration）、时长秒数（duration，3-6 秒）、运镜（camera）。
+1. 每个镜头包含：视觉画面（visual_prompt）、旁白（narration）、时长秒数（duration，4-10 秒）、运镜（camera）。
 2. narration 是口播文本：把故事正文改写为口语化讲述，短句为主，所有镜头旁白连起来是完整故事；不要出现镜头编号、“画面”等元词。
 3. visual_prompt 是给视频生成模型的中文画面描述：具体写清人物（身份/服饰/神态/动作）、环境（建筑/器物/光线/天气）、景别与氛围；必须严格遵守给定的时代视觉要求，杜绝时代错置。
-4. 每个 visual_prompt 末尾自然带一句画面质感要求，如“电影感构图，自然光，质感真实”。
-5. 镜头之间场景与人物保持连贯；相邻镜头避免重复画面。
-6. duration 为整数，取值 3-6；全片镜头数与旁白总量匹配。
+4. 人物形象一致性（最高优先级）：若提供了「人物设定集」，凡设定集内的人物出场，visual_prompt 必须用其姓名指代，并【逐字复制】其 appearance 描述原文，不得改写、缩写或换说法；同一人物在本集所有镜头中描述完全一致。设定集之外的龙套可不描述服饰细节。
+5. 每个 visual_prompt 末尾自然带一句画面质感要求，如“电影感构图，自然光，质感真实”。
+6. 镜头之间场景与人物保持连贯；相邻镜头避免重复画面。
+7. duration 必须与旁白长度匹配（最高优先级）：中文语速约每秒 4.5 字，duration ≥ 旁白字数 ÷ 4.5 并向上取整，取值 4-10。先写好 narration，再据此定 duration；旁白读不完的镜头会被强制定格，观感极差。
 
 输出格式：只输出 JSON，不要输出任何解释、不要使用 markdown 代码围栏。结构如下：
 {
@@ -119,14 +135,21 @@ const StoryboardSystemPrompt = `你是一位历史题材短视频的分镜导演
   ]
 }`
 
-// StoryboardUserPrompt 构造分镜拆解的用户消息。
-func StoryboardUserPrompt(storyTitle, storyDynasty, storyContent, ratio, resolution, videoStyle string) string {
+// StoryboardUserPrompt 构造分镜拆解的用户消息。characters 为系列人物设定集（姓名+外貌），可为空。
+func StoryboardUserPrompt(storyTitle, storyDynasty, storyContent, ratio, resolution, videoStyle string, characters []string) string {
 	pack := MatchDynasty(storyDynasty)
 	var b strings.Builder
 	fmt.Fprintf(&b, "故事标题：%s\n", storyTitle)
 	fmt.Fprintf(&b, "朝代：%s\n\n", storyDynasty)
 	b.WriteString(pack.VisualAnchor())
 	b.WriteString("\n\n")
+	if len(characters) > 0 {
+		b.WriteString("人物设定集（出场人物必须用其姓名指代，并逐字复用 appearance 原文）：\n")
+		for _, c := range characters {
+			fmt.Fprintf(&b, "  %s\n", c)
+		}
+		b.WriteString("\n")
+	}
 	if ratio != "" {
 		fmt.Fprintf(&b, "成片画面比例：%s（%s），构图时按此比例安排人物与空间。\n", ratio, resolution)
 	}
@@ -135,4 +158,14 @@ func StoryboardUserPrompt(storyTitle, storyDynasty, storyContent, ratio, resolut
 	}
 	fmt.Fprintf(&b, "\n故事正文：\n%s\n\n请拆分为分镜 JSON。", storyContent)
 	return b.String()
+}
+
+// KeyframeImagePrompt 角色定妆照（水墨工笔立绘）的图片生成提示词。
+func KeyframeImagePrompt(dynasty, name, identity, appearance, temperament string) string {
+	if dynasty == "" {
+		dynasty = "古代"
+	}
+	return fmt.Sprintf(
+		"中国古代历史人物立绘，水墨工笔风格：%s时期历史人物%s（%s）。形象：%s。气质：%s。全身站姿，正面微侧，双手自然，纯净留白背景，淡彩晕染，衣纹线条流畅，面部刻画清晰细腻，适合作为人物形象参考图。古画质感，高清细节。",
+		dynasty, name, identity, appearance, temperament)
 }

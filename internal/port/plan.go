@@ -13,19 +13,21 @@ type ExistingEpisodeBrief struct {
 	Topic  string `json:"topic"`
 }
 
-// SeriesPlanRequest 分集策划请求：携带系列信息、已有集与完整对话历史。
+// SeriesPlanRequest 分集策划请求：携带系列信息、已有集、既有人物与完整对话历史。
 type SeriesPlanRequest struct {
 	SeriesName  string
 	Dynasty     string
 	Description string
 	Existing    []ExistingEpisodeBrief
+	Characters  []domain.CharacterSetting
 	Messages    []domain.PlanMessage
 }
 
-// SeriesPlanResult 模型返回：给用户的本轮文字回应 + 全量最新分集草案。
+// SeriesPlanResult 模型返回：给用户的本轮文字回应 + 全量最新分集草案 + 人物设定。
 type SeriesPlanResult struct {
-	Reply  string
-	Drafts []domain.EpisodeDraft
+	Reply      string
+	Drafts     []domain.EpisodeDraft
+	Characters []domain.CharacterSetting
 }
 
 // SeriesPlanner 系列分集策划端口（由 bailian 等 AI provider 实现）。

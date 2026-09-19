@@ -11,8 +11,9 @@ import (
 
 // planResponse 模型返回的分集策划 JSON。
 type planResponse struct {
-	Reply  string                `json:"reply"`
-	Drafts []domain.EpisodeDraft `json:"drafts"`
+	Reply      string                    `json:"reply"`
+	Drafts     []domain.EpisodeDraft     `json:"drafts"`
+	Characters []domain.CharacterSetting `json:"characters"`
 }
 
 // PlanEpisodes 实现 port.SeriesPlanner。
@@ -21,7 +22,7 @@ func (c *Client) PlanEpisodes(ctx context.Context, req port.SeriesPlanRequest) (
 		return port.SeriesPlanResult{}, fmt.Errorf("策划对话消息为空")
 	}
 
-	// 系列背景 + 已有集作为首轮用户消息的前缀（只加一次）。
+	// 系列背景 + 已有人物 + 已有集作为首轮用户消息的前缀（只加一次）。
 	existing := make([]string, 0, len(req.Existing))
 	for _, e := range req.Existing {
 		line := fmt.Sprintf("第 %d 集《%s》", e.Number, e.Title)
@@ -30,7 +31,15 @@ func (c *Client) PlanEpisodes(ctx context.Context, req port.SeriesPlanRequest) (
 		}
 		existing = append(existing, line)
 	}
-	header := templates.SeriesPlanContextPrompt(req.SeriesName, req.Dynasty, req.Description, existing)
+	charLines := make([]string, 0, len(req.Characters))
+	for _, ch := range req.Characters {
+		line := ch.Name + "（" + ch.Identity + "）：" + ch.Appearance
+		if ch.Temperament != "" {
+			line += "；气质：" + ch.Temperament
+		}
+		charLines = append(charLines, line)
+	}
+	header := templates.SeriesPlanContextPrompt(req.SeriesName, req.Dynasty, req.Description, existing, charLines)
 
 	args := []string{
 		"text", "chat",
@@ -64,5 +73,5 @@ func (c *Client) PlanEpisodes(ctx context.Context, req port.SeriesPlanRequest) (
 	if len(resp.Drafts) == 0 {
 		return port.SeriesPlanResult{}, errEmpty("分集草案")
 	}
-	return port.SeriesPlanResult{Reply: resp.Reply, Drafts: resp.Drafts}, nil
+	return port.SeriesPlanResult{Reply: resp.Reply, Drafts: resp.Drafts, Characters: resp.Characters}, nil
 }

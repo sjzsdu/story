@@ -12,7 +12,8 @@ const (
 	minCandidates = 3
 	minScenes     = 4
 	minSceneDur   = 3
-	maxSceneDur   = 6
+	// maxSceneDur 与分镜 prompt 的 duration 上限一致（4-10 秒，wan3.0-video 单片段档位）。
+	maxSceneDur = 10
 )
 
 // ValidateCandidates 验收 generate 步骤产物。

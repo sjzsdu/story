@@ -55,8 +55,11 @@ func TestValidateStoryboard(t *testing.T) {
 	if err := ValidateStoryboard(mk(3, 5)); err == nil {
 		t.Fatal("3 个镜头应被拒绝")
 	}
-	if err := ValidateStoryboard(mk(4, 9)); err == nil {
-		t.Fatal("时长 9 秒应非法")
+	if err := ValidateStoryboard(mk(4, 9)); err != nil {
+		t.Fatal("时长 9 秒应合法（上限 10 秒）")
+	}
+	if err := ValidateStoryboard(mk(4, 11)); err == nil {
+		t.Fatal("时长 11 秒应非法")
 	}
 	bad := mk(4, 4)
 	bad.Scenes[0].Narration = ""

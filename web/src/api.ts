@@ -1,10 +1,12 @@
 import type {
   ActionName,
+  CharacterSetting,
   Episode,
   EpisodeDraft,
   PlanSession,
   Series,
   SeriesDetail,
+  JobEvent,
 } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -69,19 +71,37 @@ export const api = {
       body: JSON.stringify({ message }),
     }),
 
-  planApply: (seriesId: string, drafts: EpisodeDraft[]) =>
+  planApply: (seriesId: string, drafts: EpisodeDraft[], characters?: CharacterSetting[]) =>
     request<{ episodes: Episode[] }>(`/api/series/${encodeURIComponent(seriesId)}/plan/apply`, {
       method: 'POST',
-      body: JSON.stringify({ drafts }),
+      body: JSON.stringify({ drafts, characters }),
     }),
 
   planReset: (seriesId: string) =>
     request<{ ok: boolean }>(`/api/series/${encodeURIComponent(seriesId)}/plan`, {
       method: 'DELETE',
     }),
+
+  // ---- 人物设定与定妆照 ----
+  updateCharacters: (seriesId: string, characters: CharacterSetting[]) =>
+    request<Series>(`/api/series/${encodeURIComponent(seriesId)}/characters`, {
+      method: 'PUT',
+      body: JSON.stringify({ characters }),
+    }),
+
+  generateKeyframes: (seriesId: string, force = false) =>
+    request<{ job: JobEvent }>(`/api/series/${encodeURIComponent(seriesId)}/keyframes`, {
+      method: 'POST',
+      body: JSON.stringify({ force }),
+    }),
 }
 
 /** 把服务器上的绝对文件路径转成受权媒体 URL。 */
 export function mediaUrl(episodeId: string, absPath: string): string {
   return `/api/episodes/${encodeURIComponent(episodeId)}/media?path=${encodeURIComponent(absPath)}`
+}
+
+/** 系列级媒体 URL（定妆照等，位于系列项目目录内）。 */
+export function seriesMediaUrl(seriesId: string, absPath: string): string {
+  return `/api/series/${encodeURIComponent(seriesId)}/media?path=${encodeURIComponent(absPath)}`
 }

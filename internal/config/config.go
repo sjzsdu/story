@@ -24,6 +24,8 @@ type Config struct {
 	VideoModel string `yaml:"video_model"`
 	TTSModel   string `yaml:"tts_model"`
 	TTSVoice   string `yaml:"tts_voice"`
+	// ImageModel 图片模型（角色定妆照等，留空用 bl 默认）。
+	ImageModel string `yaml:"image_model"`
 	// TTSInstruction 默认旁白风格指令。
 	TTSInstruction string `yaml:"tts_instruction"`
 

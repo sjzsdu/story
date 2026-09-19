@@ -37,6 +37,18 @@ func TestParseChatContentQuietBare(t *testing.T) {
 	}
 }
 
+// --stream --quiet 形态：{"content": ...} 包装（无 choices 信封）。
+func TestParseChatContentStreamWrapper(t *testing.T) {
+	raw := []byte(`{"content":"{\"candidates\":[]}"}`)
+	got, err := parseChatContent(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != `{"candidates":[]}` {
+		t.Fatalf("stream wrapper content = %q", got)
+	}
+}
+
 func TestDecodeModelJSONWithFence(t *testing.T) {
 	content := "```json\n{\"candidates\": [{\"index\": 1, \"title\": \"t\"}]}\n```"
 	out, err := decodeModelJSON[candidatesResponse](content)

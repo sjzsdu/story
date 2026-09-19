@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
-import type { EpisodeDraft } from '../types'
+import type { CharacterSetting, EpisodeDraft } from '../types'
 import { Button, Card, ErrorBox, Spinner } from './ui'
 
 const FIELD_CLS =
@@ -23,10 +23,12 @@ export default function PlanPanel({ seriesId, existingTitles }: { seriesId: stri
     queryFn: () => api.getPlan(seriesId),
   })
 
-  // 草案在本地可编辑；服务端返回新草案时同步。
+  // 草案与人物设定在本地可编辑；服务端返回新版本时同步。
   const [drafts, setDrafts] = useState<EpisodeDraft[]>([])
+  const [characters, setCharacters] = useState<CharacterSetting[]>([])
   useEffect(() => {
     setDrafts(planQuery.data?.drafts ?? [])
+    setCharacters(planQuery.data?.characters ?? [])
   }, [planQuery.data])
 
   const [input, setInput] = useState('')
@@ -54,11 +56,16 @@ export default function PlanPanel({ seriesId, existingTitles }: { seriesId: stri
   })
 
   const applyMut = useMutation({
-    mutationFn: () => api.planApply(seriesId, drafts),
+    mutationFn: () => api.planApply(seriesId, drafts, characters),
     onSuccess: (res) => {
       void queryClient.invalidateQueries({ queryKey: seriesKey })
       void queryClient.invalidateQueries({ queryKey: planKey })
-      setNotice(res.episodes.length > 0 ? `已创建 ${res.episodes.length} 集，可在下方集列表进入生产。` : '草案中的集均已创建，无新增。')
+      const n = res.episodes.length
+      setNotice(
+        n > 0
+          ? `已创建 ${n} 集，人物设定已随系列保存。可在下方集列表进入生产。`
+          : '草案中的集均已创建；人物设定已随系列保存。',
+      )
       setErr('')
     },
     onError: (e) => setErr((e as Error).message),
@@ -87,7 +94,15 @@ export default function PlanPanel({ seriesId, existingTitles }: { seriesId: stri
   }
   const removeDraft = (i: number) => setDrafts((ds) => ds.filter((_, idx) => idx !== i))
 
+  const updateCharacter = (i: number, patch: Partial<CharacterSetting>) => {
+    setCharacters((cs) => cs.map((c, idx) => (idx === i ? { ...c, ...patch } : c)))
+  }
+  const removeCharacter = (i: number) => setCharacters((cs) => cs.filter((_, idx) => idx !== i))
+  const addCharacter = () =>
+    setCharacters((cs) => [...cs, { name: '', identity: '', appearance: '', temperament: '' }])
+
   const pendingCount = drafts.filter((d) => !existing.has(d.title.trim()) && d.title.trim()).length
+  const canApply = pendingCount > 0 || characters.length > 0
 
   return (
     <Card
@@ -242,6 +257,60 @@ export default function PlanPanel({ seriesId, existingTitles }: { seriesId: stri
               )
             })}
           </div>
+          {/* 人物设定：跨集与分镜保持人物形象一致，随采纳一并保存 */}
+          <div className="border-t border-ink-800">
+            <div className="flex items-center justify-between px-4 py-2.5">
+              <span className="text-sm text-paper-100">
+                人物设定（{characters.length}）
+                <span className="ml-2 text-xs text-paper-300/45">跨集与分镜形象一致 · 随采纳保存</span>
+              </span>
+              <Button type="button" variant="ghost" onClick={addCharacter}>
+                + 人物
+              </Button>
+            </div>
+            {characters.length > 0 && (
+              <div className="px-4 pb-3 space-y-2 max-h-[240px] overflow-y-auto">
+                {characters.map((c, i) => (
+                  <div key={i} className="rounded-lg border border-ink-700 bg-ink-900/80 px-3.5 py-3 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={c.name}
+                        onChange={(e) => updateCharacter(i, { name: e.target.value })}
+                        className={`${FIELD_CLS} !py-1.5 font-display w-28`}
+                        placeholder="姓名"
+                      />
+                      <input
+                        value={c.identity}
+                        onChange={(e) => updateCharacter(i, { identity: e.target.value })}
+                        className={`${FIELD_CLS} !py-1.5 flex-1`}
+                        placeholder="身份，如：秦国相国，纵横家"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeCharacter(i)}
+                        title="移除该人物"
+                        className="shrink-0 rounded px-1.5 py-0.5 text-xs text-seal-500/70 hover:bg-seal-600/20 hover:text-seal-500"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    <input
+                      value={c.appearance}
+                      onChange={(e) => updateCharacter(i, { appearance: e.target.value })}
+                      className={`${FIELD_CLS} !py-1.5`}
+                      placeholder="外貌服饰固定描述（分镜将逐字复用，如：约四旬，清瘦挺拔，三缕短须，深青色深衣束发戴冠）"
+                    />
+                    <input
+                      value={c.temperament}
+                      onChange={(e) => updateCharacter(i, { temperament: e.target.value })}
+                      className={`${FIELD_CLS} !py-1.5`}
+                      placeholder="气质神态基调（如：沉毅多智，眉宇含锋）"
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="border-t border-ink-800 px-4 py-3 flex items-center justify-between gap-3">
             <div className="text-xs">
               {notice && <span className="text-emerald-300/90">{notice}</span>}
@@ -249,9 +318,12 @@ export default function PlanPanel({ seriesId, existingTitles }: { seriesId: stri
             <Button
               type="button"
               variant="primary"
-              disabled={applyMut.isPending || pendingCount === 0}
+              disabled={applyMut.isPending || !canApply}
               onClick={() => {
-                if (window.confirm(`将按草案创建 ${pendingCount} 集（已创建的自动跳过）。不自动生产视频，确定？`)) {
+                const parts: string[] = []
+                if (pendingCount > 0) parts.push(`创建 ${pendingCount} 集`)
+                if (characters.length > 0) parts.push(`保存 ${characters.length} 个人物设定`)
+                if (window.confirm(`将${parts.join('，并')}（不自动生产视频，已创建的集自动跳过）。确定？`)) {
                   setNotice('')
                   applyMut.mutate()
                 }
