@@ -53,14 +53,14 @@ func TestValidateStoryboard(t *testing.T) {
 	if err := ValidateStoryboard(mk(3, 5)); err == nil {
 		t.Fatal("3 个镜头应被拒绝")
 	}
-	if err := ValidateStoryboard(mk(13, 5)); err == nil {
-		t.Fatal("13 个镜头应被拒绝（上限 12）")
+	if err := ValidateStoryboard(mk(29, 5)); err == nil {
+		t.Fatal("29 个镜头应被拒绝（上限 28）")
 	}
 	if err := ValidateStoryboard(mk(4, 9)); err != nil {
-		t.Fatal("时长 9 秒应合法（上限 10 秒）")
+		t.Fatal("时长 9 秒应合法（上限 12 秒）")
 	}
-	if err := ValidateStoryboard(mk(4, 11)); err == nil {
-		t.Fatal("时长 11 秒应非法")
+	if err := ValidateStoryboard(mk(4, 13)); err == nil {
+		t.Fatal("时长 13 秒应非法")
 	}
 	bad := mk(4, 4)
 	bad.Scenes[0].Narration = ""
@@ -73,7 +73,7 @@ func TestNormalizeDurations(t *testing.T) {
 	sb := &domain.Storyboard{Scenes: []domain.Scene{
 		{ID: 1, VisualPrompt: "v", Narration: "短旁白五字", DurationSec: 4},                 // need=3，不下调
 		{ID: 2, VisualPrompt: "v", Narration: strings.Repeat("字", 36), DurationSec: 5}, // need=8，上调
-		{ID: 3, VisualPrompt: "v", Narration: strings.Repeat("字", 60), DurationSec: 9}, // need=10 封顶
+		{ID: 3, VisualPrompt: "v", Narration: strings.Repeat("字", 60), DurationSec: 9}, // need=12 封顶（maxSceneDur=12）
 	}}
 	normalizeDurations(sb)
 	if sb.Scenes[0].DurationSec != 4 {
@@ -82,8 +82,8 @@ func TestNormalizeDurations(t *testing.T) {
 	if sb.Scenes[1].DurationSec != 8 {
 		t.Fatalf("36 字应上调到 8s: %d", sb.Scenes[1].DurationSec)
 	}
-	if sb.Scenes[2].DurationSec != 10 {
-		t.Fatalf("超上限应封顶 10s: %d", sb.Scenes[2].DurationSec)
+	if sb.Scenes[2].DurationSec != 12 {
+		t.Fatalf("超上限应封顶 12s: %d", sb.Scenes[2].DurationSec)
 	}
 }
 
