@@ -39,6 +39,7 @@ func setup(t *testing.T) *fixture {
 			Dynasty:        "战国",
 			Ratio:          "9:16",
 			Resolution:     "1080P",
+			VisualMode:     domain.VisualModeVideo, // 既有用例固定 AI 视频模式
 			TTSVoice:       "longtian_v3",
 			MaxConcurrency: 2,
 			MaxRetries:     2,
@@ -99,11 +100,14 @@ func TestFullPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	if len(candidates) != 3 {
-		t.Fatalf("候选数 = %d", len(candidates))
+	if len(candidates) != 1 {
+		t.Fatalf("故事数 = %d，期望 1（生成即定稿）", len(candidates))
 	}
-	if err := f.eng.Pick(ctx, f.epID, 2); err != nil {
-		t.Fatalf("pick: %v", err)
+	// 生成后应已自动完成选定，无需再执行 Pick。
+	if ep0, _ := f.repo.GetEpisode(ctx, f.epID); ep0.State.Story == nil {
+		t.Fatal("generate 后 Story 应已自动定稿")
+	} else if ep0.State.Steps[domain.StepPick].Status != domain.StatusDone {
+		t.Fatalf("generate 后 pick 应自动完成，实际 %s", ep0.State.Steps[domain.StepPick].Status)
 	}
 	if _, err := f.eng.PlanStoryboard(ctx, f.epID); err != nil {
 		t.Fatalf("storyboard: %v", err)
@@ -140,9 +144,6 @@ func TestProduceRetryThenResume(t *testing.T) {
 	if _, err := f.eng.GenerateCandidates(ctx, f.epID); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.eng.Pick(ctx, f.epID, 1); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := f.eng.PlanStoryboard(ctx, f.epID); err != nil {
 		t.Fatal(err)
 	}
@@ -177,9 +178,6 @@ func TestProduceFailureMarksStepFailed(t *testing.T) {
 	if _, err := f.eng.GenerateCandidates(ctx, f.epID); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.eng.Pick(ctx, f.epID, 1); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := f.eng.PlanStoryboard(ctx, f.epID); err != nil {
 		t.Fatal(err)
 	}
@@ -196,10 +194,9 @@ func TestProduceFailureMarksStepFailed(t *testing.T) {
 }
 
 func sampleCandidates() []domain.StoryCandidate {
+	// 新流程每次只生成一篇定稿故事（单元素切片）。
 	return []domain.StoryCandidate{
 		{Index: 1, Title: "捭阖初试", Dynasty: "战国", Source: "《鬼谷子·捭阖》", Summary: "s1", Content: "故事正文一，画面感足够强。"},
-		{Index: 2, Title: "反应之术", Dynasty: "战国", Source: "《鬼谷子·反应》", Summary: "s2", Content: "故事正文二，冲突转折完整。"},
-		{Index: 3, Title: "内揵之道", Dynasty: "战国", Source: "《鬼谷子·内揵》", Summary: "s3", Content: "故事正文三，有人物有场景。"},
 	}
 }
 

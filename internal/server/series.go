@@ -179,12 +179,23 @@ func (s *Server) serveSeriesMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	abs := raw
 	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(base, filepath.Clean(raw))
+		if resolved, err := filepath.Abs(raw); err == nil {
+			abs = resolved
+		}
 	}
 	rel, err := filepath.Rel(base, abs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		writeErr(w, http.StatusForbidden, "禁止访问系列目录之外的文件")
-		return
+	outside := err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel)
+	if outside {
+		if filepath.IsAbs(raw) {
+			writeErr(w, http.StatusForbidden, "禁止访问系列目录之外的文件")
+			return
+		}
+		abs = filepath.Join(base, filepath.Clean(raw))
+		rel, err = filepath.Rel(base, abs)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			writeErr(w, http.StatusForbidden, "禁止访问系列目录之外的文件")
+			return
+		}
 	}
 	w.Header().Set("Accept-Ranges", "bytes")
 	http.ServeFile(w, r, abs)

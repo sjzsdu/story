@@ -49,6 +49,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/episodes/{id}", s.getEpisode)
 	s.mux.HandleFunc("DELETE /api/episodes/{id}", s.deleteEpisode)
 	s.mux.HandleFunc("POST /api/episodes/{id}/actions", s.runActionHTTP)
+	s.mux.HandleFunc("POST /api/episodes/{id}/refs", s.generateEpisodeRefs)
 	s.mux.HandleFunc("GET /api/episodes/{id}/events", s.handleSSE)
 	s.mux.HandleFunc("GET /api/episodes/{id}/media", s.serveMedia)
 }
@@ -122,6 +123,7 @@ type createSeriesReq struct {
 	Description     string   `json:"description"`
 	Ratio           string   `json:"ratio"`
 	Resolution      string   `json:"resolution"`
+	VisualMode      string   `json:"visual_mode"`
 	Voice           string   `json:"voice"`
 	TTSInstruction  string   `json:"tts_instruction"`
 	Concurrency     int      `json:"concurrency"`
@@ -145,6 +147,7 @@ func (s *Server) createSeries(w http.ResponseWriter, r *http.Request) {
 		Description:     req.Description,
 		Ratio:           req.Ratio,
 		Resolution:      req.Resolution,
+		VisualMode:      req.VisualMode,
 		Voice:           req.Voice,
 		TTSInstruction:  req.TTSInstruction,
 		Concurrency:     req.Concurrency,
@@ -323,16 +326,16 @@ func (s *Server) buildAction(episodeID string, req actionReq) (func(ctx context.
 
 func (s *Server) buildRunAction(episodeID string, index int) func(ctx context.Context) error {
 	eng := s.app.Engine
+	// index 仅为兼容旧请求保留：新流程 generate 自动定稿，无需也不再使用候选序号。
+	_ = index
 	return func(ctx context.Context) error {
 		ep, err := s.app.GetEpisode(ctx, episodeID)
 		if err != nil {
 			return err
 		}
 		if ep.State.Story == nil {
-			if index < 1 {
-				return fmt.Errorf("尚未选定故事，请先触发 candidates 并以 index 指定选择")
-			}
-			if err := eng.Pick(ctx, episodeID, index); err != nil {
+			// 含旧版停在 generate 后未 pick 的数据：直接生成定稿故事。
+			if _, err := eng.GenerateCandidates(ctx, episodeID); err != nil {
 				return err
 			}
 		}
@@ -422,14 +425,27 @@ func (s *Server) serveMedia(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// engine 存的路径是相对项目根（CWD）的；前端也可能传相对 WorkDir 的路径。
+	// 先按 CWD 解析为绝对，再校验是否落在 WorkDir 内；不满足时对相对路径回退按 WorkDir 解析。
 	abs := raw
 	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(base, filepath.Clean(raw))
+		if resolved, err := filepath.Abs(raw); err == nil {
+			abs = resolved
+		}
 	}
 	rel, err := filepath.Rel(base, abs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		writeErr(w, http.StatusForbidden, "禁止访问工作目录之外的文件")
-		return
+	outside := err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel)
+	if outside {
+		if filepath.IsAbs(raw) {
+			writeErr(w, http.StatusForbidden, "禁止访问工作目录之外的文件")
+			return
+		}
+		abs = filepath.Join(base, filepath.Clean(raw))
+		rel, err = filepath.Rel(base, abs)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			writeErr(w, http.StatusForbidden, "禁止访问工作目录之外的文件")
+			return
+		}
 	}
 	w.Header().Set("Accept-Ranges", "bytes")
 	http.ServeFile(w, r, abs)

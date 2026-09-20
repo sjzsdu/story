@@ -1,11 +1,12 @@
 import type { PipelineState, StepName } from '../types'
 import { StatusBadge } from './ui'
 
+// pick 步骤仍存在于状态中（兼容旧数据），但新流程生成即自动定稿，
+// 界面不再展示该节点。
 const STEP_LABEL: { name: StepName; label: string }[] = [
-  { name: 'generate', label: '候选故事' },
-  { name: 'pick', label: '选定' },
+  { name: 'generate', label: '生成故事' },
   { name: 'storyboard', label: '分镜' },
-  { name: 'produce', label: '生产片段' },
+  { name: 'produce', label: '生产画面' },
   { name: 'compose', label: '合成成片' },
 ]
 

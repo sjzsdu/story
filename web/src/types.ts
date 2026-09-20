@@ -34,6 +34,7 @@ export interface Scene {
 }
 
 export interface Storyboard {
+  refs?: VisualRef[]
   scenes: Scene[]
 }
 
@@ -62,6 +63,7 @@ export interface SeriesConfig {
   ratio: string
   resolution: string
   video_style: string
+  visual_mode: string // comic（小人书插画+运镜，默认）/ video（AI 视频）
   tts_voice: string
   tts_instruction: string
   target_platforms?: string[]
@@ -74,6 +76,15 @@ export interface CharacterSetting {
   identity: string
   appearance: string
   temperament: string
+  ref_image?: string
+}
+
+// 视觉参考：对图片/视频生成的一致性约束（character 人物 / scene 场景）。
+// description 为零成本文字约束（分镜阶段产出）；ref_image 为按需手动生成的参考图。
+export interface VisualRef {
+  kind: 'character' | 'scene' | string
+  name: string
+  description: string
   ref_image?: string
 }
 
@@ -95,6 +106,7 @@ export interface Episode {
   title: string
   topic: string
   state: PipelineState
+  refs?: VisualRef[]
   workdir: string
   created_at: string
   updated_at: string

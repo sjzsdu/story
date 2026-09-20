@@ -16,6 +16,9 @@ type StoryboardRequest struct {
 	// Characters 系列人物设定集（每项为「姓名：外貌」一行）。非空时分镜 prompt 注入，
 	// 要求同一人物跨镜头逐字复用外貌描述。
 	Characters []string
+	// EpisodeRefs 本集已有视觉参考（人物/场景，每项格式化一行）。重跑分镜时回灌，
+	// 要求模型在 refs 输出中沿用原名原描述，人工编辑不被覆盖。
+	EpisodeRefs []string
 }
 
 // StoryboardPlanner 将完整故事拆为可生产的分镜脚本。

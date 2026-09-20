@@ -90,34 +90,168 @@ func TestGenerateSeriesKeyframesNoCharacters(t *testing.T) {
 	}
 }
 
-func TestRefImagesForScene(t *testing.T) {
-	cs := sampleCharacters()
-	cs[0].RefImage = "/tmp/refs/张仪.png"
+func sampleVisualRefs() []domain.VisualRef {
+	return []domain.VisualRef{
+		{Kind: domain.RefKindCharacter, Name: "张仪", Description: "约四旬，清瘦挺拔，深青色深衣束发戴冠"},
+		{Kind: domain.RefKindCharacter, Name: "苏秦", Description: "三十许，面容清癯，皂色儒服"},
+	}
+}
 
-	if got := refImagesForScene("张仪立于殿前，苏秦在侧", cs); len(got) != 1 || got[0] != cs[0].RefImage {
+func TestRefImagesForScene(t *testing.T) {
+	refs := sampleVisualRefs()
+	refs[0].RefImage = "/tmp/refs/张仪.png"
+
+	if got := refImagesForScene("张仪立于殿前，苏秦在侧", refs); len(got) != 1 || got[0] != refs[0].RefImage {
 		t.Fatalf("应只匹配张仪: %v", got)
 	}
-	if got := refImagesForScene("空旷市集，行人往来", cs); got != nil {
+	if got := refImagesForScene("空旷市集，行人往来", refs); got != nil {
 		t.Fatalf("无人物时不应有参考图: %v", got)
 	}
-	// 未生成定妆照的人物不参与匹配。
-	if got := refImagesForScene("苏秦伏案疾书", cs); got != nil {
+	// 未生成参考图的人物不参与匹配。
+	if got := refImagesForScene("苏秦伏案疾书", refs); got != nil {
 		t.Fatalf("RefImage 为空不应匹配: %v", got)
+	}
+	// 场景参考同样按名称匹配。
+	scene := domain.VisualRef{Kind: domain.RefKindScene, Name: "兰若寺大殿", Description: "破败古寺", RefImage: "/tmp/refs/lanruo.png"}
+	if got := refImagesForScene("夜色中的兰若寺大殿", append(refs, scene)); len(got) != 1 || got[0] != scene.RefImage {
+		t.Fatalf("应匹配场景参考图: %v", got)
 	}
 }
 
 func TestRefPromptPrefix(t *testing.T) {
-	cs := sampleCharacters()
-	cs[0].RefImage = "/tmp/refs/张仪.png"
-	cs[1].RefImage = "/tmp/refs/苏秦.png"
+	refs := sampleVisualRefs()
+	refs[0].RefImage = "/tmp/refs/张仪.png"
+	refs[1].RefImage = "/tmp/refs/苏秦.png"
+	refs = append(refs, domain.VisualRef{Kind: domain.RefKindScene, Name: "兰若寺大殿", RefImage: "/tmp/refs/lanruo.png"})
 
-	imgs := []string{cs[1].RefImage, cs[0].RefImage}
-	prefix := refPromptPrefix(cs, imgs)
-	if !strings.Contains(prefix, "Image 1 为苏秦") || !strings.Contains(prefix, "Image 2 为张仪") {
+	imgs := []string{refs[1].RefImage, refs[0].RefImage, "/tmp/refs/lanruo.png"}
+	prefix := refPromptPrefix(refs, imgs)
+	if !strings.Contains(prefix, "Image 1 为人物苏秦") || !strings.Contains(prefix, "Image 2 为人物张仪") {
 		t.Fatalf("前缀应按 imgs 顺序声明人物: %s", prefix)
 	}
-	if refPromptPrefix(cs, nil) != "" {
+	if !strings.Contains(prefix, "Image 3 为场景「兰若寺大殿」") {
+		t.Fatalf("前缀应声明场景: %s", prefix)
+	}
+	if refPromptPrefix(refs, nil) != "" {
 		t.Fatal("无参考图时前缀应为空")
+	}
+}
+
+func TestMergeVisualRefs(t *testing.T) {
+	se := &domain.Series{Characters: sampleCharacters()}
+	epRefs := []domain.VisualRef{
+		// 同名人物集级覆盖系列级（本集形象可重定义）。
+		{Kind: domain.RefKindCharacter, Name: "张仪", Description: "本集专属张仪形象", RefImage: "/tmp/ep/zhangyi.png"},
+		// 本集新人物。
+		{Kind: domain.RefKindCharacter, Name: "聂小倩", Description: "素白襦裙"},
+		// 本集场景。
+		{Kind: domain.RefKindScene, Name: "兰若寺大殿", Description: "破败古寺"},
+	}
+	merged := mergeVisualRefs(se, epRefs)
+	if len(merged) != 4 { // 苏秦（系列）+ 张仪（集级覆盖）+ 聂小倩 + 兰若寺
+		t.Fatalf("合并后条数 = %d, 期望 4: %+v", len(merged), merged)
+	}
+	for _, r := range merged {
+		if r.Name == "张仪" {
+			if r.Description != "本集专属张仪形象" || r.RefImage != "/tmp/ep/zhangyi.png" {
+				t.Fatalf("集级同名参考应覆盖系列级: %+v", r)
+			}
+		}
+		if r.Name == "苏秦" && r.RefImage == "" {
+			// 苏秦系列级无图，仅确认来自系列。
+		}
+	}
+}
+
+func TestPreserveRefImages(t *testing.T) {
+	old := []domain.VisualRef{
+		{Kind: domain.RefKindCharacter, Name: "聂小倩", Description: "旧描述", RefImage: "/tmp/refs/nie.png"},
+		{Kind: domain.RefKindScene, Name: "兰若寺大殿", Description: "旧场景", RefImage: "/tmp/refs/temple.png"},
+		{Kind: domain.RefKindCharacter, Name: "将被删除的人物", RefImage: "/tmp/refs/gone.png"},
+	}
+	fresh := []domain.VisualRef{
+		{Kind: domain.RefKindCharacter, Name: "聂小倩", Description: "新描述"},
+		{Kind: domain.RefKindScene, Name: "兰若寺大殿", Description: "新场景描述", RefImage: "/tmp/refs/forced.png"},
+		{Kind: domain.RefKindCharacter, Name: "新增人物", Description: "新增描述"},
+		{Name: "  "}, // 空名丢弃
+	}
+	out := preserveRefImages(old, fresh)
+	if len(out) != 3 {
+		t.Fatalf("应丢弃空名, 得到 %d 条", len(out))
+	}
+	byName := map[string]domain.VisualRef{}
+	for _, r := range out {
+		byName[r.Name] = r
+	}
+	if byName["聂小倩"].RefImage != "/tmp/refs/nie.png" || byName["聂小倩"].Description != "新描述" {
+		t.Fatalf("应延续旧图、采用新描述: %+v", byName["聂小倩"])
+	}
+	if byName["兰若寺大殿"].RefImage != "/tmp/refs/forced.png" {
+		t.Fatalf("新结果自带图时不应被覆盖: %+v", byName["兰若寺大殿"])
+	}
+	if byName["新增人物"].RefImage != "" {
+		t.Fatal("新参考不应凭空有图")
+	}
+}
+
+func TestGenerateEpisodeRefs(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	ep, err := f.repo.GetEpisode(ctx, f.epID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep.Refs = []domain.VisualRef{
+		{Kind: domain.RefKindCharacter, Name: "聂小倩", Description: "约十八九岁，素白襦裙外罩浅青纱衫"},
+		{Kind: domain.RefKindScene, Name: "兰若寺大殿", Description: "破败古寺大殿，冷青色月光"},
+	}
+	if err := f.repo.SaveEpisode(ctx, ep); err != nil {
+		t.Fatal(err)
+	}
+
+	refs, err := f.eng.GenerateEpisodeRefs(ctx, f.epID, false)
+	if err != nil {
+		t.Fatalf("生成本集视觉参考图: %v", err)
+	}
+	if len(refs) != 2 {
+		t.Fatalf("参考数 = %d", len(refs))
+	}
+	for _, r := range refs {
+		if r.RefImage == "" {
+			t.Fatalf("%s 的 RefImage 未回填", r.Name)
+		}
+		if fi, err := os.Stat(r.RefImage); err != nil || fi.Size() == 0 {
+			t.Fatalf("%s 参考图不存在或为空: %s", r.Name, r.RefImage)
+		}
+		if !strings.Contains(r.RefImage, filepath.Join(ep.ID, EpisodeRefsDirName)) {
+			t.Fatalf("参考图应位于集 refs/ 目录: %s", r.RefImage)
+		}
+	}
+	if calls := f.images.CallsCount(); calls != 2 {
+		t.Fatalf("图片调用次数 = %d, 期望 2", calls)
+	}
+
+	// 幂等复跑跳过。
+	if _, err := f.eng.GenerateEpisodeRefs(ctx, f.epID, false); err != nil {
+		t.Fatal(err)
+	}
+	if calls := f.images.CallsCount(); calls != 2 {
+		t.Fatalf("幂等复跑不应再次出图, 调用次数 = %d", calls)
+	}
+
+	// 已持久化回集。
+	got, _ := f.repo.GetEpisode(ctx, f.epID)
+	for _, r := range got.Refs {
+		if r.RefImage == "" {
+			t.Fatalf("集中的 %s 未持久化 RefImage", r.Name)
+		}
+	}
+}
+
+func TestGenerateEpisodeRefsEmpty(t *testing.T) {
+	f := setup(t)
+	if _, err := f.eng.GenerateEpisodeRefs(context.Background(), f.epID, false); err == nil {
+		t.Fatal("无视觉参考时应报错")
 	}
 }
 
@@ -137,9 +271,6 @@ func TestProduceUsesRefImages(t *testing.T) {
 	}}
 
 	if _, err := f.eng.GenerateCandidates(ctx, f.epID); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.eng.Pick(ctx, f.epID, 1); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.eng.PlanStoryboard(ctx, f.epID); err != nil {

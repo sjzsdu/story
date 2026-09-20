@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     title      TEXT NOT NULL,
     topic      TEXT NOT NULL DEFAULT '',
     state_json TEXT NOT NULL,
+    refs_json  TEXT NOT NULL DEFAULT '[]',
     workdir    TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -78,6 +79,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	for _, m := range []struct{ table, column, def string }{
 		{"series", "characters_json", "TEXT NOT NULL DEFAULT '[]'"},
 		{"plan_sessions", "characters_json", "TEXT NOT NULL DEFAULT '[]'"},
+		{"episodes", "refs_json", "TEXT NOT NULL DEFAULT '[]'"},
 	} {
 		if err := ensureColumn(ctx, db, m.table, m.column, m.def); err != nil {
 			_ = db.Close()
@@ -218,10 +220,17 @@ func (s *Store) CreateEpisode(ctx context.Context, ep *domain.Episode) error {
 	if err != nil {
 		return err
 	}
+	refs, err := json.Marshal(ep.Refs)
+	if err != nil {
+		return err
+	}
+	if ep.Refs == nil {
+		refs = []byte("[]")
+	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO episodes (id, series_id, number, title, topic, state_json, workdir, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ep.ID, ep.SeriesID, ep.Number, ep.Title, ep.Topic, string(state), ep.WorkDir,
+		`INSERT INTO episodes (id, series_id, number, title, topic, state_json, refs_json, workdir, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ep.ID, ep.SeriesID, ep.Number, ep.Title, ep.Topic, string(state), string(refs), ep.WorkDir,
 		formatTime(ep.CreatedAt), formatTime(ep.UpdatedAt),
 	)
 	if err != nil {
@@ -233,7 +242,7 @@ func (s *Store) CreateEpisode(ctx context.Context, ep *domain.Episode) error {
 // GetEpisode 按 ID 查询集。
 func (s *Store) GetEpisode(ctx context.Context, id string) (*domain.Episode, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, series_id, number, title, topic, state_json, workdir, created_at, updated_at
+		`SELECT id, series_id, number, title, topic, state_json, refs_json, workdir, created_at, updated_at
 		 FROM episodes WHERE id = ?`, id)
 	ep, err := scanEpisode(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -245,7 +254,7 @@ func (s *Store) GetEpisode(ctx context.Context, id string) (*domain.Episode, err
 // ListEpisodes 列出某系列下的全部集（按序号升序）。
 func (s *Store) ListEpisodes(ctx context.Context, seriesID string) ([]*domain.Episode, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, series_id, number, title, topic, state_json, workdir, created_at, updated_at
+		`SELECT id, series_id, number, title, topic, state_json, refs_json, workdir, created_at, updated_at
 		 FROM episodes WHERE series_id = ? ORDER BY number ASC`, seriesID)
 	if err != nil {
 		return nil, err
@@ -268,10 +277,17 @@ func (s *Store) SaveEpisode(ctx context.Context, ep *domain.Episode) error {
 	if err != nil {
 		return err
 	}
+	refs, err := json.Marshal(ep.Refs)
+	if err != nil {
+		return err
+	}
+	if ep.Refs == nil {
+		refs = []byte("[]")
+	}
 	ep.UpdatedAt = time.Now()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE episodes SET title=?, topic=?, state_json=?, workdir=?, updated_at=? WHERE id=?`,
-		ep.Title, ep.Topic, string(state), ep.WorkDir, formatTime(ep.UpdatedAt), ep.ID,
+		`UPDATE episodes SET title=?, topic=?, state_json=?, refs_json=?, workdir=?, updated_at=? WHERE id=?`,
+		ep.Title, ep.Topic, string(state), string(refs), ep.WorkDir, formatTime(ep.UpdatedAt), ep.ID,
 	)
 	if err != nil {
 		return err
@@ -401,13 +417,18 @@ func scanSeries(r rowScanner) (*domain.Series, error) {
 
 func scanEpisode(r rowScanner) (*domain.Episode, error) {
 	var ep domain.Episode
-	var stateJSON, created, updated string
+	var stateJSON, refsJSON, created, updated string
 	if err := r.Scan(&ep.ID, &ep.SeriesID, &ep.Number, &ep.Title, &ep.Topic,
-		&stateJSON, &ep.WorkDir, &created, &updated); err != nil {
+		&stateJSON, &refsJSON, &ep.WorkDir, &created, &updated); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal([]byte(stateJSON), &ep.State); err != nil {
 		return nil, fmt.Errorf("解析集状态 %s: %w", ep.ID, err)
+	}
+	if refsJSON != "" {
+		if err := json.Unmarshal([]byte(refsJSON), &ep.Refs); err != nil {
+			return nil, fmt.Errorf("解析集视觉参考 %s: %w", ep.ID, err)
+		}
 	}
 	ep.CreatedAt = parseTime(created)
 	ep.UpdatedAt = parseTime(updated)

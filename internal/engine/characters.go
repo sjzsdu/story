@@ -33,7 +33,8 @@ func (e *Engine) GenerateKeyframe(ctx context.Context, series *domain.Series, ch
 			return outPath, nil
 		}
 	}
-	prompt := templates.KeyframeImagePrompt(
+	style := templates.MatchStyle(series.Config.VideoStyle)
+	prompt := style.KeyframePrompt(
 		firstNonEmpty(series.Config.Dynasty, series.Dynasty),
 		ch.Name, ch.Identity, ch.Appearance, ch.Temperament,
 	)
@@ -76,45 +77,6 @@ func (e *Engine) GenerateSeriesKeyframes(ctx context.Context, seriesID string, f
 		return nil, err
 	}
 	return series.Characters, nil
-}
-
-// refImagesForScene 按 visual_prompt 中出现的人名匹配定妆照（要求分镜 prompt 用正史人名指代）。
-func refImagesForScene(visualPrompt string, characters []domain.CharacterSetting) []string {
-	if len(characters) == 0 {
-		return nil
-	}
-	var imgs []string
-	for _, ch := range characters {
-		if ch.RefImage == "" {
-			continue
-		}
-		if strings.Contains(visualPrompt, ch.Name) {
-			imgs = append(imgs, ch.RefImage)
-		}
-	}
-	return imgs
-}
-
-// refPromptPrefix 生成 bl video ref 的提示词前缀，声明每张参考图对应的人物。
-func refPromptPrefix(characters []domain.CharacterSetting, imgs []string) string {
-	if len(imgs) == 0 {
-		return ""
-	}
-	byRef := make(map[string]string, len(characters))
-	for _, ch := range characters {
-		if ch.RefImage != "" {
-			byRef[ch.RefImage] = ch.Name
-		}
-	}
-	var b strings.Builder
-	b.WriteString("严格保持参考图中人物的形象与服饰：")
-	for i, img := range imgs {
-		if name, ok := byRef[img]; ok {
-			fmt.Fprintf(&b, "Image %d 为%s的定妆照；", i+1, name)
-		}
-	}
-	b.WriteString("画面中人物的外貌、发型、服装必须与对应参考图一致。")
-	return b.String()
 }
 
 // characterLines 把人物设定集格式化为「姓名（身份）：外貌；气质：…」行，供分镜 prompt 注入。

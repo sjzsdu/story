@@ -8,15 +8,18 @@ import (
 	"github.com/sjzsdu/story/internal/domain"
 )
 
-// StoryRequest 候选故事生成请求。
+// StoryRequest 故事生成请求。
 type StoryRequest struct {
 	SeriesName string // 系列名，如「鬼谷子」
 	Dynasty    string // 朝代锚定
 	Topic      string // 本集主题/切入点（可空）
-	Count      int    // 期望候选数量
+
+	// Count 已废弃：2026-09-19 起取消多候选人工选择，每次只生成一篇定稿。
+	// 字段保留仅为兼容旧调用，provider 忽略。
+	Count int
 }
 
-// StoryGenerator 根据朝代/主题生成候选历史故事。
+// StoryGenerator 根据朝代/主题生成历史故事（现为单篇定稿，返回单元素切片）。
 type StoryGenerator interface {
 	GenerateCandidates(ctx context.Context, req StoryRequest) ([]domain.StoryCandidate, error)
 }

@@ -72,6 +72,7 @@ type CreateSeriesInput struct {
 	Description     string
 	Ratio           string
 	Resolution      string
+	VisualMode      string
 	Voice           string
 	TTSInstruction  string
 	Concurrency     int
@@ -97,6 +98,7 @@ func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.S
 			Dynasty:         in.Dynasty,
 			Ratio:           firstNonEmpty(in.Ratio, a.Cfg.DefaultRatio),
 			Resolution:      firstNonEmpty(in.Resolution, a.Cfg.DefaultResolution),
+			VisualMode:      domain.NormalizeVisualMode(in.VisualMode),
 			TTSVoice:        firstNonEmpty(in.Voice, a.Cfg.TTSVoice),
 			TTSInstruction:  firstNonEmpty(in.TTSInstruction, a.Cfg.TTSInstruction),
 			TargetPlatforms: in.TargetPlatforms,
@@ -244,6 +246,12 @@ func (a *App) UpdateSeriesCharacters(ctx context.Context, seriesID string, chara
 func (a *App) GenerateSeriesKeyframes(ctx context.Context, seriesID string, force bool) ([]domain.CharacterSetting, error) {
 	cs, err := a.Engine.GenerateSeriesKeyframes(ctx, seriesID, force)
 	return cs, translateErr(err)
+}
+
+// GenerateEpisodeRefs 为某集的视觉参考（人物/场景）批量生成参考图（透传 engine）。
+func (a *App) GenerateEpisodeRefs(ctx context.Context, episodeID string, force bool) ([]domain.VisualRef, error) {
+	refs, err := a.Engine.GenerateEpisodeRefs(ctx, episodeID, force)
+	return refs, translateErr(err)
 }
 
 // ApplyEpisodePlan 把分集草案批量落为集（只创建集，不触发视频生产）。

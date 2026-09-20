@@ -310,10 +310,30 @@ func (m *SpeechGen) Synthesize(_ context.Context, req port.SpeechRequest) (port.
 
 // Composer 后处理 mock：对存在的文件返回固定时长，Compose 写一个假成片。
 type Composer struct {
+	mu            sync.Mutex
 	SceneDuration float64
 	ComposeCalls  int
 	ExportCalls   int
 	FailCompose   bool
+	StillRequests []port.StillRequest
+}
+
+// RenderStill 实现 port.VideoComposer：记录请求并写一个假片段文件。
+func (m *Composer) RenderStill(_ context.Context, req port.StillRequest) error {
+	m.mu.Lock()
+	m.StillRequests = append(m.StillRequests, req)
+	m.mu.Unlock()
+	if err := os.MkdirAll(filepath.Dir(req.OutPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(req.OutPath, []byte("fake-still-mp4"), 0o644)
+}
+
+// StillCalls 线程安全地读取静帧渲染调用次数。
+func (m *Composer) StillCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.StillRequests)
 }
 
 // ProbeDuration 实现 port.VideoComposer。

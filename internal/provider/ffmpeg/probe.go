@@ -37,8 +37,8 @@ func runCmdDir(ctx context.Context, dir, bin string, args ...string) ([]byte, er
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
-		if len(msg) > 800 {
-			msg = msg[:800] + "..."
+		if len(msg) > 2000 {
+			msg = msg[:2000] + "..."
 		}
 		return stdout.Bytes(), fmt.Errorf("%s %s: %w; %s", bin, strings.Join(args, " "), err, msg)
 	}

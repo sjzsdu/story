@@ -52,10 +52,10 @@ internal/store/sqlite      （Repository 的 SQLite 实现）
 
 每一集（Episode）独立走一遍流水线：
 
-1. `generate`   — AI 生成 3–5 个候选故事（标题、朝代、出处、梗概、正文），**由用户/Agent 选择一个**。
-2. `pick`       — 选定候选，序号写入状态。
+1. `generate`   — AI **直接生成一篇定稿故事**（标题、朝代、出处、梗概、正文），生成即自动定稿（2026-09-20 起取消「3 个候选人工选择」，见 §14）；不满意可重跑覆盖。
+2. ~~`pick`~~   — 历史步骤，状态位与 `Pick` 方法保留兼容旧数据；新流程在 generate 成功时自动置 done，用户无感知。
 3. `storyboard` — AI 将故事拆为 6–12 个镜头（visual_prompt / narration / duration / camera）。
-4. `produce`    — 并发生成每个镜头的视频片段与旁白音频；产物落盘，支持断点续跑（已存在的片段默认跳过）。
+4. `produce`    — 按系列设置 `visual_mode` 生产画面并合成旁白；产物落盘，支持断点续跑（已存在的片段默认跳过）。两种模式（见 §13）：`comic`（默认，小人书：每镜一张 AI 插画 → 本地 ffmpeg Ken Burns 渲染片段，仅按图片计费）/ `video`（每镜 AI 视频生成）。
 5. `compose`    — ffmpeg 归一化 → 音视频合成 → 拼接 → 烧录硬字幕，产出最终 MP4。
 
 步骤状态：`pending → running → review → approved → done`，异常分支 `failed`（可重试）。v1 默认自动通过 review 检查点，但状态位保留；人工可随时查看工作目录中的 `story.md`、`storyboard.json` 介入。
@@ -64,8 +64,8 @@ internal/store/sqlite      （Repository 的 SQLite 实现）
 
 | 步骤 | 验收条件 |
 | --- | --- |
-| generate | 候选 ≥3，每个含非空标题、出处、正文 |
-| pick | 选中序号存在且故事正文非空 |
+| generate | 定稿故事 1 篇，含非空标题、出处、正文（生成时自动完成 pick） |
+| ~~pick~~ | 仅旧数据：选中序号存在且故事正文非空；新流程无需人工动作 |
 | storyboard | 镜头 ≥4，每个含非空 visual_prompt / narration，duration 合法 |
 | produce | 每个镜头的视频与音频文件存在且非空、可被 ffprobe 解析 |
 | compose | 最终文件存在、可播放、时长 ≈ 各镜头之和 |
@@ -86,9 +86,12 @@ internal/store/sqlite      （Repository 的 SQLite 实现）
 
 ## 7. 历史准确性与 Prompt 约束
 
-- 故事必须标注典籍出处，严禁无依据地杜撰重大史实；白话讲述但保留古典韵味，须有冲突与转折。
+- **叙事定位**：内容是百家讲坛式（王立群读史记）**口播讲述稿**——故事为主、画面为辅；开头两句必须是钩子（反常细节/悬念/设问），结构按「钩子→铺垫→冲突加压→高潮（典籍原话慢写）→转折→点题余味」，讲述者声音在场（设问、卖关子、夹叙夹议不超过两成）。禁止生平流水账开头与现代腔。
+- 故事必须标注典籍出处，严禁无依据地杜撰重大史实；关键对话/情节须出自所标典籍；白话讲述但保留古典韵味。
 - `visual_prompt` 必须经朝代视觉锚定：服饰、建筑、器物、配色、席居方式等符合该朝代生产力水平（见 `internal/templates/dynasty.go`）。
+- **全片画风统一**（2026-09-19 修订）：`visual_prompt` 只写画面内容，**严禁出现任何画风/质感/媒介词**（电影感、写实、真人、动漫、3D、卡通、照片、水彩、构图、质感等）。画风由 `internal/templates/visualstyle.go` 的风格包唯一供给：分镜 prompt 注入 Brief（约束 LLM）+ engine `buildVideoPrompt` 末尾固定追加 VideoAnchor（代码双保险，不信任模型）+ 定妆照 KeyframePrompt 同源。风格 key 存系列配置 `video_style`（`gongbi` 工笔重彩国风动画＝默认、`realistic` 写实真人、`ink` 水墨写意），空值与未知值回退 gongbi。
 - 所有 LLM 输出一律要求**纯 JSON**，代码侧去除 ``` 代码围栏后解析，并做字段校验。
+- 镜头时长除 prompt 约束（6-10 秒、duration ≥ 旁白字数÷4.5）外，engine `normalizeDurations` 按旁白字数代码侧兜底上调（只上调、封顶 10s），防止旁白长于画面导致成片定格拉伸。
 
 ## 8. 配音合规
 
@@ -107,6 +110,7 @@ internal/store/sqlite      （Repository 的 SQLite 实现）
 
 - mock provider 实现 port 接口，用于 engine / runner / validator 单元测试；SQLite 层用临时库测试。
 - 真实调用 `bl` / ffmpeg 的集成测试放在 `//go:build integration` 文件中，默认不运行。
+- **成本红线（2026-09-19）**：开发与测试过程**禁止真实调用 bl**（按次计费、消耗快）。功能验证一律用 mock provider、单元测试与本地 ffmpeg；真实 bl 调用仅用于用户明确要求的生产执行（正式生成分集/成片），且发起前应告知预计调用量。
 - 提交前必须 `GOTOOLCHAIN=local go build ./... && GOTOOLCHAIN=local go test ./... && GOTOOLCHAIN=local go vet ./...` 通过（本机 go 1.24.0，禁止自动下载新工具链）。
 
 ## 11. Web UI（2026-09-18 增补）
@@ -119,13 +123,41 @@ internal/store/sqlite      （Repository 的 SQLite 实现）
 - 新增流水线动作必须同时补 CLI 命令与 server `buildAction` 映射（复用 engine 方法），禁止在 server 中直接写生产逻辑。
 - 系列级动作（如定妆照）同样经 broker 调度，以系列 ID 为槽位键；`GET /api/series/{id}/events` 推送系列+集列表快照，`GET /api/series/{id}/media?path=` 只允许访问 `data/projects/<series-id>/` 内文件（防路径穿越）。
 
-## 12. 角色形象一致性（2026-09-19 增补）
+## 12. 角色形象一致性（2026-09-19 增补；2026-09-20 泛化见 §15）
 
 - 问题：同一人物跨集、跨分镜形象漂移。方案为**两层**（用户确认）：
   - **第一层（文本）**：系列级「人物设定集」`Series.Characters []CharacterSetting`（name/identity/appearance/temperament/ref_image），SQLite 随 series/plan_sessions 以 `characters_json` 持久化（`ensureColumn` 幂等迁移）。策划会话顺带产出/维护设定集（`appearance` 一经确定不无故改动）；分镜 prompt 注入设定集，**要求设定集内人物出场必须用姓名指代并逐字复制 appearance 原文**（最高优先级规则）。
-  - **第二层（视觉）**：系列级定妆照 `data/projects/<series>/refs/<人名>.png`（水墨工笔全身立绘风格，用户确认），`bl image generate` 生成（新 port `ImageGenerator`；配置项 `image_model`，留空用 bl 默认）。produce 时按 visual_prompt 中出现的人名匹配定妆照 → `ClipRequest.RefImages` → 自动改走 `bl video ref`，prompt 前缀声明 Image N 对应人物。
+  - **第二层（视觉）**：系列级定妆照 `data/projects/<series>/refs/<人名>.png`（风格与全片统一画风同源，默认工笔重彩国风动画，由 `visualstyle.go` 风格包渲染 prompt），`bl image generate` 生成（新 port `ImageGenerator`；配置项 `image_model`，留空用 bl 默认）。produce 时按 visual_prompt 中出现的人名匹配定妆照 → `ClipRequest.RefImages` → 自动改走 `bl video ref`，prompt 前缀声明 Image N 对应人物。
 - 入口：策划采纳（apply 随 drafts 提交 characters）、`PUT /api/series/{id}/characters` 人工编辑、`POST /api/series/{id}/keyframes`（body `{"force":bool}`，broker 系列槽位）与 CLI `story keyframes <series-id> [--force]`；Web 系列详情页有「人物定妆照」卡片与策划面板内的人物设定编辑区。
 - 幂等：已存在且未 `force` 的定妆照跳过；模型未返回 characters 时不覆盖会话既有人物。
+
+## 13. 画面模式：小人书 comic 与 AI 视频 video（2026-09-19 增补）
+
+- 决策：口播为主、画面为辅的百家讲坛定位下，默认采用**小人书模式**（连环画形态），每镜一段旁白配一张 AI 插画，由本地 ffmpeg Ken Burns 运镜（推近/拉远/上下左右平移/定格，smoothstep 缓动）渲染成与视频模式同规格的 `clips/scene-XX.mp4`。理由：①图片单价比视频生成低一个数量级，失败不重试烧钱；②静态工笔画不存在跨帧漂移与动作畸变，全片画风最稳；③出图快、重跑便宜。
+- 配置：系列配置 `visual_mode`（`comic`＝默认，空值/未知值回退；`video`＝AI 视频）。**创建时锁定、不可更改**（2026-09-20 修订，曾提供的 Web 选择器与 `PUT /api/series/{id}/config` 已移除）；入口：CLI `story series create --visual-mode`、Web 新建系列弹窗。
+- 实现要点：`domain.NormalizeVisualMode` 归一；engine `Produce` 按模式分流，comic 路径为 `ImageGenerator`（插画落 `panels/scene-XX.png`，9:16 出图 1080×1920）→ `port.VideoComposer.RenderStill`（`internal/provider/ffmpeg/still.go`，zoompan：输入先 cover 到 2× 缓冲防抖，30fps 精确帧数输出 720×1280/1080×1920、无音轨）；后续 Compose（归一化/字幕/拼接/导出）两种模式完全复用。
+- 运镜来源：分镜 `camera` 限定「推近/拉远/左移/右移/上移/下移/定格」七词（可带对象），engine `motionForScene` 关键词映射；缺省时按镜头序号在轮换表取值，避免全片运镜雷同。
+- 人物一致性：comic v1 靠分镜 prompt 的 appearance 逐字复制（§12 第一层）；`bl image generate` 不支持参考图，后续如需更强一致性可验证 `bl image edit --image 定妆照`（真实验证一次即可，禁止批量烧钱）。
+- 已用 video 模式产出的片段不受模式切换影响（续跑只看文件是否存在）；新模式只影响之后新生产的镜头。
+
+## 14. 故事生成即定稿，取消候选选择（2026-09-20 增补）
+
+- 决策：取消「generate 生成 3 个候选 → 用户 pick」的人工选择环节（用户反馈选择困难，且多候选白白消耗 token）。`generate` 只产出**一篇定稿口播稿**，成功后 engine 自动把 `pick` 步骤置 done、写入 Story 与 story.md 审阅副本，下一步直接 storyboard。不满意可重跑 generate 覆盖。
+- 兼容：状态结构（Candidates/Selected/StepPick）与 `Engine.Pick`、CLI `story pick`、server `pick` 动作全部保留，用于历史上停在 generate 与 pick 之间的旧数据；前端 StepsBar 不再展示 pick 节点。`StoryRequest.Count` 废弃，provider 忽略。
+- 模型契约：故事 prompt 输出从 `{"candidates":[...]}` 改为单对象 `{title,dynasty,source,summary,content}`（bailian `storyResponse`），provider 包装为单元素切片返回；验收下限 `minCandidates` 3→1。
+- 一键流程：CLI `story run` 与 server `run` 动作在 Story 为空时直接调用 generate（含旧数据），不再需要 index 参数。
+
+## 15. 视觉参考两级化：人物 + 场景（2026-09-20 增补）
+
+- 背景：聊斋这类单元剧每集人物不同，系列级「人物定妆照」不适用；且一致性约束不只是人物——跨镜头重复出现的**场景/环境**（如兰若寺大殿）也需要固定。UI/文案统一改称**视觉参考**（系列视觉参考 / 本集视觉参考），不再叫定妆照。
+- 数据模型：`domain.VisualRef{Kind: "character"|"scene", Name, Description, RefImage}`（`internal/domain/visualref.go`，空/未知 Kind 归一 character）。
+  - **系列级**：仍沿用 `Series.Characters []CharacterSetting`（跨集复用的主角，策划会话产出）；engine 内部经 `mergeVisualRefs` 转成 character 类 VisualRef。
+  - **集级**：`Episode.Refs []VisualRef`（SQLite `episodes.refs_json`，ensureColumn 幂等迁移），人物 + 出现 ≥2 次的场景；`Storyboard.Refs` 只作 storyboard.json 审阅快照，事实源是 `Episode.Refs`。
+- **两级合并规则**（`engine.mergeVisualRefs`）：系列人物先入列，集级 refs 追加；同 kind+name **集级覆盖系列级**（单元剧可为本集重定义形象）。produce（video 模式）与分镜 prompt 均用合并结果。
+- 产出时机（成本红线配套）：分镜只产出**零成本文字描述**（storyboard prompt 规则 8 输出 `refs.characters/scenes`，bailian `storyboardResponse.Refs` 解析）；**参考图手动点按钮才按张计费生成**。重新 storyboard 时 `preserveRefImages` 按 kind+name 延续旧 RefImage，已付费图片不丢关联；缺名/缺描述的条目丢弃。
+- 参考图：系列人物图落 `data/projects/<series>/refs/`（`story keyframes`，3:4 人物立绘）；集级图落 `<episode>/refs/`（`story episode-refs <id> [--force]` / `POST /api/episodes/{id}/refs`，broker 集槽位）。场景图用 `VisualStylePack.SceneRefPrompt`（空镜、无人、按成片比例出图，9:16 默认），人物图沿用 `KeyframePrompt`；画风从句 `SceneClause` 与全片风格同源（gongbi/realistic/ink 三包已补）。
+- 生效路径：文字约束在分镜阶段注入 prompt（visual_prompt 须用 name 指代并逐字复制 description）；**参考图仅 video 模式** produce 时经 `refImagesForScene`（人物/场景名 Contains 匹配）→ `bl video ref`，`refPromptPrefix` 区分「人物形象参考/场景环境参考」。comic 模式 `bl image generate` 不支持参考图，只吃文字约束。
+- Web：集详情页新增折叠区「本集视觉参考（人物/场景）」（缩略图 + 描述 + 生成缺失/全部重生按钮，徽标显示条数与图片数）；系列页卡片改名「系列视觉参考 · 人物」，空态提示单元剧人物/场景在集页管理。旧分镜无 refs 时提示重跑 storyboard（不产生图片费用）。
 
 ## 变更记录
 
@@ -134,3 +166,9 @@ internal/store/sqlite      （Repository 的 SQLite 实现）
 - 2026-09-18（Web UI）：新增 `internal/server`（标准库 net/http REST + SSE，复用 app 层）与 `web/`（Vite 8 / React 19 / TS / Tailwind v4），go:embed 单二进制，`story serve` 启动；§2「不引入 Web 框架」相应澄清为「不引入第三方 Web 框架」。
 - 2026-09-19（AI 分集策划）：新增 `port.SeriesPlanner` 与策划会话（`plan_sessions` 表，1 系列 1 会话，模型每轮返回全量草案）；`bl text chat --output json --quiet` 直接打印正文无信封，`parseChatContent` 兼容两形态（记入 §2）。采纳只建集不生产，集数不设小上限（技术上限 100）。
 - 2026-09-19（角色形象一致性）：两层方案落地（§12）：人物设定集 + 水墨工笔定妆照；新增 `port.ImageGenerator`、`ClipRequest.RefImages`（非空走 `bl video ref`）、series/plan_sessions `characters_json` 列（ensureColumn 幂等迁移）；Web 增系列级 SSE 与系列媒体端点；CLI 增 `story keyframes`。
+- 2026-09-19（叙事与画风系统协调）：故事 prompt 改为百家讲坛式口播稿（钩子/起伏/讲述者声音，见 §7）；新增 `internal/templates/visualstyle.go` 统一视觉风格包（默认 gongbi 工笔重彩国风动画），visual_prompt 禁画风词、画风由 Brief+VideoAnchor+定妆照三处同源供给；engine 增 `normalizeDurations` 按旁白字数兜底校准镜头时长（6-10s）。
+- 2026-09-19（成本红线）：开发/测试禁止真实调用 bl（§10），验证一律 mock；真实调用仅限用户明确要求的生产执行（当天百炼账户曾因频繁真实验证欠费，e04 produce 的 2 镜 TTS 因 Arrearage 失败）。
+- 2026-09-19（小人书画面模式）：新增 `visual_mode`（comic 默认 / video 可选，见 §13）：comic 模式每镜一张 AI 插画 + 本地 ffmpeg Ken Burns 运镜（RenderStill/zoompan），后续合成管线零改动复用；新增 `panels/` 产物目录、camera 七词运镜约束与 motionForScene 映射轮换；CLI/Web/API 均有配置入口。
+- 2026-09-20（故事生成即定稿）：取消多候选人工选择（见 §14）：故事 prompt 输出单篇定稿、generate 自动完成 pick、验收下限 3→1；CLI/run/server run 不再需要候选序号，Web 去除候选卡片，StepsBar 隐藏 pick；pick 链路保留兼容旧数据。同日把系列页画面模式升级为「系列设置」卡片（两个模式可点选），新建系列表单新增画面模式字段。
+- 2026-09-20（画面模式锁定 + 系列页信息架构）：画面模式改为创建时锁定、系列创建后不可改（移除 `PUT /api/series/{id}/config`、`App.UpdateSeriesVisualMode` 与 Web 选择器，标题旁只读展示）；系列详情页重构：系列信息/AI 策划/定妆照改为 Collapsible 折叠（集列表始终展示），删除系列下沉页脚；新建一集、新建系列均改为 Modal 弹窗（ui.tsx 新增 Modal/Collapsible，Modal 支持 Esc/遮罩关闭与 wide 加宽）。
+- 2026-09-20（视觉参考两级化，见 §15）：新增 `domain.VisualRef`（character/scene）与 `Episode.Refs`（episodes.refs_json 迁移）；分镜顺带零成本产出本集人物+重复场景文字约束，参考图改手动按张生成（集级 `POST /api/episodes/{id}/refs`、CLI `story episode-refs`，落集 refs/，场景空镜图走 SceneRefPrompt/SceneClause）；系列+集两级同名集级优先，重跑分镜保留已生成图；video 模式人物/场景参考图均喂 bl video ref；UI 全面改称「视觉参考」，集页新增本集视觉参考折叠区，系列页改名「系列视觉参考 · 人物」。

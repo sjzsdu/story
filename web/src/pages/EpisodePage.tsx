@@ -2,19 +2,20 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, mediaUrl } from '../api'
-import type { ActionName, Episode, JobEvent, MediaResult, Scene, StoryCandidate } from '../types'
+import type { ActionName, Episode, JobEvent, MediaResult, Scene, StoryCandidate, VisualRef } from '../types'
 import { episodeQueryKey, useEpisodeEvents } from '../useEpisodeEvents'
-import { Button, Card, Empty, ErrorBox, Spinner } from '../components/ui'
+import { Button, Card, Collapsible, Empty, ErrorBox, Spinner } from '../components/ui'
 import StepsBar from '../components/StepsBar'
 
 const ACTION_LABEL: Record<string, string> = {
-  candidates: '生成候选故事',
+  candidates: '生成故事',
   pick: '选定故事',
   storyboard: '拆分分镜',
-  produce: '生产视频与旁白',
+  produce: '生产画面与旁白',
   compose: '合成成片',
   run: '一键跑完整条流水线',
   export: '导出其他比例',
+  'episode-refs': '生成本集视觉参考图',
 }
 
 export default function EpisodePage() {
@@ -106,8 +107,8 @@ export default function EpisodePage() {
         </div>
       </Card>
 
-      <CandidatesSection ep={ep} busy={running} onPick={(i) => act('pick', { index: i })} pending={action.isPending} />
-      <StorySection story={st.story} />
+      <StorySection story={st.story} busy={running} pending={action.isPending} onRegenerate={() => act('candidates')} />
+      <EpisodeRefsSection ep={ep} busy={running} />
       <StoryboardSection ep={ep} />
       <OutputsSection ep={ep} busy={running} onExport={(ratio) => act('export', { ratio })} pending={action.isPending} />
     </div>
@@ -152,126 +153,48 @@ function Toolbar({
   pending: boolean
   onAction: (a: ActionName, extra?: { index?: number; ratio?: string }) => void
 }) {
-  const s = ep.state.steps
-  const needsIndex = !ep.state.story
-  const [runIndex, setRunIndex] = useState(1)
   return (
     <div className="flex flex-wrap gap-2.5 items-center">
       <Button variant="seal" disabled={busy || pending} onClick={() => onAction('candidates')}>
-        {ep.state.candidates?.length ? '重新生成候选' : '① 生成候选故事'}
+        {ep.state.story ? '① 重新生成故事' : '① 生成故事'}
       </Button>
       <Button variant="primary" disabled={busy || pending} onClick={() => onAction('storyboard')}>
-        ③ 拆分分镜
+        ② 拆分分镜
       </Button>
       <Button variant="primary" disabled={busy || pending} onClick={() => onAction('produce')}>
-        ④ 生产片段与旁白
+        ③ 生产画面与旁白
       </Button>
       <Button variant="primary" disabled={busy || pending} onClick={() => onAction('compose')}>
-        ⑤ 合成成片
+        ④ 合成成片
       </Button>
-      {needsIndex && (
-        <label className="flex items-center gap-1.5 text-xs text-paper-300/55">
-          候选序号
-          <input
-            type="number"
-            min={1}
-            value={runIndex}
-            onChange={(e) => setRunIndex(Math.max(1, Number(e.target.value) || 1))}
-            className="w-14 rounded border border-ink-700 bg-ink-950 px-2 py-1 text-paper-100"
-          />
-        </label>
-      )}
-      <Button
-        variant="outline"
-        disabled={busy || pending}
-        onClick={() => onAction('run', needsIndex ? { index: runIndex } : undefined)}
-      >
+      <Button variant="outline" disabled={busy || pending} onClick={() => onAction('run')}>
         ⚡ 一键跑到底
       </Button>
       <span className="self-center text-xs text-paper-300/35">
-        已完成的步骤会自动跳过；② 选定请在下方候选卡片操作
+        已完成的步骤会自动跳过；故事生成即定稿，不满意可重新生成
       </span>
-      {s.compose.status === 'done' && null}
     </div>
   )
 }
 
-function CandidatesSection({
-  ep,
+function StorySection({
+  story,
   busy,
   pending,
-  onPick,
+  onRegenerate,
 }: {
-  ep: Episode
+  story?: StoryCandidate
   busy: boolean
   pending: boolean
-  onPick: (index: number) => void
+  onRegenerate: () => void
 }) {
-  const cs = ep.state.candidates
-  if (!cs || cs.length === 0) return null
-  const selected = ep.state.selected
-  return (
-    <Card title={`候选故事（${cs.length}）${selected ? ` · 已选 #${selected}` : ''}`}>
-      <div className="grid md:grid-cols-2 gap-4">
-        {cs.map((c) => (
-          <CandidateCard key={c.index} c={c} selected={selected === c.index} busy={busy} pending={pending} onPick={onPick} />
-        ))}
-      </div>
-    </Card>
-  )
-}
-
-function CandidateCard({
-  c,
-  selected,
-  busy,
-  pending,
-  onPick,
-}: {
-  c: StoryCandidate
-  selected: boolean
-  busy: boolean
-  pending: boolean
-  onPick: (index: number) => void
-}) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div
-      className={`rounded-xl border p-4 flex flex-col gap-2.5 ${
-        selected ? 'border-gold-500/70 bg-gold-500/5' : 'border-ink-700 bg-ink-950/50'
-      }`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <h4 className="font-display text-lg text-paper-100">
-          <span className="text-gold-500 mr-2">[{c.index}]</span>
-          {c.title}
-        </h4>
-        {selected && <span className="text-xs text-gold-500 shrink-0">已选定</span>}
-      </div>
-      <div className="text-xs text-paper-300/50 flex flex-wrap gap-x-4 gap-y-1">
-        {c.dynasty && <span>朝代：{c.dynasty}</span>}
-        {c.source && <span>出处：{c.source}</span>}
-      </div>
-      <p className="text-sm text-paper-300/75 leading-relaxed">{c.summary}</p>
-      <button className="self-start text-xs text-paper-300/45 hover:text-gold-500" onClick={() => setOpen((v) => !v)}>
-        {open ? '收起正文' : '展开正文'}
-      </button>
-      {open && (
-        <div className="rounded-lg bg-ink-900/80 border border-ink-800 p-3.5 text-sm leading-7 text-paper-300/85 whitespace-pre-wrap max-h-80 overflow-auto">
-          {c.content}
-        </div>
-      )}
-      {!selected && (
-        <Button variant="outline" className="self-start" disabled={busy || pending} onClick={() => onPick(c.index)}>
-          ② 选定 #{c.index}
-        </Button>
-      )}
-    </div>
-  )
-}
-
-function StorySection({ story }: { story?: StoryCandidate }) {
-  if (!story) return null
+  if (!story) {
+    return (
+      <Card>
+        <Empty text="还没有故事。点击「① 生成故事」，AI 直接产出一篇定稿，无需在候选间选择。" />
+      </Card>
+    )
+  }
   return (
     <Card
       title={
@@ -282,8 +205,16 @@ function StorySection({ story }: { story?: StoryCandidate }) {
           </span>
         </span>
       }
-      extra={<span className="text-xs text-paper-300/35">工作目录 story.md 可人工修改</span>}
+      extra={
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-paper-300/35">工作目录 story.md 可人工修改</span>
+          <Button variant="outline" className="px-2.5 py-1 text-xs" disabled={busy || pending} onClick={onRegenerate}>
+            重新生成
+          </Button>
+        </div>
+      }
     >
+      <p className="mb-3 text-sm text-paper-300/60 leading-relaxed">{story.summary}</p>
       <div className="rounded-lg bg-ink-950/50 border border-ink-800 p-5 text-[15px] leading-8 text-paper-300/90 whitespace-pre-wrap font-display">
         {story.content}
       </div>
@@ -320,47 +251,158 @@ function SceneCard({
   audio?: MediaResult
 }) {
   return (
-    <li className="rounded-xl border border-ink-800 bg-ink-950/40 overflow-hidden">
-      <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 border-b border-ink-800 bg-ink-900/60">
-        <span className="font-display text-gold-500">镜 {String(sc.id).padStart(2, '0')}</span>
-        <span className="text-xs rounded bg-ink-800 px-2 py-0.5 text-paper-300/60">{sc.duration}s</span>
-        {sc.camera && <span className="text-xs text-paper-300/50">运镜：{sc.camera}</span>}
-        {clip?.skipped && <span className="text-xs text-emerald-300/70">复用已有片段</span>}
-        {clip?.err && <span className="text-xs text-seal-500">片段失败：{clip.err}</span>}
-      </div>
-      <div className="grid lg:grid-cols-[1fr_300px] gap-4 p-4">
-        <div className="space-y-3 min-w-0">
-          <div>
-            <div className="text-xs text-paper-300/40 mb-1">画面（已做朝代视觉锚定）</div>
-            <p className="text-sm leading-7 text-paper-300/85">{sc.visual_prompt}</p>
-          </div>
-          <div>
-            <div className="text-xs text-paper-300/40 mb-1">旁白</div>
-            <p className="text-sm leading-7 text-paper-100/90">{sc.narration}</p>
-          </div>
-        </div>
-        <div className="space-y-3">
-          {clip?.path ? (
-            <video
-              key={clip.path}
-              controls
-              preload="metadata"
-              className="w-full rounded-lg border border-ink-700 bg-black aspect-[9/16] object-contain"
-              src={mediaUrl(ep.id, clip.path)}
-            />
-          ) : (
-            <div className="w-full aspect-[9/16] rounded-lg border border-dashed border-ink-700 grid place-items-center text-xs text-paper-300/30">
-              视频片段未生产
+    <li>
+      <Collapsible
+        summary={
+          <span className="flex items-center gap-2">
+            <span className="font-display text-gold-500">镜 {String(sc.id).padStart(2, '0')}</span>
+            <span className="text-xs rounded bg-ink-800 px-2 py-0.5 text-paper-300/60">{sc.duration}s</span>
+            {sc.camera && <span className="text-xs text-paper-300/50">运镜：{sc.camera}</span>}
+            {clip?.skipped && <span className="text-xs text-emerald-300/70">复用</span>}
+            {clip?.err && <span className="text-xs text-seal-500">失败</span>}
+          </span>
+        }
+        defaultOpen
+      >
+        <div className="grid lg:grid-cols-[1fr_300px] gap-4 p-4 border-t border-ink-800">
+          <div className="space-y-3 min-w-0">
+            <div>
+              <div className="text-xs text-paper-300/40 mb-1">画面（已做朝代视觉锚定）</div>
+              <p className="text-sm leading-7 text-paper-300/85">{sc.visual_prompt}</p>
             </div>
-          )}
-          {audio?.path ? (
-            <audio controls preload="none" className="w-full h-9" src={mediaUrl(ep.id, audio.path)} />
-          ) : (
-            <div className="text-xs text-paper-300/30 text-center">旁白未生产</div>
-          )}
+            <div>
+              <div className="text-xs text-paper-300/40 mb-1">旁白</div>
+              <p className="text-sm leading-7 text-paper-100/90">{sc.narration}</p>
+            </div>
+          </div>
+          <div className="space-y-3">
+            {clip?.path ? (
+              <video
+                key={clip.path}
+                controls
+                preload="metadata"
+                className="w-full rounded-lg border border-ink-700 bg-black aspect-[9/16] object-contain"
+                src={mediaUrl(ep.id, clip.path)}
+              />
+            ) : (
+              <div className="w-full aspect-[9/16] rounded-lg border border-dashed border-ink-700 grid place-items-center text-xs text-paper-300/30">
+                视频片段未生产
+              </div>
+            )}
+            {audio?.path ? (
+              <audio controls preload="none" className="w-full h-9" src={mediaUrl(ep.id, audio.path)} />
+            ) : (
+              <div className="text-xs text-paper-300/30 text-center">旁白未生产</div>
+            )}
+          </div>
         </div>
-      </div>
+      </Collapsible>
     </li>
+  )
+}
+
+function EpisodeRefsSection({ ep, busy }: { ep: Episode; busy: boolean }) {
+  const queryClient = useQueryClient()
+  const [errMsg, setErrMsg] = useState('')
+  const refs = ep.refs ?? []
+  const characters = refs.filter((r) => r.kind !== 'scene')
+  const scenes = refs.filter((r) => r.kind === 'scene')
+  const withImage = refs.filter((r) => r.ref_image).length
+
+  const gen = useMutation({
+    mutationFn: (force: boolean) => api.generateEpisodeRefs(ep.id, force),
+    onMutate: () => setErrMsg(''),
+    onError: (e) => setErrMsg((e as Error).message),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: episodeQueryKey(ep.id) }),
+  })
+
+  const hasStoryboard = !!ep.state.storyboard
+  const badge = (
+    <span className="text-xs text-paper-300/40">
+      {refs.length} 条参考 · {withImage} 张图
+    </span>
+  )
+
+  return (
+    <Collapsible
+      summary="本集视觉参考（人物 / 场景一致性约束）"
+      badge={badge}
+      defaultOpen={refs.length > 0}
+    >
+      <div className="px-5 py-4 space-y-4 border-t border-ink-800">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <Button
+            variant="seal"
+            className="px-3 py-1.5 text-xs"
+            disabled={busy || gen.isPending || refs.length === 0}
+            onClick={() => gen.mutate(false)}
+          >
+            {gen.isPending ? '生成中…' : '生成缺失的参考图（按张计费）'}
+          </Button>
+          <Button
+            variant="outline"
+            className="px-3 py-1.5 text-xs"
+            disabled={busy || gen.isPending || refs.length === 0}
+            onClick={() => {
+              if (window.confirm('将重新生成全部参考图并产生图片费用，确定？')) gen.mutate(true)
+            }}
+          >
+            全部重新生成
+          </Button>
+          <span className="text-xs text-paper-300/35">
+            文字约束在分镜阶段已零成本生效；参考图仅 video 模式生产时喂给视频模型，comic 模式以文字约束为准
+          </span>
+        </div>
+        {errMsg && <ErrorBox>{errMsg}</ErrorBox>}
+        {refs.length === 0 ? (
+          <Empty
+            text={
+              hasStoryboard
+                ? '本分镜为旧版数据，未产出视觉参考。重新执行一次「② 拆分分镜」即可获得人物/场景的文字约束（不产生图片费用）。'
+                : '拆分分镜后，这里会列出本集人物与重复出现的场景（如兰若寺大殿），用于跨镜头一致性约束。'
+            }
+          />
+        ) : (
+          <>
+            <RefGroup title="人物" refs={characters} ep={ep} />
+            <RefGroup title="场景" refs={scenes} ep={ep} />
+          </>
+        )}
+      </div>
+    </Collapsible>
+  )
+}
+
+function RefGroup({ title, refs, ep }: { title: string; refs: VisualRef[]; ep: Episode }) {
+  if (refs.length === 0) return null
+  return (
+    <div>
+      <div className="text-xs text-gold-500/80 mb-2 tracking-wider">{title}</div>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {refs.map((r) => (
+          <div key={`${r.kind}-${r.name}`} className="rounded-lg border border-ink-800 bg-ink-950/40 p-3 flex gap-3">
+            {r.ref_image ? (
+              <img
+                src={mediaUrl(ep.id, r.ref_image)}
+                alt={r.name}
+                className="w-16 h-24 shrink-0 rounded object-cover border border-ink-700"
+                loading="lazy"
+              />
+            ) : (
+              <div className="w-16 h-24 shrink-0 rounded border border-dashed border-ink-700 grid place-items-center text-[10px] text-paper-300/30 text-center px-1">
+                参考图
+                <br />
+                未生成
+              </div>
+            )}
+            <div className="min-w-0">
+              <div className="font-display text-sm text-paper-100">{r.name}</div>
+              <p className="mt-1 text-xs leading-5 text-paper-300/60 line-clamp-5">{r.description}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 

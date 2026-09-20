@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, seriesMediaUrl } from '../api'
 import type { CharacterSetting, Episode } from '../types'
-import { Button, Card, Empty, ErrorBox, Field, Spinner, TextInput } from '../components/ui'
+import { Button, Card, Collapsible, Empty, ErrorBox, Field, Modal, Spinner, TextInput } from '../components/ui'
 import { StatusBadge } from '../components/ui'
 import PlanPanel from '../components/PlanPanel'
 import { useSeriesEvents } from '../useSeriesEvents'
@@ -15,6 +15,10 @@ function episodeProgress(ep: Episode) {
   return { step: ep.state.current, status: ep.state.steps[ep.state.current].status }
 }
 
+function visualModeLabel(mode: string | undefined): string {
+  return mode === 'video' ? 'AI 视频' : '小人书插画'
+}
+
 export default function SeriesDetailPage() {
   const { seriesId = '' } = useParams()
   const navigate = useNavigate()
@@ -23,7 +27,7 @@ export default function SeriesDetailPage() {
     queryKey: ['series', seriesId],
     queryFn: () => api.getSeries(seriesId),
   })
-  const [creating, setCreating] = useState(false)
+  const [showCreate, setShowCreate] = useState(false)
   const { job: seriesJob, running: seriesBusy } = useSeriesEvents(seriesId)
 
   const deleteSeriesMut = useMutation({
@@ -49,9 +53,11 @@ export default function SeriesDetailPage() {
   if (!data) return null
 
   const { series: s, episodes } = data
+  const namedChars = (s.characters ?? []).filter((c) => c.name.trim())
+  const charsDone = namedChars.filter((c) => c.ref_image).length
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <nav className="text-sm text-paper-300/45">
         <Link to="/" className="hover:text-gold-500">
           系列
@@ -60,6 +66,7 @@ export default function SeriesDetailPage() {
         <span className="text-paper-300/80">{s.name}</span>
       </nav>
 
+      {/* 标题行 */}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="font-display text-3xl tracking-wider flex items-center gap-3">
@@ -69,50 +76,56 @@ export default function SeriesDetailPage() {
                 {s.dynasty}
               </span>
             )}
+            <span className="text-xs rounded border border-ink-700 bg-ink-900 px-2 py-0.5 text-paper-300/60 font-body">
+              {visualModeLabel(s.config.visual_mode)}
+            </span>
           </h1>
           {s.description && <p className="mt-2 text-sm text-paper-300/60 max-w-2xl">{s.description}</p>}
         </div>
-        <div className="flex gap-3">
-          <Button
-            variant="ghost"
-            onClick={() => {
-              if (window.confirm(`确定删除系列「${s.name}」及其全部集与产物？此操作不可撤销。`)) {
-                deleteSeriesMut.mutate()
-              }
-            }}
-            disabled={deleteSeriesMut.isPending}
-          >
-            {deleteSeriesMut.isPending ? '删除中…' : '删除系列'}
-          </Button>
-          <Button variant="seal" onClick={() => setCreating((v) => !v)}>
-            {creating ? '收起' : '＋ 新建一集'}
-          </Button>
+        <Button variant="seal" onClick={() => setShowCreate(true)}>
+          ＋ 新建一集
+        </Button>
+      </div>
+
+      {/* 系列信息（折叠） */}
+      <Collapsible summary="系列信息" badge={<span className="text-xs text-paper-300/40">{episodes.length} 集</span>}>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
+          <InfoTile label="画面模式" value={visualModeLabel(s.config.visual_mode)} />
+          <InfoTile label="画幅 / 分辨率" value={`${s.config.ratio} · ${s.config.resolution}`} />
+          <InfoTile label="TTS 音色" value={s.config.tts_voice} />
+          <InfoTile label="并发 / 重试" value={`${s.config.max_concurrency} 路 · ${s.config.max_retries} 次`} />
         </div>
-      </div>
+        {s.config.tts_instruction && (
+          <div className="mt-4">
+            <div className="text-xs text-paper-300/40 mb-1">旁白风格指令</div>
+            <p className="text-sm text-paper-300/70 leading-relaxed">{s.config.tts_instruction}</p>
+          </div>
+        )}
+      </Collapsible>
 
-      <div className="grid md:grid-cols-3 gap-4 text-sm">
-        <InfoTile label="画面 / 分辨率" value={`${s.config.ratio} · ${s.config.resolution}`} />
-        <InfoTile label="TTS 音色" value={s.config.tts_voice} />
-        <InfoTile
-          label="并发 / 重试"
-          value={`${s.config.max_concurrency} 路 · ${s.config.max_retries} 次退避重试`}
-        />
-      </div>
-      {s.config.tts_instruction && (
-        <Card title="旁白风格指令">
-          <p className="text-sm text-paper-300/70 leading-relaxed">{s.config.tts_instruction}</p>
-        </Card>
-      )}
+      {/* AI 分集策划（折叠，默认收起） */}
+      <Collapsible summary="AI 分集策划" badge={<span className="text-xs text-paper-300/40">对话式批量建集</span>}>
+        <PlanPanel seriesId={s.id} existingTitles={episodes.map((e) => e.title)} />
+      </Collapsible>
 
-      <PlanPanel seriesId={s.id} existingTitles={episodes.map((e) => e.title)} />
+      {/* 系列视觉参考（人物，跨集复用；折叠，默认收起，标题显示进度） */}
+      <Collapsible
+        summary="系列视觉参考 · 人物"
+        badge={
+          namedChars.length > 0 ? (
+            <span className="text-xs text-paper-300/45">
+              {charsDone}/{namedChars.length} 已生成
+            </span>
+          ) : undefined
+        }
+      >
+        <CharactersCard seriesId={s.id} characters={namedChars} busy={seriesBusy} job={seriesJob} />
+      </Collapsible>
 
-      <CharactersCard seriesId={s.id} characters={s.characters ?? []} busy={seriesBusy} job={seriesJob} />
-
-      {creating && <CreateEpisodeCard seriesId={s.id} onDone={() => setCreating(false)} />}
-
+      {/* 集列表（始终展示，主要内容） */}
       <Card title={`集列表（${episodes.length}）`}>
         {episodes.length === 0 ? (
-          <Empty text="该系列还没有集" />
+          <Empty text="该系列还没有集，点击右上角「新建一集」开始" />
         ) : (
           <ul className="divide-y divide-ink-800">
             {episodes.map((ep) => {
@@ -157,11 +170,30 @@ export default function SeriesDetailPage() {
           </ul>
         )}
       </Card>
+
+      {/* 删除系列（下沉到页脚，低调处理） */}
+      <div className="flex justify-end pt-2">
+        <button
+          type="button"
+          onClick={() => {
+            if (window.confirm(`确定删除系列「${s.name}」及其全部集与产物？此操作不可撤销。`)) {
+              deleteSeriesMut.mutate()
+            }
+          }}
+          disabled={deleteSeriesMut.isPending}
+          className="text-xs text-seal-500/50 hover:text-seal-500 hover:underline"
+        >
+          {deleteSeriesMut.isPending ? '删除中…' : '删除系列'}
+        </button>
+      </div>
+
+      {/* 新建一集弹窗 */}
+      <CreateEpisodeModal seriesId={s.id} open={showCreate} onClose={() => setShowCreate(false)} />
     </div>
   )
 }
 
-/** 人物定妆照卡片：预览 + 生成/重新生成（角色形象一致性参考图）。 */
+/** 系列视觉参考卡片（人物，跨集复用）：预览 + 生成/重新生成参考图。 */
 function CharactersCard({
   seriesId,
   characters,
@@ -181,22 +213,16 @@ function CharactersCard({
     onError: (e) => setErr((e as Error).message),
   })
 
-  const named = characters.filter((c) => c.name.trim())
-  const doneCount = named.filter((c) => c.ref_image).length
+  const doneCount = characters.filter((c) => c.ref_image).length
 
   return (
-    <Card
-      title={`人物定妆照（${doneCount}/${named.length}）`}
-      extra={
-        <span className="text-xs text-paper-300/45">水墨工笔立绘 · produce 时含人物的镜头自动以参考图生成视频</span>
-      }
-    >
-      {named.length === 0 ? (
-        <Empty text="暂无人物设定——在上方策划对话中让 AI 产出，或点击「+ 人物」手动添加后采纳" />
+    <>
+      {characters.length === 0 ? (
+        <Empty text="暂无人物设定——在 AI 分集策划中让 AI 产出，或手动添加后采纳。单元剧的单集人物与场景类参考在各集详情页管理。" />
       ) : (
         <>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {named.map((c) => (
+            {characters.map((c) => (
               <div
                 key={c.name}
                 className="rounded-xl border border-ink-800 bg-ink-950/60 overflow-hidden flex flex-col"
@@ -205,7 +231,7 @@ function CharactersCard({
                   {c.ref_image ? (
                     <img
                       src={seriesMediaUrl(seriesId, c.ref_image)}
-                      alt={`${c.name} 定妆照`}
+                      alt={`${c.name} 视觉参考图`}
                       className="w-full h-full object-contain"
                       loading="lazy"
                     />
@@ -250,14 +276,14 @@ function CharactersCard({
               onClick={() => keyframesMut.mutate(false)}
             >
               {busy || keyframesMut.isPending ? <Spinner className="w-3.5 h-3.5" /> : null}
-              {doneCount < named.length ? '生成缺失定妆照' : '全部已生成'}
+              {doneCount < characters.length ? '生成缺失参考图（按张计费）' : '全部已生成'}
             </Button>
             <Button
               type="button"
               variant="ghost"
               disabled={busy || keyframesMut.isPending}
               onClick={() => {
-                if (window.confirm('重新生成全部定妆照？已有图片将被覆盖。')) {
+                if (window.confirm('重新生成全部参考图？已有图片将被覆盖，并再次产生图片费用。')) {
                   keyframesMut.mutate(true)
                 }
               }}
@@ -266,7 +292,7 @@ function CharactersCard({
             </Button>
             {job?.status === 'running' && (
               <span className="text-xs text-gold-500/80 flex items-center gap-1.5">
-                <Spinner className="w-3 h-3" /> 正在生成定妆照…
+                <Spinner className="w-3 h-3" /> 正在生成参考图…
               </span>
             )}
             {job?.status === 'failed' && <span className="text-xs text-seal-500">上次生成失败：{job.error}</span>}
@@ -278,7 +304,7 @@ function CharactersCard({
           <ErrorBox>{err}</ErrorBox>
         </div>
       )}
-    </Card>
+    </>
   )
 }
 
@@ -291,7 +317,16 @@ function InfoTile({ label, value }: { label: string; value: string }) {
   )
 }
 
-function CreateEpisodeCard({ seriesId, onDone }: { seriesId: string; onDone: () => void }) {
+/** 新建一集弹窗。 */
+function CreateEpisodeModal({
+  seriesId,
+  open,
+  onClose,
+}: {
+  seriesId: string
+  open: boolean
+  onClose: () => void
+}) {
   const [title, setTitle] = useState('')
   const [topic, setTopic] = useState('')
   const [err, setErr] = useState('')
@@ -301,15 +336,18 @@ function CreateEpisodeCard({ seriesId, onDone }: { seriesId: string; onDone: () 
     mutationFn: () => api.createEpisode(seriesId, { title: title.trim(), topic: topic.trim() }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['series', seriesId] })
-      onDone()
+      setTitle('')
+      setTopic('')
+      setErr('')
+      onClose()
     },
     onError: (e) => setErr((e as Error).message),
   })
 
   return (
-    <Card title="新建一集">
+    <Modal open={open} onClose={onClose} title="新建一集">
       <form
-        className="grid sm:grid-cols-2 gap-4"
+        className="space-y-4"
         onSubmit={(e) => {
           e.preventDefault()
           setErr('')
@@ -317,25 +355,21 @@ function CreateEpisodeCard({ seriesId, onDone }: { seriesId: string; onDone: () 
         }}
       >
         <Field label="本集标题（必填）">
-          <TextInput value={title} onChange={(e) => setTitle(e.target.value)} placeholder='如：入秦' autoFocus />
+          <TextInput value={title} onChange={(e) => setTitle(e.target.value)} placeholder="如：入秦" autoFocus />
         </Field>
         <Field label="主题 / 切入点（可空，AI 自由命题）">
           <TextInput value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="如：苏秦张仪出山之前" />
         </Field>
-        {err && (
-          <div className="sm:col-span-2">
-            <ErrorBox>{err}</ErrorBox>
-          </div>
-        )}
-        <div className="sm:col-span-2 flex gap-3">
+        {err && <ErrorBox>{err}</ErrorBox>}
+        <div className="flex gap-3">
           <Button type="submit" variant="seal" disabled={mutation.isPending || !title.trim()}>
             {mutation.isPending && <Spinner />} 创建
           </Button>
-          <Button type="button" variant="ghost" onClick={onDone}>
+          <Button type="button" variant="ghost" onClick={onClose}>
             取消
           </Button>
         </div>
       </form>
-    </Card>
+    </Modal>
   )
 }

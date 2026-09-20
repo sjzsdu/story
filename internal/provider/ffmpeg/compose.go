@@ -153,12 +153,20 @@ func (c *Composer) Compose(ctx context.Context, req port.ComposeRequest) (port.C
 		}
 		filter := strings.TrimSuffix(graph.String(), ";")
 
+		// 输出路径须转绝对——ffmpeg 以 cmd.Dir=WorkDir(tmp/) 运行，
+		// 若 FinalPath 是相对项目根的路径会被误解析到 tmp/ 下。
+		finalAbs := req.FinalPath
+		if !filepath.IsAbs(finalAbs) {
+			if abs, err := filepath.Abs(finalAbs); err == nil {
+				finalAbs = abs
+			}
+		}
 		args = append(args,
 			"-filter_complex", filter,
 			"-map", "["+prev+"]", "-map", "0:a?",
 			"-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
 			"-c:a", "copy",
-			req.FinalPath,
+			finalAbs,
 		)
 		if _, err := runCmdDir(ctx, req.WorkDir, c.FFMPEG, args...); err != nil {
 			return port.ComposeResult{}, fmt.Errorf("烧录字幕: %w", err)

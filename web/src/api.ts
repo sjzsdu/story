@@ -33,6 +33,7 @@ export const api = {
     ratio?: string
     resolution?: string
     target_platforms?: string[]
+    visual_mode?: 'comic' | 'video'
   }) => request<Series>('/api/series', { method: 'POST', body: JSON.stringify(body) }),
 
   getSeries: (id: string) => request<SeriesDetail>(`/api/series/${encodeURIComponent(id)}`),
@@ -82,7 +83,7 @@ export const api = {
       method: 'DELETE',
     }),
 
-  // ---- 人物设定与定妆照 ----
+  // ---- 系列人物设定与视觉参考图 ----
   updateCharacters: (seriesId: string, characters: CharacterSetting[]) =>
     request<Series>(`/api/series/${encodeURIComponent(seriesId)}/characters`, {
       method: 'PUT',
@@ -94,6 +95,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ force }),
     }),
+
+  // ---- 本集视觉参考图（人物/场景，手动按张计费生成） ----
+  generateEpisodeRefs: (episodeId: string, force = false) =>
+    request<{ job: JobEvent }>(`/api/episodes/${encodeURIComponent(episodeId)}/refs`, {
+      method: 'POST',
+      body: JSON.stringify({ force }),
+    }),
 }
 
 /** 把服务器上的绝对文件路径转成受权媒体 URL。 */
@@ -101,7 +109,7 @@ export function mediaUrl(episodeId: string, absPath: string): string {
   return `/api/episodes/${encodeURIComponent(episodeId)}/media?path=${encodeURIComponent(absPath)}`
 }
 
-/** 系列级媒体 URL（定妆照等，位于系列项目目录内）。 */
+/** 系列级媒体 URL（系列视觉参考图等，位于系列项目目录内）。 */
 export function seriesMediaUrl(seriesId: string, absPath: string): string {
   return `/api/series/${encodeURIComponent(seriesId)}/media?path=${encodeURIComponent(absPath)}`
 }

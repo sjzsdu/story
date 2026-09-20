@@ -7,7 +7,7 @@ export const seriesQueryKey = (id: string) => ['series', id] as const
 /**
  * 订阅系列级 SSE：
  * - snapshot（系列+集列表）直接写入 react-query 缓存；
- * - job 事件驱动定妆照等系列级后台动作的按钮状态，结束后触发一次最终刷新。
+ * - job 事件驱动视觉参考图等系列级后台动作的按钮状态，结束后触发一次最终刷新。
  */
 export function useSeriesEvents(seriesId: string | undefined) {
   const queryClient = useQueryClient()

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import type { StepStatus } from '../types'
 
 const STATUS_META: Record<StepStatus | 'idle', { label: string; cls: string; dot: string }> = {
@@ -101,5 +101,87 @@ export function ErrorBox({ children }: { children: ReactNode }) {
     <div className="rounded-lg border border-seal-500/40 bg-seal-600/10 px-4 py-3 text-sm text-seal-500 whitespace-pre-wrap">
       {children}
     </div>
+  )
+}
+
+/** 模态弹窗：点击遮罩或按 Esc 关闭。wide 用于表单字段较多的弹窗。 */
+export function Modal({
+  open,
+  onClose,
+  title,
+  children,
+  wide = false,
+}: {
+  open: boolean
+  onClose: () => void
+  title?: ReactNode
+  children: ReactNode
+  wide?: boolean
+}) {
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
+  if (!open) return null
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] bg-black/60 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className={`w-full ${wide ? 'max-w-2xl' : 'max-w-lg'} max-h-[80vh] overflow-y-auto rounded-xl border border-ink-700 bg-ink-900 shadow-2xl`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="flex items-center justify-between px-5 py-3.5 border-b border-ink-800">
+          <h3 className="font-display tracking-wide text-paper-100">{title}</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded px-1.5 py-0.5 text-paper-300/50 hover:text-paper-100 hover:bg-ink-800"
+          >
+            ✕
+          </button>
+        </header>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  )
+}
+
+/** 折叠面板：点击标题行展开/收起内容。 */
+export function Collapsible({
+  summary,
+  children,
+  defaultOpen = false,
+  badge,
+}: {
+  summary: ReactNode
+  children: ReactNode
+  defaultOpen?: boolean
+  badge?: ReactNode
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <section className="rounded-xl border border-ink-800 bg-ink-900/70 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between gap-3 px-5 py-3.5 hover:bg-ink-800/40 transition-colors"
+      >
+        <div className="flex items-center gap-2.5">
+          <span className={`text-paper-300/50 text-xs transition-transform ${open ? 'rotate-90' : ''}`}>
+            ▸
+          </span>
+          <h3 className="font-display tracking-wide text-paper-100">{summary}</h3>
+        </div>
+        <div className="flex items-center gap-2">{badge}</div>
+      </button>
+      {open && <div className="border-t border-ink-800 p-5">{children}</div>}
+    </section>
   )
 }

@@ -11,6 +11,16 @@ import (
 
 // storyboardResponse 模型返回的分镜 JSON。
 type storyboardResponse struct {
+	Refs struct {
+		Characters []struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		} `json:"characters"`
+		Scenes []struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		} `json:"scenes"`
+	} `json:"refs"`
 	Scenes []domain.Scene `json:"scenes"`
 }
 
@@ -27,6 +37,7 @@ func (c *Client) PlanStoryboard(ctx context.Context, req port.StoryboardRequest)
 			req.Resolution,
 			req.VideoStyle,
 			req.Characters,
+			req.EpisodeRefs,
 		),
 		"--temperature", "0.7",
 		// 6-12 个镜头 ×（visual_prompt+narration），默认 4096 有截断风险。
@@ -49,7 +60,28 @@ func (c *Client) PlanStoryboard(ctx context.Context, req port.StoryboardRequest)
 	if len(resp.Scenes) == 0 {
 		return nil, errEmpty("分镜")
 	}
-	return &domain.Storyboard{Scenes: resp.Scenes}, nil
+	refs := make([]domain.VisualRef, 0, len(resp.Refs.Characters)+len(resp.Refs.Scenes))
+	for _, r := range resp.Refs.Characters {
+		if r.Name == "" {
+			continue
+		}
+		refs = append(refs, domain.VisualRef{
+			Kind:        domain.RefKindCharacter,
+			Name:        r.Name,
+			Description: r.Description,
+		})
+	}
+	for _, r := range resp.Refs.Scenes {
+		if r.Name == "" {
+			continue
+		}
+		refs = append(refs, domain.VisualRef{
+			Kind:        domain.RefKindScene,
+			Name:        r.Name,
+			Description: r.Description,
+		})
+	}
+	return &domain.Storyboard{Refs: refs, Scenes: resp.Scenes}, nil
 }
 
 func errEmpty(what string) error {

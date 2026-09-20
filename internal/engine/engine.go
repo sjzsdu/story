@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjzsdu/story/internal/domain"
 	"github.com/sjzsdu/story/internal/port"
+	"github.com/sjzsdu/story/internal/templates"
 )
 
 // Engine 流水线引擎，编排各步骤并维护状态机。
@@ -68,7 +69,10 @@ func New(
 	}
 }
 
-// GenerateCandidates 步骤 1：生成候选故事。
+// GenerateCandidates 步骤 1：生成故事。
+// 2026-09-19 起取消「3 个候选人工选择」：模型只产出一篇定稿，生成成功后
+// 自动完成选定（StepPick 同步置 done），下一步直接进入分镜。不满意可重跑
+// 本步骤覆盖；仍保留单元素 Candidates/Pick 结构以兼容状态与旧数据。
 func (e *Engine) GenerateCandidates(ctx context.Context, episodeID string) ([]domain.StoryCandidate, error) {
 	ep, series, err := e.load(ctx, episodeID)
 	if err != nil {
@@ -84,7 +88,6 @@ func (e *Engine) GenerateCandidates(ctx context.Context, episodeID string) ([]do
 		SeriesName: series.Name,
 		Dynasty:    series.Config.Dynasty,
 		Topic:      ep.Topic,
-		Count:      3, // bl 侧 HTTP 头超时约 300s 且不可调：候选越多生成越久越容易整体超时，取验收下限
 	})
 	if err != nil {
 		return nil, e.fail(ctx, ep, domain.StepGenerate, err)
@@ -96,16 +99,27 @@ func (e *Engine) GenerateCandidates(ctx context.Context, episodeID string) ([]do
 		candidates[i].Index = i + 1
 	}
 
+	chosen := candidates[0]
+	chosen.Index = 1
+	idx := 1
 	ep.State.Candidates = candidates
-	ep.State.Current = domain.StepPick
+	ep.State.Selected = &idx
+	ep.State.Story = &chosen
 	ep.State.Mark(domain.StepGenerate, domain.StatusDone, "")
+	ep.State.Mark(domain.StepPick, domain.StatusDone, "")
+	ep.State.Current = domain.StepStoryboard
+	if err := e.writeReviewCopy(ep); err != nil {
+		return nil, err
+	}
 	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
 		return nil, err
 	}
 	return candidates, nil
 }
 
-// Pick 步骤 2：选定候选故事（index 从 1 开始）。
+// Pick 手动选定故事（index 从 1 开始）。
+// 自动流程下 GenerateCandidates 已完成选定，本方法保留用于兼容旧数据
+// （历史上 generate 与 pick 分离的集）与 CLI/API。
 func (e *Engine) Pick(ctx context.Context, episodeID string, index int) error {
 	ep, _, err := e.load(ctx, episodeID)
 	if err != nil {
@@ -144,12 +158,13 @@ func (e *Engine) PlanStoryboard(ctx context.Context, episodeID string) (*domain.
 	}
 
 	sb, err := e.boards.PlanStoryboard(ctx, port.StoryboardRequest{
-		Story:      *ep.State.Story,
-		Dynasty:    firstNonEmpty(series.Config.Dynasty, ep.State.Story.Dynasty),
-		Ratio:      series.Config.Ratio,
-		Resolution: series.Config.Resolution,
-		VideoStyle: series.Config.VideoStyle,
-		Characters: characterLines(series.Characters),
+		Story:       *ep.State.Story,
+		Dynasty:     firstNonEmpty(series.Config.Dynasty, ep.State.Story.Dynasty),
+		Ratio:       series.Config.Ratio,
+		Resolution:  series.Config.Resolution,
+		VideoStyle:  series.Config.VideoStyle,
+		Characters:  characterLines(series.Characters),
+		EpisodeRefs: visualRefLines(ep.Refs),
 	})
 	if err != nil {
 		return nil, e.fail(ctx, ep, domain.StepStoryboard, err)
@@ -157,10 +172,15 @@ func (e *Engine) PlanStoryboard(ctx context.Context, episodeID string) (*domain.
 	if err := ValidateStoryboard(sb); err != nil {
 		return nil, e.fail(ctx, ep, domain.StepStoryboard, err)
 	}
+	normalizeDurations(sb)
 	for i := range sb.Scenes {
 		sb.Scenes[i].ID = i + 1
 	}
 
+	// 本集视觉参考（人物+重复场景）：延续旧参考图关联后落集级事实源，
+	// 分镜审阅副本 storyboard.json 带同一快照。
+	ep.Refs = preserveRefImages(ep.Refs, sb.Refs)
+	sb.Refs = ep.Refs
 	ep.State.Storyboard = sb
 	ep.State.Current = domain.StepProduce
 	ep.State.Mark(domain.StepStoryboard, domain.StatusDone, "")
@@ -191,6 +211,14 @@ func (e *Engine) Produce(ctx context.Context, episodeID string) error {
 	if err := os.MkdirAll(audioDir, 0o755); err != nil {
 		return err
 	}
+	// comic 小人书模式：每镜一张插画落 panels/，再本地渲染成 clips/ 片段。
+	mode := domain.NormalizeVisualMode(series.Config.VisualMode)
+	panelsDir := filepath.Join(ep.WorkDir, PanelsDirName)
+	if mode == domain.VisualModeComic {
+		if err := os.MkdirAll(panelsDir, 0o755); err != nil {
+			return err
+		}
+	}
 
 	ep.State.BeginAttempt(domain.StepProduce)
 	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
@@ -201,26 +229,64 @@ func (e *Engine) Produce(ctx context.Context, episodeID string) error {
 	tasks := make([]Task, len(scenes))
 	clipResults := make([]domain.MediaResult, len(scenes))
 	audioResults := make([]domain.MediaResult, len(scenes))
+	// 全片唯一视觉风格：每镜视频 prompt 统一追加风格锚句，不信任 LLM 在
+	// visual_prompt 中自由书写画风词（防止镜头间写实/动漫漂移）。
+	style := templates.MatchStyle(series.Config.VideoStyle)
+	// 两级视觉参考合并（系列人物 + 本集人物/场景，同名集级优先），
+	// video 模式据此匹配参考图；comic 模式文字约束已在分镜 prompt 生效。
+	visualRefs := mergeVisualRefs(series, ep.Refs)
 
 	for i, sc := range scenes {
 		i, sc := i, sc
 		clipPath := filepath.Join(clipsDir, fmt.Sprintf("scene-%02d.mp4", sc.ID))
 		audioPath := filepath.Join(audioDir, fmt.Sprintf("scene-%02d.mp3", sc.ID))
+		panelPath := filepath.Join(panelsDir, fmt.Sprintf("scene-%02d.png", sc.ID))
 
 		tasks[i] = Task{
 			Index: i,
 			Name:  fmt.Sprintf("scene-%02d", sc.ID),
 			Fn: func(ctx context.Context) error {
-				// 视频（已存在则续跑复用）
+				// 画面（已存在片段则续跑复用）
 				if reusable(clipPath) {
 					dur, _ := e.composer.ProbeDuration(ctx, clipPath)
 					clipResults[i] = domain.MediaResult{SceneID: sc.ID, Path: clipPath, DurationSec: dur, Skipped: true}
+				} else if mode == domain.VisualModeComic {
+					// comic 小人书模式：AI 出插画（已出则续用）→ ffmpeg Ken Burns
+					// 本地渲染成同规格片段；除出图外不产生任何模型费用。
+					if !reusable(panelPath) {
+						if e.images == nil {
+							return fmt.Errorf("未配置图片生成能力（ImageGenerator），无法使用 comic 模式")
+						}
+						if _, err := e.images.GenerateImage(ctx, port.ImageRequest{
+							OutPath: panelPath,
+							Prompt:  buildImagePrompt(sc, style),
+							Size:    panelImageSize(series.Config.Ratio),
+						}); err != nil {
+							return fmt.Errorf("插画生成: %w", err)
+						}
+					}
+					if err := e.composer.RenderStill(ctx, port.StillRequest{
+						ImagePath:   panelPath,
+						OutPath:     clipPath,
+						DurationSec: sc.DurationSec,
+						Ratio:       series.Config.Ratio,
+						Resolution:  series.Config.Resolution,
+						Motion:      motionForScene(sc, i),
+					}); err != nil {
+						return fmt.Errorf("静帧运镜渲染: %w", err)
+					}
+					dur, err := e.composer.ProbeDuration(ctx, clipPath)
+					if err != nil {
+						return fmt.Errorf("视频验收探测: %w", err)
+					}
+					clipResults[i] = domain.MediaResult{SceneID: sc.ID, Path: clipPath, DurationSec: dur}
 				} else {
-					prompt := buildVideoPrompt(sc)
-					// 人物一致性：分镜画面含设定集人物且已有定妆照时，走参考图生视频。
-					refImgs := refImagesForScene(sc.VisualPrompt, series.Characters)
+					// video 模式：AI 视频生成；画面含已生成参考图的人物/场景时，
+					// 走 bl video ref 保持形象与环境一致。
+					prompt := buildVideoPrompt(sc, style)
+					refImgs := refImagesForScene(sc.VisualPrompt, visualRefs)
 					if len(refImgs) > 0 {
-						prompt = refPromptPrefix(series.Characters, refImgs) + prompt
+						prompt = refPromptPrefix(visualRefs, refImgs) + prompt
 					}
 					if _, err := e.videos.GenerateClip(ctx, port.ClipRequest{
 						OutPath:     clipPath,
@@ -445,11 +511,14 @@ func (e *Engine) writeReviewCopy(ep *domain.Episode) error {
 	return nil
 }
 
-func buildVideoPrompt(sc domain.Scene) string {
+// buildVideoPrompt 组装单镜视频生成 prompt：画面内容 + 运镜，末尾固定追加
+// 全片统一风格锚句（结尾位置对视频模型权重最高）。
+func buildVideoPrompt(sc domain.Scene, style templates.VisualStylePack) string {
 	s := strings.TrimSpace(sc.VisualPrompt)
 	if sc.Camera != "" {
 		s += "。运镜：" + sc.Camera
 	}
+	s += "。" + style.VideoAnchor
 	return s
 }
 

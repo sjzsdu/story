@@ -8,19 +8,17 @@ import (
 )
 
 func TestValidateCandidates(t *testing.T) {
+	// 新流程为单篇定稿：1 个合法故事即通过，0 个必须拒绝。
 	good := []domain.StoryCandidate{
 		{Title: "a", Source: "《史记》", Content: "x"},
-		{Title: "b", Source: "《汉书》", Content: "y"},
-		{Title: "c", Source: "《三国志》", Content: "z"},
 	}
 	if err := ValidateCandidates(good); err != nil {
-		t.Fatalf("合法候选被拒: %v", err)
+		t.Fatalf("合法故事被拒: %v", err)
 	}
-	if err := ValidateCandidates(good[:2]); err == nil {
-		t.Fatal("2 个候选应被拒绝")
+	if err := ValidateCandidates(nil); err == nil {
+		t.Fatal("0 个故事应被拒绝")
 	}
-	bad := good
-	bad[1].Source = ""
+	bad := []domain.StoryCandidate{{Title: "b", Source: "", Content: "y"}}
 	if err := ValidateCandidates(bad); err == nil || !strings.Contains(err.Error(), "出处") {
 		t.Fatalf("缺出处应报错, got %v", err)
 	}
@@ -55,6 +53,9 @@ func TestValidateStoryboard(t *testing.T) {
 	if err := ValidateStoryboard(mk(3, 5)); err == nil {
 		t.Fatal("3 个镜头应被拒绝")
 	}
+	if err := ValidateStoryboard(mk(13, 5)); err == nil {
+		t.Fatal("13 个镜头应被拒绝（上限 12）")
+	}
 	if err := ValidateStoryboard(mk(4, 9)); err != nil {
 		t.Fatal("时长 9 秒应合法（上限 10 秒）")
 	}
@@ -65,6 +66,24 @@ func TestValidateStoryboard(t *testing.T) {
 	bad.Scenes[0].Narration = ""
 	if err := ValidateStoryboard(bad); err == nil {
 		t.Fatal("缺旁白应报错")
+	}
+}
+
+func TestNormalizeDurations(t *testing.T) {
+	sb := &domain.Storyboard{Scenes: []domain.Scene{
+		{ID: 1, VisualPrompt: "v", Narration: "短旁白五字", DurationSec: 4},                 // need=3，不下调
+		{ID: 2, VisualPrompt: "v", Narration: strings.Repeat("字", 36), DurationSec: 5}, // need=8，上调
+		{ID: 3, VisualPrompt: "v", Narration: strings.Repeat("字", 60), DurationSec: 9}, // need=10 封顶
+	}}
+	normalizeDurations(sb)
+	if sb.Scenes[0].DurationSec != 4 {
+		t.Fatalf("短旁白不应下调: %d", sb.Scenes[0].DurationSec)
+	}
+	if sb.Scenes[1].DurationSec != 8 {
+		t.Fatalf("36 字应上调到 8s: %d", sb.Scenes[1].DurationSec)
+	}
+	if sb.Scenes[2].DurationSec != 10 {
+		t.Fatalf("超上限应封顶 10s: %d", sb.Scenes[2].DurationSec)
 	}
 }
 

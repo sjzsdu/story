@@ -42,10 +42,34 @@ type ExportRequest struct {
 	Resolution string
 }
 
+// Ken Burns 运镜 key（comic 小人书模式：单张静帧渲染成运动片段）。
+const (
+	MotionPushIn   = "push_in"  // 缓推（向画面中心放大）
+	MotionPullOut  = "pull_out" // 拉远
+	MotionPanLeft  = "pan_left" // 向左横移
+	MotionPanRight = "pan_right"
+	MotionPanUp    = "pan_up"
+	MotionPanDown  = "pan_down"
+	MotionStatic   = "static" // 定格（极轻微缩放或不动）
+)
+
+// StillRequest 静帧渲染请求：把一张插画按指定运镜渲染为同规格视频片段
+// （comic 模式用，纯本地 ffmpeg，不产生模型费用）。
+type StillRequest struct {
+	ImagePath   string
+	OutPath     string
+	DurationSec int
+	Ratio       string // 9:16 / 16:9 / 1:1 / 3:4
+	Resolution  string // 720P / 1080P
+	Motion      string // 见 Motion* 常量，空值由实现兜底
+}
+
 // VideoComposer 视频后处理：归一化、混音、拼接、字幕、多比例导出。
 type VideoComposer interface {
 	Compose(ctx context.Context, req ComposeRequest) (ComposeResult, error)
 	Export(ctx context.Context, req ExportRequest) error
+	// RenderStill 单张静帧 + Ken Burns 运镜 → 视频片段（无音轨，音频在 Compose 阶段混入）。
+	RenderStill(ctx context.Context, req StillRequest) error
 	// ProbeDuration 探测媒体文件时长（秒），供验收使用。
 	ProbeDuration(ctx context.Context, path string) (float64, error)
 }

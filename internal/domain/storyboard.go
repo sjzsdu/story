@@ -2,7 +2,10 @@ package domain
 
 // Storyboard 分镜脚本。
 type Storyboard struct {
-	Scenes []Scene `json:"scenes"`
+	// Refs 本集视觉参考（人物 + 跨镜重复场景），与 Episode.Refs 同源快照，
+	// 仅用于 storyboard.json 审阅副本；事实源以 Episode.Refs 为准。
+	Refs   []VisualRef `json:"refs,omitempty"`
+	Scenes []Scene     `json:"scenes"`
 }
 
 // Scene 单个镜头。

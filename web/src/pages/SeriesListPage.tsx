@@ -3,10 +3,9 @@ import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
 import type { Series } from '../types'
-import { Button, Card, Empty, ErrorBox, Field, Select, Spinner, TextInput } from '../components/ui'
+import { Button, Card, Empty, ErrorBox, Field, Modal, Select, Spinner, TextInput } from '../components/ui'
 
 export default function SeriesListPage() {
-  const queryClient = useQueryClient()
   const { data: series, isLoading, error } = useQuery({ queryKey: ['series'], queryFn: api.listSeries })
   const [open, setOpen] = useState(false)
 
@@ -17,13 +16,12 @@ export default function SeriesListPage() {
           <h1 className="font-display text-2xl tracking-wider">内容系列</h1>
           <p className="mt-1 text-sm text-paper-300/50">系列 → 多集，每集一条可中断、可续跑的生产流水线</p>
         </div>
-        <Button variant="seal" onClick={() => setOpen((v) => !v)}>
-          {open ? '收起' : '＋ 新建系列'}
+        <Button variant="seal" onClick={() => setOpen(true)}>
+          ＋ 新建系列
         </Button>
       </div>
 
       {error && <ErrorBox>{(error as Error).message}</ErrorBox>}
-      {open && <CreateSeriesCard onDone={() => setOpen(false)} />}
 
       {isLoading ? (
         <div className="flex justify-center py-16">
@@ -40,88 +38,105 @@ export default function SeriesListPage() {
           ))}
         </div>
       )}
+
+      <CreateSeriesModal open={open} onClose={() => setOpen(false)} />
     </div>
   )
+}
 
-  function CreateSeriesCard({ onDone }: { onDone: () => void }) {
-    const [name, setName] = useState('')
-    const [dynasty, setDynasty] = useState('')
-    const [ratio, setRatio] = useState('9:16')
-    const [resolution, setResolution] = useState('1080P')
-    const [platforms, setPlatforms] = useState('douyin,kuaishou')
-    const [err, setErr] = useState('')
+/** 新建系列弹窗：画面模式等设置创建后锁定，不可修改。 */
+function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const queryClient = useQueryClient()
+  const [name, setName] = useState('')
+  const [dynasty, setDynasty] = useState('')
+  const [ratio, setRatio] = useState('9:16')
+  const [resolution, setResolution] = useState('1080P')
+  const [visualMode, setVisualMode] = useState<'comic' | 'video'>('comic')
+  const [platforms, setPlatforms] = useState('douyin,kuaishou')
+  const [err, setErr] = useState('')
 
-    const mutation = useMutation({
-      mutationFn: () =>
-        api.createSeries({
-          name: name.trim(),
-          dynasty: dynasty.trim(),
-          ratio,
-          resolution,
-          target_platforms: platforms
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean),
-        }),
-      onSuccess: () => {
-        void queryClient.invalidateQueries({ queryKey: ['series'] })
-        onDone()
-      },
-      onError: (e) => setErr((e as Error).message),
-    })
+  const mutation = useMutation({
+    mutationFn: () =>
+      api.createSeries({
+        name: name.trim(),
+        dynasty: dynasty.trim(),
+        ratio,
+        resolution,
+        visual_mode: visualMode,
+        target_platforms: platforms
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['series'] })
+      setName('')
+      setDynasty('')
+      setRatio('9:16')
+      setResolution('1080P')
+      setVisualMode('comic')
+      setPlatforms('douyin,kuaishou')
+      setErr('')
+      onClose()
+    },
+    onError: (e) => setErr((e as Error).message),
+  })
 
-    return (
-      <Card title="新建系列">
-        <form
-          className="grid sm:grid-cols-2 gap-4"
-          onSubmit={(e) => {
-            e.preventDefault()
-            setErr('')
-            mutation.mutate()
-          }}
-        >
-          <Field label="系列名称（必填）">
-            <TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="如：鬼谷子" autoFocus />
-          </Field>
-          <Field label="朝代锚定">
-            <TextInput value={dynasty} onChange={(e) => setDynasty(e.target.value)} placeholder="如：战国" />
-          </Field>
-          <Field label="画面比例">
-            <Select value={ratio} onChange={(e) => setRatio(e.target.value)}>
-              <option>9:16</option>
-              <option>16:9</option>
-              <option>1:1</option>
-              <option>3:4</option>
-            </Select>
-          </Field>
-          <Field label="分辨率（档位为长边）">
-            <Select value={resolution} onChange={(e) => setResolution(e.target.value)}>
-              <option>1080P</option>
-              <option>720P</option>
-            </Select>
-          </Field>
+  return (
+    <Modal open={open} onClose={onClose} title="新建系列" wide>
+      <form
+        className="grid sm:grid-cols-2 gap-4"
+        onSubmit={(e) => {
+          e.preventDefault()
+          setErr('')
+          mutation.mutate()
+        }}
+      >
+        <Field label="系列名称（必填）">
+          <TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="如：鬼谷子" autoFocus />
+        </Field>
+        <Field label="朝代锚定">
+          <TextInput value={dynasty} onChange={(e) => setDynasty(e.target.value)} placeholder="如：战国" />
+        </Field>
+        <Field label="画面比例">
+          <Select value={ratio} onChange={(e) => setRatio(e.target.value)}>
+            <option>9:16</option>
+            <option>16:9</option>
+            <option>1:1</option>
+            <option>3:4</option>
+          </Select>
+        </Field>
+        <Field label="分辨率（档位为长边）">
+          <Select value={resolution} onChange={(e) => setResolution(e.target.value)}>
+            <option>1080P</option>
+            <option>720P</option>
+          </Select>
+        </Field>
+        <Field label="画面模式（创建后不可更改）">
+          <Select value={visualMode} onChange={(e) => setVisualMode(e.target.value === 'video' ? 'video' : 'comic')}>
+            <option value="comic">小人书插画（默认 · 省钱）</option>
+            <option value="video">AI 生成视频（动态 · 较贵）</option>
+          </Select>
+        </Field>
+        <Field label="目标平台（逗号分隔，仅记录）">
+          <TextInput value={platforms} onChange={(e) => setPlatforms(e.target.value)} />
+        </Field>
+        {err && (
           <div className="sm:col-span-2">
-            <Field label="目标平台（逗号分隔，仅记录）">
-              <TextInput value={platforms} onChange={(e) => setPlatforms(e.target.value)} />
-            </Field>
+            <ErrorBox>{err}</ErrorBox>
           </div>
-          {err && (
-            <div className="sm:col-span-2">
-              <ErrorBox>{err}</ErrorBox>
-            </div>
-          )}
-          <div className="sm:col-span-2 flex gap-3">
-            <Button type="submit" variant="seal" disabled={mutation.isPending || !name.trim()}>
-              {mutation.isPending && <Spinner />} 创建
-            </Button>
-            <Button type="button" variant="ghost" onClick={onDone}>
-              取消
-            </Button>
-          </div>
-        </form>
-      </Card>
-    )
-  }
+        )}
+        <div className="sm:col-span-2 flex gap-3">
+          <Button type="submit" variant="seal" disabled={mutation.isPending || !name.trim()}>
+            {mutation.isPending && <Spinner />} 创建
+          </Button>
+          <Button type="button" variant="ghost" onClick={onClose}>
+            取消
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  )
 }
 
 function SeriesCard({ series: s }: { series: Series }) {
@@ -167,7 +182,7 @@ function SeriesCard({ series: s }: { series: Series }) {
         <div className="flex gap-2">
           <dt className="w-14 shrink-0 text-paper-300/35">画面</dt>
           <dd>
-            {s.config.ratio} · {s.config.resolution}
+            {s.config.ratio} · {s.config.resolution} · {s.config.visual_mode === 'video' ? 'AI视频' : '小人书'}
           </dd>
         </div>
         <div className="flex gap-2">
