@@ -52,6 +52,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/episodes/{id}/refs", s.generateEpisodeRefs)
 	s.mux.HandleFunc("GET /api/episodes/{id}/events", s.handleSSE)
 	s.mux.HandleFunc("GET /api/episodes/{id}/media", s.serveMedia)
+	s.mux.HandleFunc("GET /api/voices", s.listVoices)
+	s.mux.HandleFunc("POST /api/voices/preview", s.previewVoice)
+	s.mux.HandleFunc("GET /api/voices/preview", s.servePreview)
+	s.mux.HandleFunc("PUT /api/series/{id}/voice", s.updateVoiceProfile)
 }
 
 // Handler 返回带 SPA 回退的总 handler。

@@ -6,6 +6,7 @@ import type { CharacterSetting, Episode } from '../types'
 import { Button, Card, Collapsible, Empty, ErrorBox, Field, Modal, Spinner, TextInput } from '../components/ui'
 import { StatusBadge } from '../components/ui'
 import PlanPanel from '../components/PlanPanel'
+import VoiceProfileCard from '../components/VoiceProfileCard'
 import { useSeriesEvents } from '../useSeriesEvents'
 
 function episodeProgress(ep: Episode) {
@@ -17,6 +18,22 @@ function episodeProgress(ep: Episode) {
 
 function visualModeLabel(mode: string | undefined): string {
   return mode === 'video' ? 'AI 视频' : '小人书插画'
+}
+
+const voicePresetNames: Record<string, string> = {
+  wangliqun: '王立群风格',
+  kaishu: '凯叔风格',
+  yizhongtian: '易中天风格',
+  shuoshu: '说书人风格',
+  cangsang: '沧桑低吟',
+  zhixing: '知性女声',
+}
+
+function voiceLabel(cfg: { voice_profile?: string; tts_voice: string }): string {
+  if (cfg.voice_profile && voicePresetNames[cfg.voice_profile]) {
+    return voicePresetNames[cfg.voice_profile]
+  }
+  return cfg.tts_voice || '默认'
 }
 
 export default function SeriesDetailPage() {
@@ -101,6 +118,11 @@ export default function SeriesDetailPage() {
             <p className="text-sm text-paper-300/70 leading-relaxed">{s.config.tts_instruction}</p>
           </div>
         )}
+      </Collapsible>
+
+      {/* 旁白语音画像（折叠） */}
+      <Collapsible summary="旁白语音画像" badge={<span className="text-xs text-paper-300/40">{voiceLabel(s.config)}</span>}>
+        <VoiceProfileCard seriesId={s.id} config={s.config} />
       </Collapsible>
 
       {/* AI 分集策划（折叠，默认收起） */}

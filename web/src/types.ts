@@ -66,9 +66,22 @@ export interface SeriesConfig {
   visual_mode: string // comic（小人书插画+运镜，默认）/ video（AI 视频）
   tts_voice: string
   tts_instruction: string
+  tts_rate?: number
+  tts_pitch?: number
+  voice_profile?: string // 预设 key：wangliqun/kaishu/yizhongtian/shuoshu/cangsang/zhixing
   target_platforms?: string[]
   max_concurrency: number
   max_retries: number
+}
+
+export interface VoiceProfile {
+  key?: string
+  name: string
+  voice: string
+  instruction?: string
+  rate?: number
+  pitch?: number
+  style_note?: string
 }
 
 export interface CharacterSetting {

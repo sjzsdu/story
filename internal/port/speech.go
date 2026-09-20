@@ -12,6 +12,10 @@ type SpeechRequest struct {
 	Voice string
 	// Instruction 自然语言风格指令。
 	Instruction string
+	// Rate 语速 0.5-2.0，默认 1.0。
+	Rate float64
+	// Pitch 音高 0.5-2.0，默认 1.0。
+	Pitch float64
 	// Format 音频格式（mp3/wav），默认 mp3。
 	Format string
 }

@@ -27,10 +27,17 @@ type SeriesConfig struct {
 	// VisualMode 画面生产模式：comic（小人书：AI 插画 + ffmpeg Ken Burns，默认）
 	// / video（AI 视频片段）。空值与未知值回退 comic。
 	VisualMode string `json:"visual_mode"`
-	// TTSVoice 旁白音色 ID。
+	// TTSVoice 旁白音色 ID（自定义模式时直接指定；预设模式由 VoiceProfile 驱动）。
 	TTSVoice string `json:"tts_voice"`
-	// TTSInstruction 旁白风格自然语言指令。
+	// TTSInstruction 旁白风格自然语言指令（部分音色不支持，provider 自动降级）。
 	TTSInstruction string `json:"tts_instruction"`
+	// TTSRate 语速 0.5-2.0，默认 1.0。
+	TTSRate float64 `json:"tts_rate,omitempty"`
+	// TTSPitch 音高 0.5-2.0，默认 1.0。
+	TTSPitch float64 `json:"tts_pitch,omitempty"`
+	// VoiceProfile 旁白语音画像预设 key（如 wangliqun/kaishu/yizhongtian）。
+	// 空值时使用 TTSVoice（兼容旧数据）；非空时由 voicelibrary.go 解析覆盖 TTSVoice/Rate/Pitch。
+	VoiceProfile string `json:"voice_profile,omitempty"`
 	// TargetPlatforms 目标发布平台（仅记录，供导出参考）。
 	TargetPlatforms []string `json:"target_platforms"`
 	// MaxConcurrency 单集生产的最大并发镜头数。

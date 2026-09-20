@@ -5,8 +5,10 @@ import type {
   EpisodeDraft,
   PlanSession,
   Series,
+  SeriesConfig,
   SeriesDetail,
   JobEvent,
+  VoiceProfile,
 } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -102,6 +104,32 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ force }),
     }),
+
+  // ---- 旁白语音画像 ----
+  listVoices: () => request<VoiceProfile[]>('/api/voices'),
+
+  previewVoice: (body: {
+    profile?: string
+    voice?: string
+    rate?: number
+    pitch?: number
+    instruction?: string
+    text?: string
+  }) => request<{ path: string }>('/api/voices/preview', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
+
+  updateVoiceProfile: (seriesId: string, body: {
+    profile?: string
+    voice?: string
+    rate?: number
+    pitch?: number
+    instruction?: string
+  }) => request<SeriesConfig>(`/api/series/${encodeURIComponent(seriesId)}/voice`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  }),
 }
 
 /** 把服务器上的绝对文件路径转成受权媒体 URL。 */

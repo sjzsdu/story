@@ -22,6 +22,7 @@ import (
 	ffmpegprov "github.com/sjzsdu/story/internal/provider/ffmpeg"
 	sqlitestore "github.com/sjzsdu/story/internal/store/sqlite"
 	"github.com/sjzsdu/story/internal/subtitle"
+	"github.com/sjzsdu/story/internal/templates"
 )
 
 // App 应用容器，CLI 命令通过它访问全部能力。
@@ -73,6 +74,7 @@ type CreateSeriesInput struct {
 	Ratio           string
 	Resolution      string
 	VisualMode      string
+	VoiceProfile    string
 	Voice           string
 	TTSInstruction  string
 	Concurrency     int
@@ -99,6 +101,7 @@ func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.S
 			Ratio:           firstNonEmpty(in.Ratio, a.Cfg.DefaultRatio),
 			Resolution:      firstNonEmpty(in.Resolution, a.Cfg.DefaultResolution),
 			VisualMode:      domain.NormalizeVisualMode(in.VisualMode),
+			VoiceProfile:    in.VoiceProfile,
 			TTSVoice:        firstNonEmpty(in.Voice, a.Cfg.TTSVoice),
 			TTSInstruction:  firstNonEmpty(in.TTSInstruction, a.Cfg.TTSInstruction),
 			TargetPlatforms: in.TargetPlatforms,
@@ -252,6 +255,39 @@ func (a *App) GenerateSeriesKeyframes(ctx context.Context, seriesID string, forc
 func (a *App) GenerateEpisodeRefs(ctx context.Context, episodeID string, force bool) ([]domain.VisualRef, error) {
 	refs, err := a.Engine.GenerateEpisodeRefs(ctx, episodeID, force)
 	return refs, translateErr(err)
+}
+
+// ListVoiceProfiles 返回预设语音画像列表（供前端选择）。
+func (a *App) ListVoiceProfiles() []domain.VoiceProfile {
+	return templates.VoiceProfileList()
+}
+
+// MatchVoiceProfile 按预设 key 查找语音画像（供 server 试音用）。
+func (a *App) MatchVoiceProfile(key string) domain.VoiceProfile {
+	return templates.MatchVoiceProfile(key)
+}
+
+// UpdateSeries 更新系列（配置/人物等），供系列级设置修改用。
+func (a *App) UpdateSeries(ctx context.Context, series *domain.Series) error {
+	return a.Repo.UpdateSeries(ctx, series)
+}
+
+// PreviewVoice 用指定语音画像合成一段样音（供前端试听）。
+// 调用一次 bl speech synthesize，按次计费（成本红线）。
+func (a *App) PreviewVoice(ctx context.Context, profile domain.VoiceProfile, text string) (string, error) {
+	if text == "" {
+		text = "话说天下大势，分久必合，合久必分。"
+	}
+	dir := filepath.Join(os.TempDir(), "story-voice-preview")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	out := filepath.Join(dir, fmt.Sprintf("preview-%d.mp3", time.Now().UnixNano()))
+	_, err := a.Engine.PreviewVoice(ctx, profile, text, out)
+	if err != nil {
+		return "", translateErr(err)
+	}
+	return out, nil
 }
 
 // ApplyEpisodePlan 把分集草案批量落为集（只创建集，不触发视频生产）。

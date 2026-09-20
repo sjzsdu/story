@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/sjzsdu/story/internal/port"
 )
@@ -42,6 +43,12 @@ func (c *Client) synthesize(ctx context.Context, req port.SpeechRequest) (port.S
 	}
 	if req.Instruction != "" {
 		args = append(args, "--instruction", req.Instruction)
+	}
+	if req.Rate > 0 {
+		args = append(args, "--rate", strconv.FormatFloat(req.Rate, 'f', -1, 64))
+	}
+	if req.Pitch > 0 {
+		args = append(args, "--pitch", strconv.FormatFloat(req.Pitch, 'f', -1, 64))
 	}
 
 	if _, err := c.run(ctx, args...); err != nil {

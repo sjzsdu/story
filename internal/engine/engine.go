@@ -311,11 +311,15 @@ func (e *Engine) Produce(ctx context.Context, episodeID string) error {
 					dur, _ := e.composer.ProbeDuration(ctx, audioPath)
 					audioResults[i] = domain.MediaResult{SceneID: sc.ID, Path: audioPath, DurationSec: dur, Skipped: true}
 				} else {
+					// 解析语音画像：有预设 key 时由预设驱动，否则用旧字段兼容。
+					voice, rate, pitch, instr := resolveVoice(series.Config, e.voice, e.instruction)
 					if _, err := e.speech.Synthesize(ctx, port.SpeechRequest{
 						OutPath:     audioPath,
 						Text:        sc.Narration,
-						Voice:       firstNonEmpty(series.Config.TTSVoice, e.voice),
-						Instruction: firstNonEmpty(series.Config.TTSInstruction, e.instruction),
+						Voice:       voice,
+						Instruction: instr,
+						Rate:        rate,
+						Pitch:       pitch,
 						Format:      "mp3",
 					}); err != nil {
 						return fmt.Errorf("旁白合成: %w", err)
@@ -430,6 +434,23 @@ func (e *Engine) Compose(ctx context.Context, episodeID string) (string, error) 
 		return "", err
 	}
 	return res.FinalPath, nil
+}
+
+// PreviewVoice 用指定语音画像合成一段样音（试音用，不计入流水线状态）。
+func (e *Engine) PreviewVoice(ctx context.Context, p domain.VoiceProfile, text, outPath string) (string, error) {
+	if text == "" {
+		text = "话说天下大势，分久必合，合久必分。"
+	}
+	_, err := e.speech.Synthesize(ctx, port.SpeechRequest{
+		OutPath:     outPath,
+		Text:        text,
+		Voice:       p.Voice,
+		Instruction: p.Instruction,
+		Rate:        p.Rate,
+		Pitch:       p.Pitch,
+		Format:      "mp3",
+	})
+	return outPath, err
 }
 
 // Export 从成片导出其他比例版本。
