@@ -159,6 +159,23 @@ internal/store/sqlite      （Repository 的 SQLite 实现）
 - 生效路径：文字约束在分镜阶段注入 prompt（visual_prompt 须用 name 指代并逐字复制 description）；**参考图仅 video 模式** produce 时经 `refImagesForScene`（人物/场景名 Contains 匹配）→ `bl video ref`，`refPromptPrefix` 区分「人物形象参考/场景环境参考」。comic 模式 `bl image generate` 不支持参考图，只吃文字约束。
 - Web：集详情页新增折叠区「本集视觉参考（人物/场景）」（缩略图 + 描述 + 生成缺失/全部重生按钮，徽标显示条数与图片数）；系列页卡片改名「系列视觉参考 · 人物」，空态提示单元剧人物/场景在集页管理。旧分镜无 refs 时提示重跑 storyboard（不产生图片费用）。
 
+## 16. 声音库顶层实体化（2026-09-20 增补）
+
+- 背景：旧路径把旁白音色硬编码在 `templates.VoicePresets`（6 个预设 key：wangliqun/kaishu/yizhongtian/shuoshu/cangsang/zhixing），参数散落在 `SeriesConfig`（TTSVoice/TTSInstruction/TTSRate/TTSPitch）与 `VoiceProfile` 字段，用户既无法新建/编辑音色条目，也无法跨系列复用自定义参数。决策：把声音提升为与 Series 同级的顶层持久化实体，新建系列时选定一个 voice_id 即可，**创建后锁定不可改**（与 §13 画面模式同款锁定语义）。
+- 数据模型：`domain.Voice struct{ID,Name,Voice,Instruction,Rate,Pitch,StyleNote,IsBuiltin,CreatedAt,UpdatedAt}`（`internal/domain/voice.go`）；`Series.VoiceID string`（`series.voice_id` 列，ensureColumn 幂等迁移）；`Voice.ToProfile()` 转回 `VoiceProfile` 供旧 API 用。`VoiceProfile` 值对象保留作 engine 间 DTO 与旧字段兼容期的回退。
+- 持久化：`internal/store/sqlite/voices.go` 实现 `voices` 表 CRUD + 两个一次性启动辅助：
+  - `SeedBuiltinVoices(ctx, store, presets)`：Bootstrap 在 `Open` 之后调一次，用 `INSERT OR IGNORE` 把 6 个预设写入 voices（id=key, is_builtin=1，幂等可重复跑）。
+  - `MigrateSeriesVoiceIDs(ctx, store, fallbackVoice, fallbackInstr)`：平迁旧 series 写回 voice_id。规则按优先级：①voice_id 已有跳过；②VoiceProfile 对应内置条目存在则用 key 作 id；③TTSVoice 或 fallback 非空 → 先在 voices 表按 voice+rate+pitch+instruction 匹配既有条目，否则建 `custom-<nanos>` 用户条目并写回；④全空 → 写默认条目 ID（wangliqun）。
+  - 错误哨兵：`ErrVoiceBuiltin`（内置不可删）、`ErrVoiceInUse`（被系列引用拒绝删除）。
+- 接口扩展：`port.Repository` 新增 `CreateVoice/GetVoice/ListVoices/UpdateVoice/DeleteVoice/CountSeriesByVoiceID`；mock 同步实现 noop 内存版。`app.App` 新增 `ListVoices/GetVoice/CreateVoice/CreateVoiceInput/UpdateVoice/DeleteVoice/GetSeriesVoice`；`CreateSeriesInput` 加 `VoiceID` 字段，`CreateSeries` 校验 voice_id 必填（空时按 resolveCreateSeriesVoiceID 平迁规则回退）；`ListVoiceProfiles` 改为读表返回 `[]*domain.Voice`；`MatchVoiceProfile(key)` 改为按 key 查表回退到 templates 兜底。
+- engine 解析：`internal/engine/voice.go` 重写 `resolveVoice(ctx, cfg, voiceID, fallbackVoice, fallbackInstr)` 三级回退：①优先按 voice_id 查表（`repo.GetVoice`）；②旧 `cfg.VoiceProfile` 非空 → `templates.MatchVoiceProfile`；③旧 `cfg.TTSVoice` 裸读 + fallback 兜底。`Produce` 调用点 `engine.go:315` 改为传 `series.VoiceID`。
+- **锁定语义**：靠 SQL 不入 voice_id 列实现——`store.UpdateSeries` 的 SET 子句不含 `voice_id` 列，应用层不需要判断；`PUT /api/series/{id}/voice` 路由保留但 `voiceProfileLocked` handler 直接返回 409「声音创建后锁定，请到声音页编辑条目」。**声音条目本身可编辑**，改后影响所有引用它的系列（这正是把声音提升为顶层实体的目的——一次改全网生效）。
+- 旧字段兼容期：`SeriesConfig.TTSVoice/TTSInstruction/TTSRate/TTSPitch/VoiceProfile` **不删**，保留给 resolveVoice 规则 ②③作回退路径；新建系列一律走 voice_id，旧字段在 SeriesConfig 中可空。删除旧字段需要等所有旧 series 完成迁移并确认无回退需求。
+- 入口与 UI：
+  - CLI：新增 `story voice` 子命令（list/show/add/edit/rm/preview，flags `--name/--voice/--instruction/--rate/--pitch/--style-note/--text`）；`story series create` 新增 `--voice <voice-id>`（推荐），旧 `--voice-profile` 兼容，旧 `--voice` 改名 `--voice-raw`。
+  - server：新增 `POST/GET/PUT/DELETE /api/voices/{id}` 与 `/api/voices/preview`（POST，body `voice_id`/`profile`/`voice+rate+pitch+instruction` 三种入口）；`createSeries` 请求体加 `voice_id` 字段。
+  - Web：新增独立路由 `/voices` 与 `VoicesPage`（卡片网格 + CreateVoiceModal/EditVoiceModal，内置禁删、引用时弹错）；nav 加「声音」入口；新建系列 Modal 加声音下拉（默认 wangliqun，Field 标「声音（创建后不可更改）」）；系列详情页 Collapsible 标题从「旁白语音画像」改名「声音」，卡片改只读展示 name/voice/rate/pitch/instruction + 试听按钮（编辑入口移到 VoicesPage）。
+
 ## 变更记录
 
 - 2026-09-18：初始决策（Go + cobra + SQLite；接口驱动；系列/集模型；并发上限 3、重试 3；百炼为首家 provider；ffmpeg 合成与硬字幕；默认 9:16）。
@@ -172,3 +189,4 @@ internal/store/sqlite      （Repository 的 SQLite 实现）
 - 2026-09-20（故事生成即定稿）：取消多候选人工选择（见 §14）：故事 prompt 输出单篇定稿、generate 自动完成 pick、验收下限 3→1；CLI/run/server run 不再需要候选序号，Web 去除候选卡片，StepsBar 隐藏 pick；pick 链路保留兼容旧数据。同日把系列页画面模式升级为「系列设置」卡片（两个模式可点选），新建系列表单新增画面模式字段。
 - 2026-09-20（画面模式锁定 + 系列页信息架构）：画面模式改为创建时锁定、系列创建后不可改（移除 `PUT /api/series/{id}/config`、`App.UpdateSeriesVisualMode` 与 Web 选择器，标题旁只读展示）；系列详情页重构：系列信息/AI 策划/定妆照改为 Collapsible 折叠（集列表始终展示），删除系列下沉页脚；新建一集、新建系列均改为 Modal 弹窗（ui.tsx 新增 Modal/Collapsible，Modal 支持 Esc/遮罩关闭与 wide 加宽）。
 - 2026-09-20（视觉参考两级化，见 §15）：新增 `domain.VisualRef`（character/scene）与 `Episode.Refs`（episodes.refs_json 迁移）；分镜顺带零成本产出本集人物+重复场景文字约束，参考图改手动按张生成（集级 `POST /api/episodes/{id}/refs`、CLI `story episode-refs`，落集 refs/，场景空镜图走 SceneRefPrompt/SceneClause）；系列+集两级同名集级优先，重跑分镜保留已生成图；video 模式人物/场景参考图均喂 bl video ref；UI 全面改称「视觉参考」，集页新增本集视觉参考折叠区，系列页改名「系列视觉参考 · 人物」。
+- 2026-09-20（声音库顶层实体化，见 §16）：声音从 `templates.VoicePresets` 硬编码提升为与 Series 同级的持久化实体（`domain.Voice` + `voices` 表）；`Series.VoiceID` 创建后锁定（store.UpdateSeries SQL 不含 voice_id 列）；Bootstrap 调 `SeedBuiltinVoices` 写 6 个内置条目 + `MigrateSeriesVoiceIDs` 平迁旧 series；engine `resolveVoice` 三级回退（voice_id 查表 → VoiceProfile 预设 → TTSVoice 裸读）；CLI 新增 `story voice` 子命令、`story series create --voice`；server 新增 `/api/voices/{id}` CRUD + `/api/voices/preview`；Web 新增 `/voices` 页与新建系列 Modal 声音下拉，系列详情页声音卡片改只读展示。

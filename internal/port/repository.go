@@ -37,5 +37,15 @@ type Repository interface {
 	SavePlanSession(ctx context.Context, session *domain.PlanSession) error
 	DeletePlanSession(ctx context.Context, seriesID string) error
 
+	// 声音（顶层实体，§16）：CRUD + 引用统计 + 迁移辅助。
+	CreateVoice(ctx context.Context, v *domain.Voice) error
+	GetVoice(ctx context.Context, id string) (*domain.Voice, error)
+	ListVoices(ctx context.Context) ([]*domain.Voice, error)
+	UpdateVoice(ctx context.Context, v *domain.Voice) error
+	// DeleteVoice 删除声音条目；内置条目或被系列引用时应返回错误。
+	DeleteVoice(ctx context.Context, id string) error
+	// CountSeriesByVoiceID 统计引用某声音的系列数（删除前校验）。
+	CountSeriesByVoiceID(ctx context.Context, voiceID string) (int, error)
+
 	Close() error
 }

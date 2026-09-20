@@ -20,22 +20,6 @@ function visualModeLabel(mode: string | undefined): string {
   return mode === 'video' ? 'AI 视频' : '小人书插画'
 }
 
-const voicePresetNames: Record<string, string> = {
-  wangliqun: '王立群风格',
-  kaishu: '凯叔风格',
-  yizhongtian: '易中天风格',
-  shuoshu: '说书人风格',
-  cangsang: '沧桑低吟',
-  zhixing: '知性女声',
-}
-
-function voiceLabel(cfg: { voice_profile?: string; tts_voice: string }): string {
-  if (cfg.voice_profile && voicePresetNames[cfg.voice_profile]) {
-    return voicePresetNames[cfg.voice_profile]
-  }
-  return cfg.tts_voice || '默认'
-}
-
 export default function SeriesDetailPage() {
   const { seriesId = '' } = useParams()
   const navigate = useNavigate()
@@ -120,9 +104,9 @@ export default function SeriesDetailPage() {
         )}
       </Collapsible>
 
-      {/* 旁白语音画像（折叠） */}
-      <Collapsible summary="旁白语音画像" badge={<span className="text-xs text-paper-300/40">{voiceLabel(s.config)}</span>}>
-        <VoiceProfileCard seriesId={s.id} config={s.config} />
+      {/* 声音（§16：顶层实体，创建后锁定） */}
+      <Collapsible summary="声音" badge={<span className="text-xs text-paper-300/40">{s.voice_id || '未关联'}</span>}>
+        <VoiceProfileCard seriesId={s.id} />
       </Collapsible>
 
       {/* AI 分集策划（折叠，默认收起） */}

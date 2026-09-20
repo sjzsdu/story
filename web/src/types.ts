@@ -74,6 +74,21 @@ export interface SeriesConfig {
   max_retries: number
 }
 
+// §16：声音顶层实体（与 Series 同级）。series.voice_id 创建后锁定不可改。
+export interface Voice {
+  id: string
+  name: string
+  voice: string // 百炼语音 ID，如 longtian_v3
+  instruction?: string
+  rate?: number
+  pitch?: number
+  style_note?: string
+  is_builtin: boolean
+  created_at: string
+  updated_at: string
+}
+
+// VoiceProfile 旧值对象类型（兼容期保留，server preview/试音仍接收）。
 export interface VoiceProfile {
   key?: string
   name: string
@@ -106,6 +121,8 @@ export interface Series {
   name: string
   dynasty: string
   description: string
+  // §16：引用的顶层 Voice 条目 ID；创建后锁定，store.UpdateSeries SQL 不写该列。
+  voice_id: string
   config: SeriesConfig
   characters: CharacterSetting[]
   created_at: string

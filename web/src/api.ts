@@ -5,10 +5,9 @@ import type {
   EpisodeDraft,
   PlanSession,
   Series,
-  SeriesConfig,
   SeriesDetail,
   JobEvent,
-  VoiceProfile,
+  Voice,
 } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -36,6 +35,8 @@ export const api = {
     resolution?: string
     target_platforms?: string[]
     visual_mode?: 'comic' | 'video'
+    // §16：声音条目 ID（推荐）；未传时服务端按平迁规则建/取一个。
+    voice_id?: string
   }) => request<Series>('/api/series', { method: 'POST', body: JSON.stringify(body) }),
 
   getSeries: (id: string) => request<SeriesDetail>(`/api/series/${encodeURIComponent(id)}`),
@@ -105,10 +106,49 @@ export const api = {
       body: JSON.stringify({ force }),
     }),
 
-  // ---- 旁白语音画像 ----
-  listVoices: () => request<VoiceProfile[]>('/api/voices'),
+  // ---- 声音（顶层实体，§16） ----
+  // GET /api/voices 返回 []Voice；旧 listVoices 返回 VoiceProfile[] 已废弃。
+  listVoices: () => request<Voice[]>('/api/voices'),
 
+  getVoice: (id: string) =>
+    request<Voice>(`/api/voices/${encodeURIComponent(id)}`),
+
+  createVoice: (body: {
+    name: string
+    voice: string
+    instruction?: string
+    rate?: number
+    pitch?: number
+    style_note?: string
+  }) => request<Voice>('/api/voices', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
+
+  updateVoice: (id: string, body: {
+    name?: string
+    voice?: string
+    instruction?: string
+    rate?: number
+    pitch?: number
+    style_note?: string
+  }) => request<Voice>(`/api/voices/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  }),
+
+  deleteVoice: (id: string) =>
+    request<{ status: string; id: string }>(
+      `/api/voices/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    ),
+
+  // previewVoice 三种入口（任选其一）：
+  //   voice_id：按顶层 Voice 条目解析（推荐）
+  //   profile：旧预设 key（回退兼容）
+  //   voice + rate + pitch + instruction：裸自定义参数
   previewVoice: (body: {
+    voice_id?: string
     profile?: string
     voice?: string
     rate?: number
@@ -117,17 +157,6 @@ export const api = {
     text?: string
   }) => request<{ path: string }>('/api/voices/preview', {
     method: 'POST',
-    body: JSON.stringify(body),
-  }),
-
-  updateVoiceProfile: (seriesId: string, body: {
-    profile?: string
-    voice?: string
-    rate?: number
-    pitch?: number
-    instruction?: string
-  }) => request<SeriesConfig>(`/api/series/${encodeURIComponent(seriesId)}/voice`, {
-    method: 'PUT',
     body: JSON.stringify(body),
   }),
 }

@@ -42,6 +42,14 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*App, error) {
 		return nil, err
 	}
 
+	// §16：seed 内置声音条目（幂等）+ 旧 series 平迁 voice_id（仅迁移无 voice_id 的行）。
+	if err := sqlitestore.SeedBuiltinVoices(ctx, store, templates.VoicePresets); err != nil {
+		return nil, fmt.Errorf("seed 内置声音: %w", err)
+	}
+	if err := sqlitestore.MigrateSeriesVoiceIDs(ctx, store, cfg.TTSVoice, cfg.TTSInstruction); err != nil {
+		return nil, fmt.Errorf("迁移系列 voice_id: %w", err)
+	}
+
 	bl := bailianprov.NewClient(cfg.BLBin, cfg.TextModel, cfg.VideoModel, cfg.TTSModel, cfg.ImageModel)
 	composer := ffmpegprov.New(cfg.FFMPEGBin, cfg.FFProbeBin())
 	if cfg.SubtitleFont != "" {
@@ -68,12 +76,16 @@ func (a *App) Close() error {
 
 // CreateSeriesInput 创建系列的参数。
 type CreateSeriesInput struct {
-	Name            string
-	Dynasty         string
-	Description     string
-	Ratio           string
-	Resolution      string
-	VisualMode      string
+	Name        string
+	Dynasty     string
+	Description string
+	Ratio       string
+	Resolution  string
+	VisualMode  string
+	// VoiceID 选定的声音条目 ID（顶层 Voice 实体，必填）。
+	// 创建后锁定不可改（store.UpdateSeries SQL 不含 voice_id 列）。
+	VoiceID string
+	// VoiceProfile/TTSInstruction 兼容旧请求体：未传 VoiceID 时按平迁规则现场建/取一个。
 	VoiceProfile    string
 	Voice           string
 	TTSInstruction  string
@@ -83,11 +95,24 @@ type CreateSeriesInput struct {
 }
 
 // CreateSeries 创建一个新系列（ID 由名称生成拼音 slug，冲突时追加序号）。
+// 必须指定 VoiceID；未指定时按平迁规则现场建/取一个（兼容旧 CLI/Web 请求）。
 func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.Series, error) {
 	id := Slugify(in.Name)
 	id, err := a.uniqueSeriesID(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+
+	// §16：voice_id 必填；未传时按平迁规则现场建/取一个。
+	voiceID := strings.TrimSpace(in.VoiceID)
+	if voiceID == "" {
+		vid, err := a.resolveCreateSeriesVoiceID(ctx, in)
+		if err != nil {
+			return nil, err
+		}
+		voiceID = vid
+	} else if _, err := a.Repo.GetVoice(ctx, voiceID); err != nil {
+		return nil, translateErr(fmt.Errorf("声音 %s 不存在: %w", voiceID, err))
 	}
 
 	now := time.Now()
@@ -96,6 +121,7 @@ func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.S
 		Name:        in.Name,
 		Dynasty:     in.Dynasty,
 		Description: in.Description,
+		VoiceID:     voiceID,
 		Config: domain.SeriesConfig{
 			Dynasty:         in.Dynasty,
 			Ratio:           firstNonEmpty(in.Ratio, a.Cfg.DefaultRatio),
@@ -118,6 +144,38 @@ func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.S
 		return nil, err
 	}
 	return se, nil
+}
+
+// resolveCreateSeriesVoiceID 旧请求体未传 VoiceID 时按平迁规则现场建/取一个。
+// 1) VoiceProfile 非空 → 对应内置条目 ID（不存在则失败）。
+// 2) TTSVoice 非空 → 按自定义参数建用户条目。
+// 3) 全空 → 默认 wangliqun。
+func (a *App) resolveCreateSeriesVoiceID(ctx context.Context, in CreateSeriesInput) (string, error) {
+	if strings.TrimSpace(in.VoiceProfile) != "" {
+		v, err := a.Repo.GetVoice(ctx, in.VoiceProfile)
+		if err != nil {
+			return "", translateErr(fmt.Errorf("声音 %s 不存在: %w", in.VoiceProfile, err))
+		}
+		return v.ID, nil
+	}
+	voice := firstNonEmpty(in.Voice, a.Cfg.TTSVoice)
+	if voice == "" {
+		// 全空 → 默认条目（Bootstrap 已 seed，必存在）。
+		return domain.VoiceProfileWangliqun, nil
+	}
+	// 自定义参数 → 新建用户条目。
+	vid := fmt.Sprintf("custom-%d", time.Now().UnixNano())
+	v := &domain.Voice{
+		ID:          vid,
+		Name:        "自定义 " + voice,
+		Voice:       voice,
+		Instruction: firstNonEmpty(in.TTSInstruction, a.Cfg.TTSInstruction),
+		IsBuiltin:   false,
+	}
+	if err := a.Repo.CreateVoice(ctx, v); err != nil {
+		return "", err
+	}
+	return vid, nil
 }
 
 // CreateEpisode 在系列下创建一集，并初始化工作目录与流水线状态。
@@ -257,17 +315,145 @@ func (a *App) GenerateEpisodeRefs(ctx context.Context, episodeID string, force b
 	return refs, translateErr(err)
 }
 
-// ListVoiceProfiles 返回预设语音画像列表（供前端选择）。
-func (a *App) ListVoiceProfiles() []domain.VoiceProfile {
-	return templates.VoiceProfileList()
+// ---- 声音（顶层实体，§16） ----
+
+// ListVoices 列出全部声音条目（含内置 + 用户自定义）。
+func (a *App) ListVoices(ctx context.Context) ([]*domain.Voice, error) {
+	vs, err := a.Repo.ListVoices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if vs == nil {
+		vs = []*domain.Voice{}
+	}
+	return vs, nil
 }
 
-// MatchVoiceProfile 按预设 key 查找语音画像（供 server 试音用）。
-func (a *App) MatchVoiceProfile(key string) domain.VoiceProfile {
+// GetVoice 查询单个声音条目。
+func (a *App) GetVoice(ctx context.Context, id string) (*domain.Voice, error) {
+	v, err := a.Repo.GetVoice(ctx, id)
+	return v, translateErr(err)
+}
+
+// CreateVoiceInput 创建声音条目的参数。
+type CreateVoiceInput struct {
+	Name        string
+	Voice       string
+	Instruction string
+	Rate        float64
+	Pitch       float64
+	StyleNote   string
+}
+
+// CreateVoice 新建用户声音条目（ID = slug + nanos 后缀保证唯一）。
+func (a *App) CreateVoice(ctx context.Context, in CreateVoiceInput) (*domain.Voice, error) {
+	if strings.TrimSpace(in.Name) == "" {
+		return nil, fmt.Errorf("name 不能为空")
+	}
+	if strings.TrimSpace(in.Voice) == "" {
+		return nil, fmt.Errorf("voice 不能为空")
+	}
+	id, err := a.uniqueVoiceID(ctx, Slugify(in.Name))
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	v := &domain.Voice{
+		ID:          id,
+		Name:        in.Name,
+		Voice:       in.Voice,
+		Instruction: in.Instruction,
+		Rate:        in.Rate,
+		Pitch:       in.Pitch,
+		StyleNote:   in.StyleNote,
+		IsBuiltin:   false,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := a.Repo.CreateVoice(ctx, v); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// UpdateVoice 更新声音条目（内置条目也可改；改后影响所有引用它的系列）。
+func (a *App) UpdateVoice(ctx context.Context, v *domain.Voice) error {
+	// 保持 IsBuiltin 不变：用户不能通过该接口把内置标记改成 false。
+	existing, err := a.Repo.GetVoice(ctx, v.ID)
+	if err != nil {
+		return translateErr(err)
+	}
+	v.IsBuiltin = existing.IsBuiltin
+	return translateErr(a.Repo.UpdateVoice(ctx, v))
+}
+
+// DeleteVoice 删除声音条目（内置不可删；被系列引用拒绝）。
+func (a *App) DeleteVoice(ctx context.Context, id string) error {
+	return translateErr(a.Repo.DeleteVoice(ctx, id))
+}
+
+// GetSeriesVoice 取某系列引用的声音条目；找不到时回退默认预设（engine fallback 用）。
+func (a *App) GetSeriesVoice(ctx context.Context, seriesID string) (*domain.Voice, error) {
+	s, err := a.Repo.GetSeries(ctx, seriesID)
+	if err != nil {
+		return nil, translateErr(err)
+	}
+	if s.VoiceID != "" {
+		v, err := a.Repo.GetVoice(ctx, s.VoiceID)
+		if err == nil {
+			return v, nil
+		}
+	}
+	// 回退：按旧 VoiceProfile/TTSVoice 现场匹配，最终默认 wangliqun。
+	key := s.Config.VoiceProfile
+	if key == "" {
+		key = domain.VoiceProfileWangliqun
+	}
+	v, err := a.Repo.GetVoice(ctx, key)
+	if err != nil {
+		return nil, translateErr(err)
+	}
+	return v, nil
+}
+
+// uniqueVoiceID 生成不冲突的声音 ID（slug 冲突时追加序号）。
+func (a *App) uniqueVoiceID(ctx context.Context, base string) (string, error) {
+	if base == "" {
+		base = fmt.Sprintf("voice-%x", time.Now().UnixNano()&0xffff)
+	}
+	id := base
+	for i := 2; ; i++ {
+		_, err := a.Repo.GetVoice(ctx, id)
+		if err != nil {
+			if strings.Contains(err.Error(), "不存在") {
+				return id, nil
+			}
+			return "", err
+		}
+		id = fmt.Sprintf("%s-%d", base, i)
+	}
+}
+
+// ListVoiceProfiles 返回内置预设语音画像列表（兼容旧 API，读取顶层 Voice 表）。
+// 旧签名无 ctx；改为读表但保持调用方兼容（server 启动后表必有内置条目）。
+func (a *App) ListVoiceProfiles(ctx context.Context) ([]*domain.Voice, error) {
+	return a.ListVoices(ctx)
+}
+
+// MatchVoiceProfile 按预设 key 查找语音画像（供 server 试音 fallback 用）。
+// 优先读表；表缺失时回退到 templates 内置预设。
+func (a *App) MatchVoiceProfile(ctx context.Context, key string) domain.VoiceProfile {
+	if key == "" {
+		key = domain.VoiceProfileWangliqun
+	}
+	if v, err := a.Repo.GetVoice(ctx, key); err == nil {
+		return v.ToProfile()
+	}
 	return templates.MatchVoiceProfile(key)
 }
 
 // UpdateSeries 更新系列（配置/人物等），供系列级设置修改用。
+// 注意：voice_id 不在此处更新（创建后锁定，store.UpdateSeries SQL 不含该列）。
 func (a *App) UpdateSeries(ctx context.Context, series *domain.Series) error {
 	return a.Repo.UpdateSeries(ctx, series)
 }

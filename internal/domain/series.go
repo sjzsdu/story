@@ -8,10 +8,13 @@ type Series struct {
 	Name        string             `json:"name"`
 	Dynasty     string             `json:"dynasty"`
 	Description string             `json:"description"`
-	Config      SeriesConfig       `json:"config"`
-	Characters  []CharacterSetting `json:"characters"`
-	CreatedAt   time.Time          `json:"created_at"`
-	UpdatedAt   time.Time          `json:"updated_at"`
+	// VoiceID 引用的声音条目 ID（顶层 Voice 实体，§16）。
+	// 创建系列时选定，之后锁定不可改（store.UpdateSeries SQL 不含该列）。
+	VoiceID    string             `json:"voice_id"`
+	Config     SeriesConfig       `json:"config"`
+	Characters []CharacterSetting `json:"characters"`
+	CreatedAt  time.Time          `json:"created_at"`
+	UpdatedAt  time.Time          `json:"updated_at"`
 }
 
 // SeriesConfig 系列级配置，同一系列各集共享。

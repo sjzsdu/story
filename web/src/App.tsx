@@ -1,6 +1,7 @@
 import { Routes, Route, Link, useLocation } from 'react-router-dom'
 import SeriesListPage from './pages/SeriesListPage'
 import SeriesDetailPage from './pages/SeriesDetailPage'
+import VoicesPage from './pages/VoicesPage'
 import EpisodePage from './pages/EpisodePage'
 
 function Brand() {
@@ -26,12 +27,18 @@ export default function App() {
       <header className="sticky top-0 z-20 border-b border-ink-800 bg-ink-950/85 backdrop-blur">
         <div className="max-w-6xl mx-auto px-5 h-14 flex items-center justify-between">
           <Brand />
-          <nav className="text-sm text-paper-300/70">
+          <nav className="text-sm text-paper-300/70 flex items-center gap-5">
             <Link
               to="/"
               className={`hover:text-paper-100 ${loc.pathname === '/' ? 'text-gold-500' : ''}`}
             >
               系列
+            </Link>
+            <Link
+              to="/voices"
+              className={`hover:text-paper-100 ${loc.pathname === '/voices' ? 'text-gold-500' : ''}`}
+            >
+              声音
             </Link>
           </nav>
         </div>
@@ -40,6 +47,7 @@ export default function App() {
       <main className="flex-1 w-full max-w-6xl mx-auto px-5 py-8">
         <Routes>
           <Route path="/" element={<SeriesListPage />} />
+          <Route path="/voices" element={<VoicesPage />} />
           <Route path="/series/:seriesId" element={<SeriesDetailPage />} />
           <Route path="/series/:seriesId/episodes/:episodeId" element={<EpisodePage />} />
         </Routes>

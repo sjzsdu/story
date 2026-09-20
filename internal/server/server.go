@@ -53,9 +53,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/episodes/{id}/events", s.handleSSE)
 	s.mux.HandleFunc("GET /api/episodes/{id}/media", s.serveMedia)
 	s.mux.HandleFunc("GET /api/voices", s.listVoices)
+	s.mux.HandleFunc("POST /api/voices", s.createVoice)
+	s.mux.HandleFunc("GET /api/voices/{id}", s.getVoice)
+	s.mux.HandleFunc("PUT /api/voices/{id}", s.updateVoice)
+	s.mux.HandleFunc("DELETE /api/voices/{id}", s.deleteVoice)
 	s.mux.HandleFunc("POST /api/voices/preview", s.previewVoice)
 	s.mux.HandleFunc("GET /api/voices/preview", s.servePreview)
-	s.mux.HandleFunc("PUT /api/series/{id}/voice", s.updateVoiceProfile)
+	// §16：series.voice_id 创建后锁定，不再允许单独更新；旧端点返回 409 提示编辑声音条目本身。
+	s.mux.HandleFunc("PUT /api/series/{id}/voice", s.voiceProfileLocked)
 }
 
 // Handler 返回带 SPA 回退的总 handler。
@@ -122,13 +127,17 @@ func (s *Server) listSeries(w http.ResponseWriter, r *http.Request) {
 }
 
 type createSeriesReq struct {
-	Name            string   `json:"name"`
-	Dynasty         string   `json:"dynasty"`
-	Description     string   `json:"description"`
-	Ratio           string   `json:"ratio"`
-	Resolution      string   `json:"resolution"`
-	VisualMode      string   `json:"visual_mode"`
+	Name        string `json:"name"`
+	Dynasty     string `json:"dynasty"`
+	Description string `json:"description"`
+	Ratio       string `json:"ratio"`
+	Resolution  string `json:"resolution"`
+	VisualMode  string `json:"visual_mode"`
+	// VoiceID 顶层声音条目 ID（§16，推荐路径）。
+	VoiceID string `json:"voice_id"`
+	// Voice/VoiceProfile/TTSInstruction 旧字段：未传 VoiceID 时按平迁规则现场建/取一个。
 	Voice           string   `json:"voice"`
+	VoiceProfile    string   `json:"voice_profile"`
 	TTSInstruction  string   `json:"tts_instruction"`
 	Concurrency     int      `json:"concurrency"`
 	Retries         int      `json:"retries"`
@@ -152,7 +161,9 @@ func (s *Server) createSeries(w http.ResponseWriter, r *http.Request) {
 		Ratio:           req.Ratio,
 		Resolution:      req.Resolution,
 		VisualMode:      req.VisualMode,
+		VoiceID:         req.VoiceID,
 		Voice:           req.Voice,
+		VoiceProfile:    req.VoiceProfile,
 		TTSInstruction:  req.TTSInstruction,
 		Concurrency:     req.Concurrency,
 		Retries:         req.Retries,

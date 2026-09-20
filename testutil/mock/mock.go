@@ -20,6 +20,7 @@ type Repo struct {
 	Series   map[string]*domain.Series
 	Episodes map[string]*domain.Episode
 	Plans    map[string]*domain.PlanSession
+	Voices   map[string]*domain.Voice
 }
 
 // NewRepo 创建空内存仓储。
@@ -28,6 +29,7 @@ func NewRepo() *Repo {
 		Series:   map[string]*domain.Series{},
 		Episodes: map[string]*domain.Episode{},
 		Plans:    map[string]*domain.PlanSession{},
+		Voices:   map[string]*domain.Voice{},
 	}
 }
 
@@ -171,6 +173,84 @@ func (r *Repo) DeletePlanSession(_ context.Context, seriesID string) error {
 	defer r.mu.Unlock()
 	delete(r.Plans, seriesID)
 	return nil
+}
+
+// ---- 声音（顶层实体，§16 mock） ----
+
+func (r *Repo) CreateVoice(_ context.Context, v *domain.Voice) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.Voices[v.ID]; ok {
+		return fmt.Errorf("声音已存在: %s", v.ID)
+	}
+	r.Voices[v.ID] = v
+	return nil
+}
+
+func (r *Repo) GetVoice(_ context.Context, id string) (*domain.Voice, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	v, ok := r.Voices[id]
+	if !ok {
+		return nil, fmt.Errorf("%w: 声音 %s", port.ErrNotFound, id)
+	}
+	return v, nil
+}
+
+func (r *Repo) ListVoices(_ context.Context) ([]*domain.Voice, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*domain.Voice, 0, len(r.Voices))
+	for _, v := range r.Voices {
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+func (r *Repo) UpdateVoice(_ context.Context, v *domain.Voice) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.Voices[v.ID]; !ok {
+		return fmt.Errorf("%w: 声音 %s", port.ErrNotFound, v.ID)
+	}
+	r.Voices[v.ID] = v
+	return nil
+}
+
+func (r *Repo) DeleteVoice(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	v, ok := r.Voices[id]
+	if !ok {
+		return fmt.Errorf("%w: 声音 %s", port.ErrNotFound, id)
+	}
+	if v.IsBuiltin {
+		return fmt.Errorf("内置声音不可删除: %s", id)
+	}
+	// 引用计数：扫一遍 Series
+	count := 0
+	for _, s := range r.Series {
+		if s.VoiceID == id {
+			count++
+		}
+	}
+	if count > 0 {
+		return fmt.Errorf("声音被 %d 个系列引用: %s", count, id)
+	}
+	delete(r.Voices, id)
+	return nil
+}
+
+func (r *Repo) CountSeriesByVoiceID(_ context.Context, voiceID string) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, s := range r.Series {
+		if s.VoiceID == voiceID {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // SeriesPlanner 分集策划 mock。

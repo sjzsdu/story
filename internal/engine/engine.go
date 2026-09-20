@@ -311,8 +311,8 @@ func (e *Engine) Produce(ctx context.Context, episodeID string) error {
 					dur, _ := e.composer.ProbeDuration(ctx, audioPath)
 					audioResults[i] = domain.MediaResult{SceneID: sc.ID, Path: audioPath, DurationSec: dur, Skipped: true}
 				} else {
-					// 解析语音画像：有预设 key 时由预设驱动，否则用旧字段兼容。
-					voice, rate, pitch, instr := resolveVoice(series.Config, e.voice, e.instruction)
+					// 解析语音画像：§16 起优先按 series.voice_id 查表，回退旧字段。
+					voice, rate, pitch, instr := e.resolveVoice(ctx, series.Config, series.VoiceID, e.voice, e.instruction)
 					if _, err := e.speech.Synthesize(ctx, port.SpeechRequest{
 						OutPath:     audioPath,
 						Text:        sc.Narration,

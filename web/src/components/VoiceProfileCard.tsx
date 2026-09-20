@@ -1,120 +1,132 @@
 import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '../api'
-import type { SeriesConfig } from '../types'
-import { Button, Spinner } from './ui'
+import { Button, ErrorBox, Spinner } from './ui'
 
-export default function VoiceProfileCard({
-  seriesId,
-  config,
-}: {
-  seriesId: string
-  config: SeriesConfig
-}) {
-  const qc = useQueryClient()
+/**
+ * VoiceProfileCard 系列详情页「声音」卡片（§16）。
+ * §16 起声音顶层实体化：series.voice_id 创建后锁定不可改，本卡片改为只读展示 + 试听；
+ * 编辑入口移到独立的「声音」页（/voices）。
+ */
+export default function VoiceProfileCard({ seriesId }: { seriesId: string }) {
   const [previewPath, setPreviewPath] = useState<string | null>(null)
-  const [customMode, setCustomMode] = useState(!config.voice_profile)
 
-  const { data: voices } = useQuery({
+  // 拉取声音列表用于回查当前 series 引用的条目详情。
+  const { data: voices, isLoading } = useQuery({
     queryKey: ['voices'],
     queryFn: api.listVoices,
     staleTime: Infinity,
   })
 
-  const updateMut = useMutation({
-    mutationFn: (body: Parameters<typeof api.updateVoiceProfile>[1]) =>
-      api.updateVoiceProfile(seriesId, body),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['series', seriesId] })
-      qc.invalidateQueries({ queryKey: ['seriesDetail', seriesId] })
-    },
-  })
-
   const previewMut = useMutation({
-    mutationFn: (body: Parameters<typeof api.previewVoice>[0]) => api.previewVoice(body),
+    mutationFn: (voiceID: string) => api.previewVoice({ voice_id: voiceID }),
     onSuccess: (data) => setPreviewPath(data.path),
   })
 
-  const currentProfile = config.voice_profile || ''
+  // 通过 series 详情查 voice_id 时不重复拉系列——上层传入 series 已有 voice_id；
+  // 这里直接靠声音列表里查匹配条目（声音数量有限，前端过滤即可）。
+  // 上层 SeriesDetailPage 用此组件时已传入 seriesId，靠 voices query + s.voice_id 反查。
+  void seriesId // 暂时保留 prop 签名兼容上层调用，未来可移除
+
+  // 找当前 series 引用的声音条目：先按 query 拉 series 拿 voice_id，再在 voices 里反查。
+  const { data: series } = useQuery({
+    queryKey: ['series', seriesId],
+    queryFn: () => api.getSeries(seriesId),
+    staleTime: 30_000,
+  })
+  const current = series?.series
+  const voiceID = current?.voice_id || ''
+  const voice = voices?.find((v) => v.id === voiceID)
+
+  if (isLoading) {
+    return (
+      <div className="flex justify-center py-8">
+        <Spinner className="w-5 h-5" />
+      </div>
+    )
+  }
+
+  if (!voiceID) {
+    return (
+      <div className="space-y-3">
+        <p className="text-xs text-paper-300/50">
+          该系列尚未关联声音条目（旧数据迁移前）。重启服务后 Bootstrap 会自动平迁 voice_id。
+        </p>
+      </div>
+    )
+  }
+
+  if (!voice) {
+    return (
+      <div className="space-y-3">
+        <ErrorBox>
+          声音条目 {voiceID} 不存在（可能已被删除）。请到「声音」页新建同名条目或重建系列。
+        </ErrorBox>
+      </div>
+    )
+  }
 
   return (
-    <div className="space-y-5">
-      {/* 模式切换 */}
-      <div className="flex gap-2">
-        <button
-          className={`px-3 py-1.5 rounded-lg text-sm transition ${!customMode ? 'bg-gold-500/20 text-gold-400' : 'bg-ink-800 text-paper-300/50 hover:text-paper-300/80'}`}
-          onClick={() => setCustomMode(false)}
-        >
-          预设语音
-        </button>
-        <button
-          className={`px-3 py-1.5 rounded-lg text-sm transition ${customMode ? 'bg-gold-500/20 text-gold-400' : 'bg-ink-800 text-paper-300/50 hover:text-paper-300/80'}`}
-          onClick={() => setCustomMode(true)}
-        >
-          自定义
-        </button>
+    <div className="space-y-4">
+      <div className="rounded-xl border border-ink-700 bg-ink-950/40 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-display text-gold-500">{voice.name}</span>
+              {voice.is_builtin && (
+                <span className="text-[11px] rounded-full px-2 py-0.5 border text-emerald-300/70 border-emerald-400/30 bg-emerald-400/10">
+                  内置
+                </span>
+              )}
+              <span className="text-[11px] rounded-full px-2 py-0.5 border border-ink-600 text-paper-300/50">
+                {voice.id}
+              </span>
+            </div>
+            {voice.style_note && (
+              <p className="mt-1 text-xs text-paper-300/55 leading-relaxed">{voice.style_note}</p>
+            )}
+          </div>
+          <Button
+            variant="outline"
+            disabled={previewMut.isPending}
+            onClick={() => previewMut.mutate(voice.id)}
+          >
+            {previewMut.isPending ? <Spinner className="w-3.5 h-3.5" /> : null}
+            {previewMut.isPending ? '合成中…' : '试听'}
+          </Button>
+        </div>
+
+        <dl className="mt-3 text-xs text-paper-300/50 space-y-1">
+          <div className="flex gap-2">
+            <dt className="w-14 shrink-0 text-paper-300/35">BL音色</dt>
+            <dd>{voice.voice}</dd>
+          </div>
+          {(voice.rate ?? 0) > 0 && (
+            <div className="flex gap-2">
+              <dt className="w-14 shrink-0 text-paper-300/35">语速</dt>
+              <dd>{(voice.rate ?? 0).toFixed(2)}</dd>
+            </div>
+          )}
+          {(voice.pitch ?? 0) > 0 && (voice.pitch ?? 0) !== 1 && (
+            <div className="flex gap-2">
+              <dt className="w-14 shrink-0 text-paper-300/35">音高</dt>
+              <dd>{(voice.pitch ?? 0).toFixed(2)}</dd>
+            </div>
+          )}
+          {voice.instruction && (
+            <div className="flex gap-2">
+              <dt className="w-14 shrink-0 text-paper-300/35">指令</dt>
+              <dd className="leading-relaxed">{voice.instruction}</dd>
+            </div>
+          )}
+        </dl>
       </div>
 
-      {!customMode && voices ? (
-        <div className="space-y-3">
-          <p className="text-xs text-paper-300/40">
-            使用百炼系统声音模拟讲述风格，非真人声音克隆。点击「试听」会调用一次语音合成（按次计费）。
-          </p>
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {voices.map((v) => {
-              const active = v.key === currentProfile
-              return (
-                <div
-                  key={v.key}
-                  className={`rounded-xl border p-4 cursor-pointer transition ${
-                    active
-                      ? 'border-gold-500/60 bg-gold-500/5'
-                      : 'border-ink-700 bg-ink-950/40 hover:border-ink-600'
-                  }`}
-                  onClick={() => {
-                    updateMut.mutate({ profile: v.key })
-                  }}
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-display text-gold-500 text-sm">{v.name}</span>
-                    {active && <span className="text-xs text-gold-400">当前</span>}
-                  </div>
-                  <p className="text-xs text-paper-300/50 leading-relaxed">{v.style_note}</p>
-                  <div className="mt-2 flex items-center gap-3 text-xs text-paper-300/35">
-                    <span>{v.voice}</span>
-                    {v.rate ? <span>语速 {v.rate}</span> : null}
-                    {v.pitch && v.pitch !== 1 ? <span>音高 {v.pitch}</span> : null}
-                  </div>
-                  <button
-                    className="mt-2 text-xs text-sky-400/70 hover:text-sky-400 disabled:opacity-30"
-                    disabled={previewMut.isPending}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      previewMut.mutate({ profile: v.key })
-                    }}
-                  >
-                    {previewMut.isPending ? '合成中…' : '试听'}
-                  </button>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      ) : customMode ? (
-        <div className="space-y-4">
-          <CustomVoiceEditor
-            seriesId={seriesId}
-            config={config}
-            previewPending={previewMut.isPending}
-            onPreviewReq={previewMut.mutate}
-          />
-        </div>
-      ) : (
-        <Spinner />
-      )}
+      <p className="text-xs text-paper-300/35">
+        声音创建后锁定，无法在此卡片修改。如需调整，请到「声音」页编辑条目本身（修改后影响所有引用它的系列）。
+      </p>
 
-      {updateMut.isPending && <p className="text-xs text-paper-300/40">保存中…</p>}
-      {updateMut.isError && <p className="text-xs text-seal-500">保存失败</p>}
+      {previewMut.isError && <ErrorBox>{(previewMut.error as Error).message}</ErrorBox>}
 
       {previewPath && (
         <div className="rounded-lg border border-ink-700 bg-ink-950/40 p-3">
@@ -127,105 +139,14 @@ export default function VoiceProfileCard({
               关闭
             </button>
           </div>
-          <audio controls autoPlay className="w-full h-9" src={`/api/voices/preview?path=${encodeURIComponent(previewPath)}`} />
+          <audio
+            controls
+            autoPlay
+            className="w-full h-9"
+            src={`/api/voices/preview?path=${encodeURIComponent(previewPath)}`}
+          />
         </div>
       )}
-    </div>
-  )
-}
-
-function CustomVoiceEditor({
-  seriesId,
-  config,
-  previewPending,
-  onPreviewReq,
-}: {
-  seriesId: string
-  config: SeriesConfig
-  previewPending: boolean
-  onPreviewReq: (body: Parameters<typeof api.previewVoice>[0]) => void
-}) {
-  const qc = useQueryClient()
-  const [voice, setVoice] = useState(config.tts_voice || 'longtian_v3')
-  const [rate, setRate] = useState(config.tts_rate || 1.0)
-  const [pitch, setPitch] = useState(config.tts_pitch || 1.0)
-  const [instruction, setInstruction] = useState(config.tts_instruction || '')
-
-  const saveMut = useMutation({
-    mutationFn: () =>
-      api.updateVoiceProfile(seriesId, { voice, rate, pitch, instruction }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['seriesDetail', seriesId] })
-    },
-  })
-
-  return (
-    <div className="space-y-4">
-      <div>
-        <label className="text-xs text-paper-300/40 block mb-1">声音 ID</label>
-        <input
-          className="w-full rounded-lg border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-paper-100"
-          value={voice}
-          onChange={(e) => setVoice(e.target.value)}
-          placeholder="如 longtian_v3"
-        />
-        <p className="text-xs text-paper-300/30 mt-1">
-          可选声音见 bl speech synthesize --list-voices，如 longtian_v3（磁性理智男）、longze_v3（温暖元气男）、longfei_v3（热血磁性男）等
-        </p>
-      </div>
-      <div className="grid sm:grid-cols-2 gap-4">
-        <div>
-          <label className="text-xs text-paper-300/40 block mb-1">语速（0.5-2.0，默认 1.0）</label>
-          <input
-            type="range"
-            min="0.5"
-            max="2"
-            step="0.05"
-            value={rate}
-            onChange={(e) => setRate(parseFloat(e.target.value))}
-            className="w-full"
-          />
-          <span className="text-xs text-paper-300/50">{rate.toFixed(2)}</span>
-        </div>
-        <div>
-          <label className="text-xs text-paper-300/40 block mb-1">音高（0.5-2.0，默认 1.0）</label>
-          <input
-            type="range"
-            min="0.5"
-            max="2"
-            step="0.05"
-            value={pitch}
-            onChange={(e) => setPitch(parseFloat(e.target.value))}
-            className="w-full"
-          />
-          <span className="text-xs text-paper-300/50">{pitch.toFixed(2)}</span>
-        </div>
-      </div>
-      <div>
-        <label className="text-xs text-paper-300/40 block mb-1">风格指令（可选，部分音色不支持）</label>
-        <input
-          className="w-full rounded-lg border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-paper-100"
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
-          placeholder="如：沉稳、有书卷气、节奏从容"
-        />
-      </div>
-      <div className="flex gap-3">
-        <Button
-          onClick={() => saveMut.mutate()}
-          disabled={saveMut.isPending}
-        >
-          {saveMut.isPending ? '保存中…' : '保存自定义'}
-        </Button>
-        <Button
-          variant="ghost"
-          onClick={() => onPreviewReq({ voice, rate, pitch, instruction })}
-          disabled={previewPending}
-        >
-          {previewPending ? '合成中…' : '试听'}
-        </Button>
-        {saveMut.isSuccess && <span className="text-xs text-emerald-400/60 self-center">已保存</span>}
-      </div>
     </div>
   )
 }

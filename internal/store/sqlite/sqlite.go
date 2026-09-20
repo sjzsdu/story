@@ -57,6 +57,18 @@ CREATE TABLE IF NOT EXISTS plan_sessions (
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS voices (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    voice       TEXT NOT NULL,
+    instruction TEXT NOT NULL DEFAULT '',
+    rate        REAL NOT NULL DEFAULT 0,
+    pitch       REAL NOT NULL DEFAULT 0,
+    style_note  TEXT NOT NULL DEFAULT '',
+    is_builtin  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
 `
 
 // Open 打开（必要时创建）数据库并初始化表结构。
@@ -80,6 +92,8 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		{"series", "characters_json", "TEXT NOT NULL DEFAULT '[]'"},
 		{"plan_sessions", "characters_json", "TEXT NOT NULL DEFAULT '[]'"},
 		{"episodes", "refs_json", "TEXT NOT NULL DEFAULT '[]'"},
+		// §16：series.voice_id 引用顶层 Voice 实体，创建后锁定（UpdateSeries 不写该列）。
+		{"series", "voice_id", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := ensureColumn(ctx, db, m.table, m.column, m.def); err != nil {
 			_ = db.Close()
@@ -120,7 +134,7 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // ---- Series ----
 
-// CreateSeries 插入系列。
+// CreateSeries 插入系列（含 voice_id；voice_id 创建后锁定，UpdateSeries 不写该列）。
 func (s *Store) CreateSeries(ctx context.Context, se *domain.Series) error {
 	cfg, err := json.Marshal(se.Config)
 	if err != nil {
@@ -131,9 +145,9 @@ func (s *Store) CreateSeries(ctx context.Context, se *domain.Series) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO series (id, name, dynasty, description, config_json, characters_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		se.ID, se.Name, se.Dynasty, se.Description, string(cfg), string(chars),
+		`INSERT INTO series (id, name, dynasty, description, voice_id, config_json, characters_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		se.ID, se.Name, se.Dynasty, se.Description, se.VoiceID, string(cfg), string(chars),
 		formatTime(se.CreatedAt), formatTime(se.UpdatedAt),
 	)
 	if err != nil {
@@ -145,7 +159,7 @@ func (s *Store) CreateSeries(ctx context.Context, se *domain.Series) error {
 // GetSeries 按 ID 查询系列。
 func (s *Store) GetSeries(ctx context.Context, id string) (*domain.Series, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, dynasty, description, config_json, characters_json, created_at, updated_at
+		`SELECT id, name, dynasty, description, voice_id, config_json, characters_json, created_at, updated_at
 		 FROM series WHERE id = ?`, id)
 	se, err := scanSeries(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -157,7 +171,7 @@ func (s *Store) GetSeries(ctx context.Context, id string) (*domain.Series, error
 // ListSeries 列出全部系列（按创建时间升序）。
 func (s *Store) ListSeries(ctx context.Context) ([]*domain.Series, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, dynasty, description, config_json, characters_json, created_at, updated_at
+		`SELECT id, name, dynasty, description, voice_id, config_json, characters_json, created_at, updated_at
 		 FROM series ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -401,7 +415,7 @@ type rowScanner interface {
 func scanSeries(r rowScanner) (*domain.Series, error) {
 	var se domain.Series
 	var cfgJSON, charsJSON, created, updated string
-	if err := r.Scan(&se.ID, &se.Name, &se.Dynasty, &se.Description, &cfgJSON, &charsJSON, &created, &updated); err != nil {
+	if err := r.Scan(&se.ID, &se.Name, &se.Dynasty, &se.Description, &se.VoiceID, &cfgJSON, &charsJSON, &created, &updated); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal([]byte(cfgJSON), &se.Config); err != nil {

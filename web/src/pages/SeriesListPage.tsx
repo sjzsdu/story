@@ -44,7 +44,7 @@ export default function SeriesListPage() {
   )
 }
 
-/** 新建系列弹窗：画面模式等设置创建后锁定，不可修改。 */
+/** 新建系列弹窗：画面模式与声音创建后锁定，不可修改。 */
 function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const queryClient = useQueryClient()
   const [name, setName] = useState('')
@@ -52,8 +52,17 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
   const [ratio, setRatio] = useState('9:16')
   const [resolution, setResolution] = useState('1080P')
   const [visualMode, setVisualMode] = useState<'comic' | 'video'>('comic')
+  // §16：声音条目 ID 必选（默认内置 wangliqun）；可在「声音」页管理条目。
+  const [voiceID, setVoiceID] = useState('wangliqun')
   const [platforms, setPlatforms] = useState('douyin,kuaishou')
   const [err, setErr] = useState('')
+
+  // 拉取声音列表供下拉；staleTime=Infinity 避免每次开关都重新拉。
+  const { data: voices } = useQuery({
+    queryKey: ['voices'],
+    queryFn: api.listVoices,
+    staleTime: Infinity,
+  })
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -63,6 +72,7 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
         ratio,
         resolution,
         visual_mode: visualMode,
+        voice_id: voiceID,
         target_platforms: platforms
           .split(',')
           .map((s) => s.trim())
@@ -75,6 +85,7 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
       setRatio('9:16')
       setResolution('1080P')
       setVisualMode('comic')
+      setVoiceID('wangliqun')
       setPlatforms('douyin,kuaishou')
       setErr('')
       onClose()
@@ -116,6 +127,15 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
           <Select value={visualMode} onChange={(e) => setVisualMode(e.target.value === 'video' ? 'video' : 'comic')}>
             <option value="comic">小人书插画（默认 · 省钱）</option>
             <option value="video">AI 生成视频（动态 · 较贵）</option>
+          </Select>
+        </Field>
+        <Field label="声音（创建后不可更改）">
+          <Select value={voiceID} onChange={(e) => setVoiceID(e.target.value)}>
+            {voices?.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name} {v.is_builtin ? '（内置）' : ''} · {v.voice}
+              </option>
+            ))}
           </Select>
         </Field>
         <Field label="目标平台（逗号分隔，仅记录）">
@@ -186,8 +206,8 @@ function SeriesCard({ series: s }: { series: Series }) {
           </dd>
         </div>
         <div className="flex gap-2">
-          <dt className="w-14 shrink-0 text-paper-300/35">音色</dt>
-          <dd className="truncate">{s.config.tts_voice}</dd>
+          <dt className="w-14 shrink-0 text-paper-300/35">声音</dt>
+          <dd className="truncate">{s.voice_id || s.config.tts_voice || '默认'}</dd>
         </div>
         <div className="flex gap-2">
           <dt className="w-14 shrink-0 text-paper-300/35">策略</dt>
