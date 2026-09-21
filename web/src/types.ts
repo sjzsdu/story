@@ -42,6 +42,8 @@ export interface VersionNode {
   parent_id?: string
   attempt: number // 同一组派生输入下的第 n 次尝试（0 起）；>0 即「换一版」
   runs: number // 本节点被执行次数（失败重试与续跑累加）
+  // note 本版附加要求：「重做（换一版）」时用户填的迭代方向，只作用于这一版。
+  note?: string
   status: NodeStatus
   error?: string
   dir: string
@@ -236,6 +238,82 @@ export type ActionName =
   | 'export'
   | 'keyframes'
   | 'episode-refs'
+
+// ---- 平台发布（§19） ----
+
+export type PublishStatus =
+  | 'pending'
+  | 'uploading'
+  | 'uploaded'
+  | 'published'
+  | 'failed'
+  | 'rejected'
+  | 'canceled'
+
+export interface PublishJob {
+  id: string
+  episode_id: string
+  series_id: string
+  platform: string
+  node_id: string
+  status: PublishStatus
+  video_path: string
+  cover_path?: string
+  title: string
+  description: string
+  tags?: string[]
+  category?: string
+  platform_video_id?: string
+  platform_url?: string
+  scheduled_at?: string
+  attempts: number
+  max_retries: number
+  error?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface PlatformAccount {
+  id: string
+  platform: string
+  account_name: string
+  account_id?: string
+  extra?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface PlatformInfo {
+  key: string
+  name: string
+  has_login: boolean
+  has_upload: boolean
+  has_note: boolean
+  has_schedule: boolean
+}
+
+export interface AppSettings {
+  data_dir: string
+  bl_bin: string
+  ffmpeg_bin: string
+  text_model: string
+  video_model: string
+  tts_model: string
+  tts_voice: string
+  image_model: string
+  tts_instruction: string
+  bailian_api_key?: string
+  bailian_base_url: string
+  default_ratio: string
+  default_resolution: string
+  max_concurrency: number
+  max_retries: number
+  subtitle_font: string
+  sau_bin: string
+  python_bin: string
+  default_publish_account: string
+  bilibili_default_tid: number
+}
 
 export interface JobEvent {
   id: string

@@ -419,15 +419,27 @@ const boardBriefClosing = "【冲突声明】以上要求只调整镜头切分�
 // StoryBrief 组装故事生成阶段的「创作要求」。
 // 全部为默认值时返回空串（调用方据此跳过注入，保证默认产出与历史行为一致）。
 func StoryBrief(cfg domain.SeriesConfig, episodeInstruction string) string {
-	return buildBrief(cfg, episodeInstruction, false)
+	return buildBrief(cfg, episodeInstruction, "", false)
 }
 
 // BoardBrief 组装分镜拆解阶段的「创作要求」。同 StoryBrief，默认返回空串。
 func BoardBrief(cfg domain.SeriesConfig, episodeInstruction string) string {
-	return buildBrief(cfg, episodeInstruction, true)
+	return buildBrief(cfg, episodeInstruction, "", true)
 }
 
-func buildBrief(cfg domain.SeriesConfig, episodeInstruction string, board bool) string {
+// StoryBriefWithNote / BoardBriefWithNote 在系列与集级创作设置之外，再叠加
+// 「本版附加要求」（换一版时用户填的迭代方向，只作用于这一版）。
+// note 为空串时与 StoryBrief / BoardBrief 逐字一致。
+func StoryBriefWithNote(cfg domain.SeriesConfig, episodeInstruction, note string) string {
+	return buildBrief(cfg, episodeInstruction, note, false)
+}
+
+// BoardBriefWithNote 见 StoryBriefWithNote。
+func BoardBriefWithNote(cfg domain.SeriesConfig, episodeInstruction, note string) string {
+	return buildBrief(cfg, episodeInstruction, note, true)
+}
+
+func buildBrief(cfg domain.SeriesConfig, episodeInstruction, note string, board bool) string {
 	var lines []string
 	for _, k := range CreativeKnobs() {
 		if frag := k.optionFragment(k.Get(cfg), board); frag != "" {
@@ -439,6 +451,9 @@ func buildBrief(cfg domain.SeriesConfig, episodeInstruction string, board bool) 
 	}
 	if s := ClipInstruction(episodeInstruction); s != "" {
 		lines = append(lines, "- 本集附加指令："+s)
+	}
+	if s := ClipInstruction(note); s != "" {
+		lines = append(lines, "- 本版附加要求（只改这一版，往这个方向迭代）："+s)
 	}
 	if len(lines) == 0 {
 		return ""

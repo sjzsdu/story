@@ -233,3 +233,77 @@ func TestEpisodeInstructionChangesDerivation(t *testing.T) {
 		t.Fatalf("集级附加指令未透传到分镜: %q", f.boards.LastRequest.Brief)
 	}
 }
+
+// TestNoteChangesDerivationAndReachesModel 验证「本版附加要求」（换一版时用户填的
+// 迭代方向）必须同时做到三件事：进派生键（否则命中旧节点、提示词被静默忽略）、
+// 透传给模型、落在节点上（供界面回显「本版要求」）。
+func TestNoteChangesDerivationAndReachesModel(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+
+	story1, err := f.eng.GenerateStory(ctx, f.epID, DeriveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const storyNote = "改成从行刑前一夜倒叙"
+	story2, err := f.eng.GenerateStory(ctx, f.epID, DeriveOptions{Reroll: true, Note: storyNote})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if story2.ID == story1.ID {
+		t.Fatal("本版附加要求必须派生新的 story 节点")
+	}
+	if !strings.Contains(f.stories.LastRequest.Brief, storyNote) {
+		t.Fatalf("本版附加要求未透传给故事模型: %q", f.stories.LastRequest.Brief)
+	}
+	if story2.Note != storyNote {
+		t.Fatalf("本版附加要求未落在节点上: %q", story2.Note)
+	}
+
+	// 分镜：note 同样进派生键并透传。
+	if _, err := f.eng.PlanStoryboard(ctx, f.epID, DeriveOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	const boardNote = "把朝堂争论压到三个镜头以内"
+	board2, err := f.eng.PlanStoryboard(ctx, f.epID, DeriveOptions{Reroll: true, Note: boardNote})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.boards.LastRequest.Brief, boardNote) {
+		t.Fatalf("本版附加要求未透传给分镜模型: %q", f.boards.LastRequest.Brief)
+	}
+	if board2.Note != boardNote {
+		t.Fatalf("本版附加要求未落在分镜节点上: %q", board2.Note)
+	}
+
+	// 画面：note 追加到每镜画面描述，否则「换一版画面」等于没给方向。
+	const mediaNote = "夜景压暗，油灯为唯一光源"
+	media2, err := f.eng.Produce(ctx, f.epID, DeriveOptions{From: board2.ID, Reroll: true, Note: mediaNote})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if media2.Note != mediaNote {
+		t.Fatalf("本版附加要求未落在画面节点上: %q", media2.Note)
+	}
+	if len(f.videos.Requests) == 0 {
+		t.Fatal("测试前提：应有视频生成请求")
+	}
+	for _, req := range f.videos.Requests {
+		if !strings.Contains(req.Prompt, mediaNote) {
+			t.Fatalf("本版附加要求未进入画面描述: %q", req.Prompt)
+		}
+	}
+
+	// 同一 note 再跑一次（不 reroll）：命中同一节点、零费用复用。
+	before := len(f.videos.Requests)
+	again, err := f.eng.Produce(ctx, f.epID, DeriveOptions{From: board2.ID, Note: mediaNote})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != media2.ID {
+		t.Fatalf("同 note 不 reroll 应复用同一节点: %s ≠ %s", again.ID, media2.ID)
+	}
+	if len(f.videos.Requests) != before {
+		t.Fatalf("复用不应再次调用视频模型: %d → %d", before, len(f.videos.Requests))
+	}
+}

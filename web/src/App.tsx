@@ -3,6 +3,7 @@ import SeriesListPage from './pages/SeriesListPage'
 import SeriesDetailPage from './pages/SeriesDetailPage'
 import VoicesPage from './pages/VoicesPage'
 import EpisodePage from './pages/EpisodePage'
+import SettingsPage from './pages/SettingsPage'
 
 function Brand() {
   return (
@@ -22,6 +23,7 @@ function Brand() {
 
 export default function App() {
   const loc = useLocation()
+  const isSettings = loc.pathname.startsWith('/settings')
   return (
     <div className="min-h-full flex flex-col">
       <header className="sticky top-0 z-20 border-b border-ink-800 bg-ink-950/85 backdrop-blur">
@@ -40,6 +42,12 @@ export default function App() {
             >
               声音
             </Link>
+            <Link
+              to="/settings"
+              className={`hover:text-paper-100 ${isSettings ? 'text-gold-500' : ''}`}
+            >
+              设置
+            </Link>
           </nav>
         </div>
       </header>
@@ -48,6 +56,8 @@ export default function App() {
         <Routes>
           <Route path="/" element={<SeriesListPage />} />
           <Route path="/voices" element={<VoicesPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/settings/:tab" element={<SettingsPage />} />
           <Route path="/series/:seriesId" element={<SeriesDetailPage />} />
           <Route path="/series/:seriesId/episodes/:episodeId" element={<EpisodePage />} />
         </Routes>

@@ -66,6 +66,10 @@ type VersionNode struct {
 	Attempt int `json:"attempt"`
 	// Runs 本节点被执行的次数（失败重试与续跑都会累加）。
 	Runs int `json:"runs"`
+	// Note 本版附加要求：「重做（换一版）」时用户填的迭代方向，只作用于这一版。
+	// 与系列创作设置（长期）、本集附加指令（整集）共同构成三层创作控制；
+	// 它同时参与派生键，因此带不同 Note 的两次重做会得到两个版本，而不会被复用。
+	Note string `json:"note,omitempty"`
 	// Status 节点状态。
 	Status NodeStatus `json:"status"`
 	// Error 最近一次执行的错误信息。

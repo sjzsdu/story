@@ -1,10 +1,14 @@
 import type {
   ActionName,
+  AppSettings,
   CharacterSetting,
   CreativeCatalog,
   Episode,
   EpisodeDraft,
   PlanSession,
+  PlatformAccount,
+  PlatformInfo,
+  PublishJob,
   Series,
   SeriesDetail,
   JobEvent,
@@ -78,11 +82,19 @@ export const api = {
       method: 'DELETE',
     }),
 
-  // action 触发后台流水线动作；from/reroll 为 §17 版本树参数：
-  // from 指定起始父节点（留空用集当前活跃节点），reroll 为 true 时开新版本而非复用既有节点。
+  // action 触发后台流水线动作；from/reroll/note 为 §17 版本树参数：
+  // from 指定起始父节点（留空用集当前活跃节点），reroll 为 true 时开新版本而非复用既有节点，
+  // note 是「本版附加要求」（重做时填的迭代方向，进派生键并透传给模型）。
   action: (
     id: string,
-    body: { action: ActionName; from?: string; reroll?: boolean; ratio?: string; scenes?: number[] },
+    body: {
+      action: ActionName
+      from?: string
+      reroll?: boolean
+      note?: string
+      ratio?: string
+      scenes?: number[]
+    },
   ) =>
     request<{ job: unknown }>(`/api/episodes/${encodeURIComponent(id)}/actions`, {
       method: 'POST',
@@ -260,6 +272,75 @@ export const api = {
     method: 'POST',
     body: JSON.stringify(body),
   }),
+
+  // ---- 平台发布（§19） ----
+  listPlatforms: () => request<PlatformInfo[]>('/api/platforms'),
+
+  listPlatformAccounts: (platform: string) =>
+    request<PlatformAccount[]>(
+      `/api/platforms/${encodeURIComponent(platform)}/accounts`,
+    ),
+
+  createPlatformAccount: (platform: string, body: {
+    account_name: string
+    account_id?: string
+    extra?: string
+  }) =>
+    request<PlatformAccount>(
+      `/api/platforms/${encodeURIComponent(platform)}/accounts`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  deletePlatformAccount: (platform: string, accountId: string) =>
+    request<{ status: string; id: string }>(
+      `/api/platforms/${encodeURIComponent(platform)}/accounts/${encodeURIComponent(accountId)}`,
+      { method: 'DELETE' },
+    ),
+
+  checkPlatformLogin: (platform: string, account: string) =>
+    request<{ valid: boolean; platform: string; account: string }>(
+      '/api/platforms/check',
+      { method: 'POST', body: JSON.stringify({ platform, account }) },
+    ),
+
+  publishEpisode: (episodeId: string, body: {
+    platforms: string[]
+    title?: string
+    description?: string
+    cover_path?: string
+    category?: string
+    scheduled_at?: string
+  }) =>
+    request<PublishJob[]>(
+      `/api/episodes/${encodeURIComponent(episodeId)}/publish`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  listPublishJobs: (episodeId: string) =>
+    request<PublishJob[]>(
+      `/api/episodes/${encodeURIComponent(episodeId)}/publish`,
+    ),
+
+  cancelPublishJob: (episodeId: string, jobId: string) =>
+    request<{ status: string; id: string }>(
+      `/api/episodes/${encodeURIComponent(episodeId)}/publish/${encodeURIComponent(jobId)}/cancel`,
+      { method: 'POST' },
+    ),
+
+  deletePublishJob: (episodeId: string, jobId: string) =>
+    request<{ status: string; id: string }>(
+      `/api/episodes/${encodeURIComponent(episodeId)}/publish/${encodeURIComponent(jobId)}`,
+      { method: 'DELETE' },
+    ),
+
+  // ---- 全局设置 ----
+  getSettings: () => request<AppSettings>('/api/settings'),
+
+  updateSettings: (body: Partial<AppSettings>) =>
+    request<AppSettings>('/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
 }
 
 /** 把服务器上的绝对文件路径转成受权媒体 URL。 */

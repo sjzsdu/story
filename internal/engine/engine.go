@@ -82,14 +82,18 @@ func (e *Engine) GenerateStory(ctx context.Context, episodeID string, opts Deriv
 
 	// 创作要求（系列创作设置 + 本集附加指令）：进派生键，改口吻/受众/篇幅会开新版本；
 	// 无任何创作设置时为空串，派生键与历史行为逐字一致。
-	storyBrief := templates.StoryBrief(series.Config, ep.Instruction)
+	// 本版附加要求（换一版时用户填的迭代方向）叠加在最上层，只作用于这一版。
+	note := templates.ClipInstruction(opts.Note)
+	storyBrief := templates.StoryBriefWithNote(series.Config, ep.Instruction, note)
 	params := storyParams{
 		SeriesID: series.ID,
 		Topic:    ep.Topic,
 		Dynasty:  series.Config.Dynasty,
 		Brief:    storyBrief,
+		Note:     note,
 	}
 	node := ensureNode(ep, domain.StageStory, nil, params, opts.Reroll)
+	node.Note = note
 	ep.ActiveNodeID = node.ID
 	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
 		return nil, err
@@ -150,7 +154,8 @@ func (e *Engine) PlanStoryboard(ctx context.Context, episodeID string, opts Deri
 	// 集级视觉参考（系列人物 + 本集人物/场景）参与派生键：改参考后重跑分镜
 	// 会得到新版本，而不是复用按旧参考生成的分镜。
 	visualRefs := mergeVisualRefs(series, ep.Refs)
-	boardBrief := templates.BoardBrief(series.Config, ep.Instruction)
+	note := templates.ClipInstruction(opts.Note)
+	boardBrief := templates.BoardBriefWithNote(series.Config, ep.Instruction, note)
 	params := storyboardParams{
 		StoryKey:   parent.ID,
 		Dynasty:    dynasty,
@@ -159,8 +164,10 @@ func (e *Engine) PlanStoryboard(ctx context.Context, episodeID string, opts Deri
 		VideoStyle: series.Config.VideoStyle,
 		RefsDigest: refsDigest(visualRefs),
 		Brief:      boardBrief,
+		Note:       note,
 	}
 	node := ensureNode(ep, domain.StageStoryboard, parent, params, opts.Reroll)
+	node.Note = note
 	ep.ActiveNodeID = node.ID
 	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
 		return nil, err
@@ -277,6 +284,9 @@ func (e *Engine) Produce(ctx context.Context, episodeID string, opts DeriveOptio
 	}
 
 	mode := domain.NormalizeVisualMode(series.Config.VisualMode)
+	// 本版附加要求（换一版画面时用户填的迭代方向）：追加到每镜画面描述，
+	// 并进派生键——否则提示词会因命中旧节点而被静默忽略。
+	note := templates.ClipInstruction(opts.Note)
 	// 语音参数参与派生键：换声音条目或改其参数后重新生产会得到新版本，
 	// 而不是把旧旁白静默复用（旁白一旦错位用户极难察觉）。
 	voice, model, rate, pitch, instr := e.resolveVoice(ctx, series.Config, series.VoiceID, e.voice, e.instruction)
@@ -291,8 +301,11 @@ func (e *Engine) Produce(ctx context.Context, episodeID string, opts DeriveOptio
 		// 运镜强度参与派生键：改了强度必须换 media 节点目录才会重渲染，
 		// 否则已有片段会被判为可复用、改了不生效。
 		Motion: series.Config.Creative.Motion,
+		// 本版附加要求（换一版画面时用户填的迭代方向）：进派生键并追加到每镜画面描述。
+		Note: note,
 	}
 	node := ensureNode(ep, domain.StageMedia, parent, params, opts.Reroll)
+	node.Note = note
 	ep.ActiveNodeID = node.ID
 	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
 		return nil, err
@@ -359,7 +372,7 @@ func (e *Engine) Produce(ctx context.Context, episodeID string, opts DeriveOptio
 			Fn: func(ctx context.Context) error {
 				// 画面与旁白互不影响：画面失败也照常合成旁白，
 				// 避免下次重试时把已付费的插画再生成一遍。
-				clipRes, clipErr := e.produceClip(ctx, series, mode, visualRefs, style, m)
+				clipRes, clipErr := e.produceClip(ctx, series, mode, visualRefs, style, m, note)
 				if clipErr != nil {
 					clipResults[idx] = domain.MediaResult{SceneID: sc.ID, Err: "画面: " + clipErr.Error()}
 				} else {
@@ -487,7 +500,7 @@ func selectScenes(plan []sceneMedia, sceneIDs []int) ([]bool, error) {
 
 // produceClip 生产单镜画面：已存在片段直接复用；comic 模式出插画后本地运镜渲染，
 // video 模式调视频模型（有匹配参考图时走参考图路径）。
-func (e *Engine) produceClip(ctx context.Context, series *domain.Series, mode string, visualRefs []domain.VisualRef, style templates.VisualStylePack, m sceneMedia) (domain.MediaResult, error) {
+func (e *Engine) produceClip(ctx context.Context, series *domain.Series, mode string, visualRefs []domain.VisualRef, style templates.VisualStylePack, m sceneMedia, note string) (domain.MediaResult, error) {
 	sc := m.Scene
 	if reusable(m.ClipPath) {
 		dur, _ := e.composer.ProbeDuration(ctx, m.ClipPath)
@@ -502,7 +515,7 @@ func (e *Engine) produceClip(ctx context.Context, series *domain.Series, mode st
 			}
 			if _, err := e.images.GenerateImage(ctx, port.ImageRequest{
 				OutPath: m.PanelPath,
-				Prompt:  buildImagePrompt(sc, style),
+				Prompt:  withNote(buildImagePrompt(sc, style), note),
 				Size:    panelImageSize(series.Config.Ratio),
 			}); err != nil {
 				return domain.MediaResult{}, fmt.Errorf("插画生成: %w", err)
@@ -522,7 +535,7 @@ func (e *Engine) produceClip(ctx context.Context, series *domain.Series, mode st
 	} else {
 		// video 模式：AI 视频生成；画面含已生成参考图的人物/场景时，
 		// 走 bl video ref 保持形象与环境一致。
-		prompt := buildVideoPrompt(sc, style)
+		prompt := withNote(buildVideoPrompt(sc, style), note)
 		refImgs := refImagesForScene(sc.VisualPrompt, visualRefs)
 		if len(refImgs) > 0 {
 			prompt = refPromptPrefix(visualRefs, refImgs) + prompt
@@ -879,6 +892,16 @@ func buildVideoPrompt(sc domain.Scene, style templates.VisualStylePack) string {
 	}
 	s += "。" + style.VideoAnchor
 	return s
+}
+
+// withNote 把「本版附加要求」并到画面描述末尾（换一版画面时用户填的迭代方向）。
+// note 为空时原样返回，保证默认路径的 prompt 逐字不变。
+func withNote(prompt, note string) string {
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return prompt
+	}
+	return prompt + "。本版附加要求：" + note
 }
 
 func reusable(path string) bool {

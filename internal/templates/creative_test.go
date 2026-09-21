@@ -163,6 +163,39 @@ func TestInstructionTruncated(t *testing.T) {
 	}
 }
 
+// 「本版附加要求」（换一版时用户填的迭代方向）并入创作要求；
+// 留空时必须与不带 note 的旧函数逐字一致，否则存量派生键会变。
+func TestNoteBrief(t *testing.T) {
+	cfg := domain.SeriesConfig{}
+	cfg.Creative.Narrative = "suspense"
+
+	if got, want := StoryBriefWithNote(cfg, "本集只讲一个晚上", ""), StoryBrief(cfg, "本集只讲一个晚上"); got != want {
+		t.Fatalf("空 note 必须与不带 note 逐字一致:\n got %q\nwant %q", got, want)
+	}
+	if got, want := BoardBriefWithNote(cfg, "", ""), BoardBrief(cfg, ""); got != want {
+		t.Fatalf("空 note 必须与不带 note 逐字一致:\n got %q\nwant %q", got, want)
+	}
+
+	// 只有 note、其余全默认时也要成段，并保留冲突声明。
+	sb := StoryBriefWithNote(domain.SeriesConfig{}, "", "改成从行刑前一夜倒叙")
+	for _, want := range []string{"【创作要求】", "本版附加要求", "改成从行刑前一夜倒叙", "冲突时以硬性规则为准"} {
+		if !contains(sb, want) {
+			t.Fatalf("StoryBrief 缺 %q:\n%s", want, sb)
+		}
+	}
+	bb := BoardBriefWithNote(domain.SeriesConfig{}, "", "把朝堂争论压到三个镜头以内")
+	for _, want := range []string{"本版附加要求", "把朝堂争论压到三个镜头以内", "narration 必须逐字沿用讲述稿原文"} {
+		if !contains(bb, want) {
+			t.Fatalf("BoardBrief 缺 %q:\n%s", want, bb)
+		}
+	}
+	// 超长 note 同样按上限截断（上限只有一个来源）。
+	long := strings.Repeat("字", MaxInstructionLen+10)
+	if contains(StoryBriefWithNote(domain.SeriesConfig{}, "", long), long) {
+		t.Fatal("超长 note 未被截断")
+	}
+}
+
 // Catalog 快照默认全空，可供前端直接渲染。
 func TestCatalogShape(t *testing.T) {
 	c := Catalog()

@@ -27,7 +27,9 @@ const ACTION_LABEL: Record<string, string> = {
   'episode-refs': '生成本集视觉参考图',
 }
 
-type ActExtra = { from?: string; reroll?: boolean; ratio?: string; scenes?: number[] }
+// ActExtra 是流水线动作的附加参数：from 指定作用节点，reroll 开新版本，
+// note 是「本版附加要求」（重做时填的迭代方向），ratio/scenes 用于导出与单镜重跑。
+type ActExtra = { from?: string; reroll?: boolean; note?: string; ratio?: string; scenes?: number[] }
 
 export default function EpisodePage() {
   const { seriesId = '', episodeId = '' } = useParams()
@@ -89,7 +91,8 @@ export default function EpisodePage() {
   const act = (a: ActionName, extra?: ActExtra) => action.mutate({ action: a, ...extra })
   const path = activePath(ep)
   const activeNode = path[path.length - 1] ?? null
-  const selected = ep.nodes.find((n) => n.id === selectedId) ?? activeNode
+  // 默认选中活跃主线末端；活跃指针缺失时退到最后一个节点，避免「有版本却说没有」。
+  const selected = ep.nodes.find((n) => n.id === selectedId) ?? activeNode ?? ep.nodes[ep.nodes.length - 1] ?? null
   const missing = missingScenes(ep)
 
   return (
@@ -140,33 +143,50 @@ export default function EpisodePage() {
       )}
       {!running && job?.status === 'failed' && <ErrorBox>{ACTION_LABEL[job.action] ?? job.action}失败：{job.error}</ErrorBox>}
       {actionErr && <ErrorBox>{actionErr}</ErrorBox>}
-      {!running && missing.length > 0 && (
-        <MissingBanner ep={ep} missing={missing} onRetry={() => act('produce')} pending={action.isPending} />
-      )}
+      {!running && missing.length > 0 && <MissingBanner ep={ep} missing={missing} />}
 
       <Card title="版本树" extra={<span className="text-xs text-paper-300/40">每一步的产物按派生键独立成版本；上游一变即自动失效，旧版本完整保留</span>}>
         <div className="flex flex-col gap-5">
-          <VersionTree
-            ep={ep}
-            selectedId={selected?.id ?? ''}
-            busy={running}
-            pending={action.isPending || nodeMut.isPending}
-            onSelect={setSelectedId}
-            onAction={act}
-            onActivate={(id) => nodeMut.mutate({ kind: 'activate', nodeId: id })}
-            onDelete={(id) => nodeMut.mutate({ kind: 'delete', nodeId: id })}
-          />
-          <Toolbar ep={ep} missing={missing} busy={running} pending={action.isPending} onAction={act} />
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-paper-300/40">
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block h-0.5 w-4 rounded bg-gold-500" />
+              金色连线＝当前主线
+            </span>
+            <span>点卡片＝选中它，卡片上会出现只针对它的操作</span>
+          </div>
+          {ep.nodes.length === 0 ? (
+            <div className="space-y-3 rounded-lg border border-dashed border-ink-700 px-5 py-8 text-center">
+              <p className="text-sm text-paper-300/50">
+                还没有任何版本。先产出一篇定稿口播稿，后面每一步都从它派生。
+              </p>
+              <Button variant="primary" disabled={running || action.isPending} onClick={() => act('story')}>
+                ▶ 开始：生成故事
+              </Button>
+            </div>
+          ) : (
+            <VersionTree
+              ep={ep}
+              selectedId={selected?.id ?? ''}
+              busy={running}
+              pending={action.isPending || nodeMut.isPending}
+              onSelect={setSelectedId}
+              onAction={act}
+              onActivate={(id) => nodeMut.mutate({ kind: 'activate', nodeId: id })}
+              onDelete={(id) => nodeMut.mutate({ kind: 'delete', nodeId: id })}
+            />
+          )}
         </div>
       </Card>
 
-      <NodeDetail
-        ep={ep}
-        node={selected}
-        busy={running}
-        pending={action.isPending}
-        onAction={act}
-      />
+      {selected && (
+        <NodeDetail
+          ep={ep}
+          node={selected}
+          busy={running}
+          pending={action.isPending}
+          onAction={act}
+        />
+      )}
 
       <EpisodeRefsSection ep={ep} busy={running} />
     </div>
@@ -234,31 +254,19 @@ function JobBanner({
   )
 }
 
-/** 未完成镜头汇总：一键只重试这些镜头，已成功的镜头不会被重复生成。 */
-function MissingBanner({
-  ep,
-  missing,
-  onRetry,
-  pending,
-}: {
-  ep: Episode
-  missing: number[]
-  onRetry: () => void
-  pending: boolean
-}) {
+/**
+ * 未完成镜头汇总：只做告知，重试动作放在版本树那张卡片上。
+ * 同一屏出现两个同名同行为的按钮会让人怀疑它们有区别，所以动作只有一处。
+ */
+function MissingBanner({ ep, missing }: { ep: Episode; missing: number[] }) {
   const media = activeNodeOfStage(ep, 'media')
   const clipErr = new Map((media?.clips ?? []).filter((m) => m.err).map((m) => [m.scene_id, m.err as string]))
   const audioErr = new Map((media?.audios ?? []).filter((m) => m.err).map((m) => [m.scene_id, m.err as string]))
   return (
     <div className="rounded-xl border border-seal-500/40 bg-seal-600/10 px-4 py-3 space-y-2">
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="text-sm text-seal-500 font-medium">
-          {missing.length} 个镜头未完成：{formatScenes(missing)}
-        </span>
-        <Button variant="seal" className="ml-auto px-3 py-1.5 text-xs" disabled={pending} onClick={onRetry}>
-          仅重试失败镜头（{missing.length} 镜）
-        </Button>
-      </div>
+      <span className="text-sm text-seal-500 font-medium">
+        {missing.length} 个镜头未完成：{formatScenes(missing)}
+      </span>
       <ul className="space-y-1 text-xs text-paper-300/70">
         {missing.map((id) => (
           <li key={id}>
@@ -273,54 +281,19 @@ function MissingBanner({
         ))}
       </ul>
       <p className="text-xs text-paper-300/35">
-        重试只会触碰上面这些镜头；已成功的镜头与旁白直接复用，不会重复出图/合成。
+        到上方版本树选中「生产画面」那一版，点卡片上的「▶ 重跑本步」即可补齐这些镜头；
+        已成功的画面与旁白直接复用，不会重复出图/合成。
       </p>
     </div>
   )
 }
 
-/** 工具栏：一律从活跃节点继续（引擎按活跃路径解析各步骤所需的父节点）。 */
-function Toolbar({
-  ep,
-  missing,
-  busy,
-  pending,
-  onAction,
-}: {
-  ep: Episode
-  missing: number[]
-  busy: boolean
-  pending: boolean
-  onAction: (a: ActionName, extra?: ActExtra) => void
-}) {
-  const disabled = busy || pending
-  const hasStory = ep.nodes.some((n) => n.stage === 'story')
-  const produceLabel = missing.length > 0 ? `③ 仅重试失败镜头（${missing.length} 镜）` : '③ 生产画面与旁白'
-  return (
-    <div className="flex flex-wrap gap-2.5 items-center">
-      <Button variant="seal" disabled={disabled} onClick={() => onAction('story', hasStory ? { reroll: true } : undefined)}>
-        {hasStory ? '① 重新生成故事（新版本）' : '① 生成故事'}
-      </Button>
-      <Button variant="primary" disabled={disabled} onClick={() => onAction('storyboard')}>
-        ② 拆分分镜
-      </Button>
-      <Button variant="primary" disabled={disabled} onClick={() => onAction('produce')}>
-        {produceLabel}
-      </Button>
-      <Button variant="primary" disabled={disabled} onClick={() => onAction('compose')}>
-        ④ 合成成片
-      </Button>
-      <Button variant="outline" disabled={disabled} onClick={() => onAction('run')}>
-        ⚡ 一键跑到底
-      </Button>
-      <span className="self-center text-xs text-paper-300/35">
-        已完成的镜头（画面/旁白）自动复用跳过；要产出另一版请到版本树上点「换一版」
-      </span>
-    </div>
-  )
-}
-
-/** 选中节点的产物详情：按阶段四选一渲染。 */
+/**
+ * 选中节点的产物详情，分上下两段：
+ *   上段「上游产出」＝这个操作吃进去的东西（默认收起，需要对照时再展开）；
+ *   下段「本步产出」＝这个操作产出的东西，只针对本步的操作按钮也在这里。
+ * 这样「故事换了一版之后分镜为什么变了」不用来回滚动去找。
+ */
 function NodeDetail({
   ep,
   node,
@@ -329,145 +302,178 @@ function NodeDetail({
   onAction,
 }: {
   ep: Episode
-  node: VersionNode | null
+  node: VersionNode
   busy: boolean
   pending: boolean
   onAction: (a: ActionName, extra?: ActExtra) => void
 }) {
-  if (!node) {
-    return (
-      <Card>
-        <Empty text="还没有任何版本。点击「① 生成故事」开始，AI 直接产出一篇定稿口播稿。" />
-      </Card>
-    )
-  }
-
-  const header = (
-    <span className="flex items-center gap-3">
-      <span>{STAGE_LABEL[node.stage]} v{node.attempt + 1}</span>
-      <StatusBadge status={node.status} />
-      {node.id === ep.active_node_id && (
-        <span className="text-[10px] rounded bg-gold-500/20 px-1.5 py-0.5 text-gold-500">活跃</span>
+  const parent = node.parent_id ? (ep.nodes.find((n) => n.id === node.parent_id) ?? null) : null
+  const disabled = busy || pending
+  return (
+    <div className="space-y-5">
+      {parent && (
+        <Collapsible
+          summary={`上游产出 · ${STAGE_LABEL[parent.stage]} v${parent.attempt + 1}（本步的输入，展开可对照）`}
+          badge={<StatusBadge status={parent.status} />}
+        >
+          <NodeBody ep={ep} node={parent} />
+        </Collapsible>
       )}
-    </span>
-  )
-  const extra = <span className="text-xs text-paper-300/30 font-body">{node.id}</span>
-
-  if (node.stage === 'story') {
-    return <StorySection story={node.story} busy={busy} pending={pending} header={header} extra={extra} error={node.error} onRegenerate={() => onAction('story', { reroll: true })} />
-  }
-  if (node.stage === 'final') {
-    return (
-      <OutputsSection
-        ep={ep}
-        node={node}
-        busy={busy}
-        pending={pending}
-        header={header}
-        extra={extra}
-        onExport={(ratio) => onAction('export', { ratio, from: node.id })}
-      />
-    )
-  }
-
-  // storyboard / media：分镜内容在上游分镜节点，画面与旁白在下游画面节点。
-  const board = node.stage === 'storyboard' ? node : ep.nodes.find((n) => n.id === node.parent_id)
-  const media =
-    node.stage === 'media'
-      ? node
-      : ep.nodes.find((n) => n.parent_id === node.id && n.stage === 'media')
-  return (
-    <StoryboardSection
-      ep={ep}
-      board={board}
-      media={media}
-      busy={busy}
-      pending={pending}
-      header={header}
-      extra={extra}
-      onRetryScene={(sceneId) => board && onAction('produce', { from: board.id, scenes: [sceneId] })}
-    />
-  )
-}
-
-function StorySection({
-  story,
-  busy,
-  pending,
-  header,
-  extra,
-  error,
-  onRegenerate,
-}: {
-  story?: StoryCandidate
-  busy: boolean
-  pending: boolean
-  header: React.ReactNode
-  extra: React.ReactNode
-  error?: string
-  onRegenerate: () => void
-}) {
-  return (
-    <Card
-      title={story ? <span>{header} 《{story.title}》</span> : header}
-      extra={
-        <div className="flex items-center gap-3">
-          {extra}
-          <Button variant="outline" className="px-2.5 py-1 text-xs" disabled={busy || pending} onClick={onRegenerate}>
-            换一版故事
-          </Button>
-        </div>
-      }
-    >
-      {error && <ErrorBox>{error}</ErrorBox>}
-      {!story ? (
-        <Empty text="本版本尚未产出故事。点「换一版故事」重跑，或执行版本树上的「从此处继续」。" />
-      ) : (
-        <>
-          <p className="mb-3 text-sm text-paper-300/60 leading-relaxed">
-            {story.dynasty} · {story.source} — {story.summary}
+      <Card
+        title={
+          <span className="flex items-center gap-3">
+            <span>
+              本步产出 · {STAGE_LABEL[node.stage]} v{node.attempt + 1}
+            </span>
+            <StatusBadge status={node.status} />
+            {node.id === ep.active_node_id && (
+              <span className="text-[10px] rounded bg-gold-500/20 px-1.5 py-0.5 text-gold-500">当前使用</span>
+            )}
+          </span>
+        }
+        extra={<span className="text-xs text-paper-300/30 font-body">{node.id}</span>}
+      >
+        {node.note && (
+          <p className="mb-4 rounded-lg border border-gold-500/30 bg-gold-500/5 px-3.5 py-2 text-xs leading-5 text-gold-500/80">
+            本版要求：{node.note}
           </p>
-          <div className="rounded-lg bg-ink-950/50 border border-ink-800 p-5 text-[15px] leading-8 text-paper-300/90 whitespace-pre-wrap font-display">
-            {story.content}
-          </div>
-        </>
-      )}
-    </Card>
+        )}
+        <NodeBody
+          ep={ep}
+          node={node}
+          disabled={disabled}
+          onRetryScene={(sceneId) => {
+            if (node.stage === 'media' && node.parent_id) {
+              onAction('produce', { from: node.parent_id, scenes: [sceneId] })
+            }
+          }}
+          onExport={(ratio) => onAction('export', { ratio, from: node.id })}
+        />
+      </Card>
+    </div>
   )
 }
 
-function StoryboardSection({
+/** NodeBody 按阶段渲染一个节点的产物；画面与成片阶段额外带上本步的操作按钮。 */
+function NodeBody({
+  ep,
+  node,
+  disabled = false,
+  onRetryScene,
+  onExport,
+}: {
+  ep: Episode
+  node: VersionNode
+  disabled?: boolean
+  onRetryScene?: (id: number) => void
+  onExport?: (ratio: string) => void
+}) {
+  switch (node.stage) {
+    case 'story':
+      return <StoryBody story={node.story} error={node.error} />
+    case 'storyboard':
+      return <StoryboardBody board={node} />
+    case 'media':
+      return (
+        <MediaBody
+          ep={ep}
+          board={ep.nodes.find((n) => n.id === node.parent_id)}
+          media={node}
+          disabled={disabled}
+          onRetryScene={onRetryScene}
+        />
+      )
+    case 'final':
+      return <FinalBody ep={ep} node={node} disabled={disabled} onExport={onExport} />
+    default:
+      return null
+  }
+}
+
+/** 故事正文（只读）。 */
+function StoryBody({ story, error }: { story?: StoryCandidate; error?: string }) {
+  if (!story) {
+    return (
+      <>
+        {error && <ErrorBox>{error}</ErrorBox>}
+        <Empty text="本版本尚未产出故事。" />
+      </>
+    )
+  }
+  return (
+    <>
+      <p className="mb-3 text-sm text-paper-300/60 leading-relaxed">
+        {story.dynasty} · {story.source} — {story.summary}
+      </p>
+      <div className="rounded-lg bg-ink-950/50 border border-ink-800 p-5 text-[15px] leading-8 text-paper-300/90 whitespace-pre-wrap font-display">
+        {story.content}
+      </div>
+    </>
+  )
+}
+
+/** 分镜正文（只读）：逐镜列出画面描述与旁白，供下游对照。 */
+function StoryboardBody({ board }: { board: VersionNode }) {
+  const sb: Storyboard | undefined = board.storyboard
+  if (!sb) {
+    return (
+      <>
+        {board.error && <ErrorBox>{board.error}</ErrorBox>}
+        <Empty text="本版本尚未产出分镜。" />
+      </>
+    )
+  }
+  return (
+    <ol className="space-y-3">
+      {sb.scenes.map((sc) => (
+        <li key={sc.id} className="rounded-lg border border-ink-800 bg-ink-950/40 p-3.5">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="font-display text-gold-500">镜 {String(sc.id).padStart(2, '0')}</span>
+            <span className="text-xs rounded bg-ink-800 px-2 py-0.5 text-paper-300/60">{sc.duration}s</span>
+            {sc.camera && <span className="text-xs text-paper-300/50">运镜：{sc.camera}</span>}
+          </div>
+          <div className="text-xs text-paper-300/40 mb-1">画面（已做朝代视觉锚定）</div>
+          <p className="text-sm leading-7 text-paper-300/85">{sc.visual_prompt}</p>
+          <div className="text-xs text-paper-300/40 mt-2.5 mb-1">旁白</div>
+          <p className="text-sm leading-7 text-paper-100/90">{sc.narration}</p>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+/**
+ * 画面正文：每镜同时给出「旁白文字」与「画面/旁白产物」，便于逐镜对照。
+ * 旁白文字只存在上游分镜节点里（画面节点只登记媒体文件），所以必须回上游取。
+ */
+function MediaBody({
   ep,
   board,
   media,
-  busy,
-  pending,
-  header,
-  extra,
+  disabled,
   onRetryScene,
 }: {
   ep: Episode
   board?: VersionNode
-  media?: VersionNode
-  busy: boolean
-  pending: boolean
-  header: React.ReactNode
-  extra: React.ReactNode
-  onRetryScene: (id: number) => void
+  media: VersionNode
+  disabled: boolean
+  onRetryScene?: (id: number) => void
 }) {
   const sb: Storyboard | undefined = board?.storyboard
   if (!sb) {
     return (
-      <Card title={header} extra={extra}>
-        <Empty text="本版本尚未产出分镜。执行版本树上的「从此处继续」拆分分镜。" />
-      </Card>
+      <>
+        {media.error && <ErrorBox>{media.error}</ErrorBox>}
+        <Empty text="本版本尚未产出画面与旁白。" />
+      </>
     )
   }
-  const clipById = new Map<number, MediaResult>((media?.clips ?? []).map((m) => [m.scene_id, m]))
-  const audioById = new Map<number, MediaResult>((media?.audios ?? []).map((m) => [m.scene_id, m]))
+  const clipById = new Map<number, MediaResult>((media.clips ?? []).map((m) => [m.scene_id, m]))
+  const audioById = new Map<number, MediaResult>((media.audios ?? []).map((m) => [m.scene_id, m]))
   return (
-    <Card title={`${header} · 分镜脚本（${sb.scenes.length} 镜）`} extra={extra}>
-      <ol className="space-y-4">
+    <div className="space-y-3">
+      {media.error && <ErrorBox>{media.error}</ErrorBox>}
+      <ol className="space-y-3">
         {sb.scenes.map((sc) => (
           <SceneCard
             key={sc.id}
@@ -475,32 +481,30 @@ function StoryboardSection({
             scene={sc}
             clip={clipById.get(sc.id)}
             audio={audioById.get(sc.id)}
-            busy={busy}
-            pending={pending}
-            onRetry={() => onRetryScene(sc.id)}
+            disabled={disabled}
+            onRetry={onRetryScene && (() => onRetryScene(sc.id))}
           />
         ))}
       </ol>
-    </Card>
+    </div>
   )
 }
 
+/** 单镜卡片：左列是旁白原文与画面描述（对照用），右列是视频与旁白产物。 */
 function SceneCard({
   ep,
   scene: sc,
   clip,
   audio,
-  busy,
-  pending,
+  disabled,
   onRetry,
 }: {
   ep: Episode
   scene: Scene
   clip?: MediaResult
   audio?: MediaResult
-  busy: boolean
-  pending: boolean
-  onRetry: () => void
+  disabled: boolean
+  onRetry?: () => void
 }) {
   const incomplete = !clip?.path || !audio?.path
   const reuseAll = clip?.skipped && audio?.skipped
@@ -518,19 +522,19 @@ function SceneCard({
         }
         defaultOpen
       >
-        <div className="grid lg:grid-cols-[1fr_300px] gap-4 p-4 border-t border-ink-800">
+        <div className="grid lg:grid-cols-[1fr_300px] gap-4">
           <div className="space-y-3 min-w-0">
-            <div>
-              <div className="text-xs text-paper-300/40 mb-1">画面（已做朝代视觉锚定）</div>
-              <p className="text-sm leading-7 text-paper-300/85">{sc.visual_prompt}</p>
-            </div>
             <div>
               <div className="text-xs text-paper-300/40 mb-1">旁白</div>
               <p className="text-sm leading-7 text-paper-100/90">{sc.narration}</p>
             </div>
-            {incomplete && (
+            <div>
+              <div className="text-xs text-paper-300/40 mb-1">画面（已做朝代视觉锚定）</div>
+              <p className="text-sm leading-7 text-paper-300/85">{sc.visual_prompt}</p>
+            </div>
+            {incomplete && onRetry && (
               <div className="flex flex-wrap items-center gap-2.5">
-                <Button variant="seal" className="px-3 py-1.5 text-xs" disabled={busy || pending} onClick={onRetry}>
+                <Button variant="seal" className="px-3 py-1.5 text-xs" disabled={disabled} onClick={onRetry}>
                   重试本镜
                 </Button>
                 <span className="text-xs text-paper-300/40">
@@ -672,42 +676,41 @@ function RefGroup({ title, refs, ep }: { title: string; refs: VisualRef[]; ep: E
   )
 }
 
-function OutputsSection({
+/** 成片正文：播放各比例成片，并给出导出其他比例的入口（合成不调模型，无提示词）。 */
+function FinalBody({
   ep,
   node,
-  busy,
-  pending,
-  header,
-  extra,
+  disabled,
   onExport,
 }: {
   ep: Episode
   node: VersionNode
-  busy: boolean
-  pending: boolean
-  header: React.ReactNode
-  extra: React.ReactNode
-  onExport: (ratio: string) => void
+  disabled: boolean
+  onExport?: (ratio: string) => void
 }) {
   const outs = node.outputs ?? []
   const ratios = ['16:9', '9:16', '1:1', '3:4']
   return (
-    <Card
-      title={`${header} · 成片与多比例导出`}
-      extra={
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-paper-300/40 mr-1">导出：</span>
+    <div className="space-y-4">
+      {node.error && <ErrorBox>{node.error}</ErrorBox>}
+      {onExport && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-paper-300/45">导出其他比例：</span>
           {ratios.map((r) => (
-            <Button key={r} variant="outline" className="px-2.5 py-1 text-xs" disabled={busy || pending} onClick={() => onExport(r)}>
+            <Button
+              key={r}
+              variant="outline"
+              className="px-2.5 py-1 text-xs"
+              disabled={disabled}
+              onClick={() => onExport(r)}
+            >
               {r}
             </Button>
           ))}
-          {extra}
         </div>
-      }
-    >
+      )}
       {outs.length === 0 ? (
-        <Empty text="本版本尚无成片。执行版本树上的「从此处继续」合成成片。" />
+        <Empty text="本版本尚无成片。" />
       ) : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
           {outs.map((p) => (
@@ -730,6 +733,6 @@ function OutputsSection({
           ))}
         </div>
       )}
-    </Card>
+    </div>
   )
 }

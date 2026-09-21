@@ -16,11 +16,12 @@ var (
 	produceScenes string
 	fromNode      string
 	rerollFlag    bool
+	noteFlag      string
 )
 
-// deriveOpts 组装本次派生的选项（--from / --reroll）。
+// deriveOpts 组装本次派生的选项（--from / --reroll / --note）。
 func deriveOpts() engine.DeriveOptions {
-	return engine.DeriveOptions{From: fromNode, Reroll: rerollFlag}
+	return engine.DeriveOptions{From: fromNode, Reroll: rerollFlag, Note: noteFlag}
 }
 
 var generateCmd = &cobra.Command{
@@ -381,6 +382,11 @@ func init() {
 	}
 	for _, c := range []*cobra.Command{storyboardCmd, produceCmd, composeCmd, runCmd, exportCmd} {
 		c.Flags().StringVar(&fromNode, "from", "", "从指定版本节点往下派生；留空＝以集当前活跃节点为准")
+	}
+	// --note：本版附加要求（配合 --reroll 指定迭代方向）；合成不调模型，故不注册。
+	for _, c := range []*cobra.Command{generateCmd, storyboardCmd, produceCmd} {
+		c.Flags().StringVar(&noteFlag, "note", "",
+			"本版附加要求（换一版时的迭代方向，如「改成倒叙」）；只作用于这一版，参与派生键")
 	}
 
 	rootCmd.AddCommand(generateCmd, storyboardCmd, produceCmd, composeCmd, runCmd, exportCmd,

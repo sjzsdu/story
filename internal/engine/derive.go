@@ -31,6 +31,10 @@ type DeriveOptions struct {
 	Reroll bool
 	// Scenes 仅 produce 使用：只生产指定镜头序号；留空表示只生产未完成的镜头。
 	Scenes []int
+	// Note 本版附加要求：「重做（换一版）」时用户填的迭代方向，只作用于这一版。
+	// 必须进派生键——否则用户填了方向却命中同一派生键，会被静默复用、
+	// 表现为「提示词不生效」。空串时不影响任何既有派生键。
+	Note string
 }
 
 // ---- 各阶段的派生参数（参与派生键计算）----
@@ -42,6 +46,8 @@ type storyParams struct {
 	// Brief 系列/本集的创作要求文本（templates.StoryBrief）。
 	// 必须 omitempty：默认（无任何创作设置）时为空串，才能保证存量系列的派生键不变。
 	Brief string `json:"brief,omitempty"`
+	// Note 本版附加要求（换一版时用户填的迭代方向）；同上，必须 omitempty。
+	Note string `json:"note,omitempty"`
 }
 
 type storyboardParams struct {
@@ -53,6 +59,8 @@ type storyboardParams struct {
 	RefsDigest string `json:"refs_digest"`
 	// Brief 分镜阶段的创作要求文本（templates.BoardBrief）；同上，必须 omitempty。
 	Brief string `json:"brief,omitempty"`
+	// Note 本版附加要求（换一版时用户填的迭代方向）；同上，必须 omitempty。
+	Note string `json:"note,omitempty"`
 }
 
 type mediaParams struct {
@@ -65,6 +73,8 @@ type mediaParams struct {
 	VoiceDigest   string `json:"voice_digest"`
 	// Motion 运镜强度 key（小人书模式生效）；同上，必须 omitempty。
 	Motion string `json:"motion,omitempty"`
+	// Note 本版附加要求（换一版画面时用户填的迭代方向，追加到每镜画面描述）；同上。
+	Note string `json:"note,omitempty"`
 }
 
 type finalParams struct {

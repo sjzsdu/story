@@ -76,6 +76,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/voice-providers/{provider}/voices", s.listSystemVoices)
 	// §16：series.voice_id 创建后锁定，不再允许单独更新；旧端点返回 409 提示编辑声音条目本身。
 	s.mux.HandleFunc("PUT /api/series/{id}/voice", s.voiceProfileLocked)
+	// §19 平台发布：发布任务 CRUD + 平台账号管理。
+	s.registerPublishRoutes()
+	// 全局配置 GET/PUT。
+	s.mux.HandleFunc("GET /api/settings", s.getConfig)
+	s.mux.HandleFunc("PUT /api/settings", s.updateConfig)
 }
 
 // Handler 返回带 SPA 回退的总 handler。
@@ -344,6 +349,9 @@ type actionReq struct {
 	// Scenes 指定要生产的镜头序号（仅 produce 动作使用）。留空表示只生产所有
 	// 未完成的镜头——已成功的镜头不会被重复出图/合成。
 	Scenes []int `json:"scenes"`
+	// Note 本版附加要求（「重做/换一版」时用户填的迭代方向），只作用于这一版。
+	// 仅 story/storyboard/produce 使用；compose 是纯合成、不调用模型，忽略它。
+	Note string `json:"note"`
 }
 
 func (s *Server) runActionHTTP(w http.ResponseWriter, r *http.Request) {
@@ -432,13 +440,11 @@ func (s *Server) cancelActionHTTP(w http.ResponseWriter, r *http.Request) {
 // buildAction 把动作名映射为 engine 调用；run 为多步串联。
 func (s *Server) buildAction(episodeID string, req actionReq) (func(ctx context.Context) error, error) {
 	eng := s.app.Engine
-	opts := engine.DeriveOptions{From: req.From, Reroll: req.Reroll, Scenes: req.Scenes}
+	opts := engine.DeriveOptions{From: req.From, Reroll: req.Reroll, Scenes: req.Scenes, Note: req.Note}
 	switch req.Action {
 	case "story":
-		return func(ctx context.Context) error {
-			_, err := eng.GenerateStory(ctx, episodeID, engine.DeriveOptions{Reroll: req.Reroll})
-			return err
-		}, nil
+		// 故事是根阶段，不使用 From/Scenes；但仍须传完整 opts，否则 Note 会被丢掉。
+		return func(ctx context.Context) error { _, err := eng.GenerateStory(ctx, episodeID, opts); return err }, nil
 	case "storyboard":
 		return func(ctx context.Context) error { _, err := eng.PlanStoryboard(ctx, episodeID, opts); return err }, nil
 	case "produce":
