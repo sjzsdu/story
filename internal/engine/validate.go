@@ -40,17 +40,6 @@ func ValidateCandidates(cs []domain.StoryCandidate) error {
 	return nil
 }
 
-// ValidateSelection 验收 pick 步骤。
-func ValidateSelection(cs []domain.StoryCandidate, index int) error {
-	if index < 1 || index > len(cs) {
-		return fmt.Errorf("选择序号 %d 越界（共 %d 个候选）", index, len(cs))
-	}
-	if strings.TrimSpace(cs[index-1].Content) == "" {
-		return fmt.Errorf("选中的候选 #%d 正文为空", index)
-	}
-	return nil
-}
-
 // ValidateStoryboard 验收 storyboard 步骤产物。
 func ValidateStoryboard(sb *domain.Storyboard) error {
 	if sb == nil {

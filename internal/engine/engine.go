@@ -14,7 +14,7 @@ import (
 	"github.com/sjzsdu/story/internal/templates"
 )
 
-// Engine 流水线引擎，编排各步骤并维护状态机。
+// Engine 流水线引擎，编排各步骤并在集级版本树上派生节点。
 type Engine struct {
 	repo     port.Repository
 	stories  port.StoryGenerator
@@ -69,17 +69,32 @@ func New(
 	}
 }
 
-// GenerateCandidates 步骤 1：生成故事。
-// 2026-09-19 起取消「3 个候选人工选择」：模型只产出一篇定稿，生成成功后
-// 自动完成选定（StepPick 同步置 done），下一步直接进入分镜。不满意可重跑
-// 本步骤覆盖；仍保留单元素 Candidates/Pick 结构以兼容状态与旧数据。
-func (e *Engine) GenerateCandidates(ctx context.Context, episodeID string) ([]domain.StoryCandidate, error) {
+// GenerateStory 步骤 1：生成故事定稿，取得（或新建）story 根节点。
+//
+// 同一组派生输入（系列 + 主题 + 朝代）下已产出的 story 节点直接复用，不再调用
+// 模型（零费用）；opts.Reroll 为 true 时开新版本（Attempt+1）另存一份。
+// 生成成功即定稿——旧流程的 pick 环节已随版本树移除（§17）。
+func (e *Engine) GenerateStory(ctx context.Context, episodeID string, opts DeriveOptions) (*domain.VersionNode, error) {
 	ep, series, err := e.load(ctx, episodeID)
 	if err != nil {
 		return nil, err
 	}
 
-	ep.State.BeginAttempt(domain.StepGenerate)
+	params := storyParams{
+		SeriesID: series.ID,
+		Topic:    ep.Topic,
+		Dynasty:  series.Config.Dynasty,
+	}
+	node := ensureNode(ep, domain.StageStory, nil, params, opts.Reroll)
+	ep.ActiveNodeID = node.ID
+	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
+		return nil, err
+	}
+	if node.Done() && node.Story != nil {
+		return node, nil
+	}
+
+	node.BeginRun()
 	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
 		return nil, err
 	}
@@ -90,76 +105,71 @@ func (e *Engine) GenerateCandidates(ctx context.Context, episodeID string) ([]do
 		Topic:      ep.Topic,
 	})
 	if err != nil {
-		return nil, e.fail(ctx, ep, domain.StepGenerate, err)
+		return nil, e.failNode(ctx, ep, node, err)
 	}
 	if err := ValidateCandidates(candidates); err != nil {
-		return nil, e.fail(ctx, ep, domain.StepGenerate, err)
+		return nil, e.failNode(ctx, ep, node, err)
 	}
-	for i := range candidates {
-		candidates[i].Index = i + 1
-	}
-
 	chosen := candidates[0]
 	chosen.Index = 1
-	idx := 1
-	ep.State.Candidates = candidates
-	ep.State.Selected = &idx
-	ep.State.Story = &chosen
-	ep.State.Mark(domain.StepGenerate, domain.StatusDone, "")
-	ep.State.Mark(domain.StepPick, domain.StatusDone, "")
-	ep.State.Current = domain.StepStoryboard
-	if err := e.writeReviewCopy(ep); err != nil {
-		return nil, err
+
+	if err := os.MkdirAll(node.Dir, 0o755); err != nil {
+		return nil, e.failNode(ctx, ep, node, err)
 	}
+	node.Story = &chosen
+	if err := writeStoryCopy(node); err != nil {
+		return nil, e.failNode(ctx, ep, node, err)
+	}
+	node.Mark(domain.NodeDone, "")
 	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
 		return nil, err
 	}
-	return candidates, nil
+	return node, nil
 }
 
-// Pick 手动选定故事（index 从 1 开始）。
-// 自动流程下 GenerateCandidates 已完成选定，本方法保留用于兼容旧数据
-// （历史上 generate 与 pick 分离的集）与 CLI/API。
-func (e *Engine) Pick(ctx context.Context, episodeID string, index int) error {
-	ep, _, err := e.load(ctx, episodeID)
-	if err != nil {
-		return err
-	}
-	if err := ValidateSelection(ep.State.Candidates, index); err != nil {
-		return e.fail(ctx, ep, domain.StepPick, err)
-	}
-
-	chosen := ep.State.Candidates[index-1]
-	chosen.Index = index
-	idx := index
-	ep.State.Selected = &idx
-	ep.State.Story = &chosen
-	ep.State.Current = domain.StepStoryboard
-	ep.State.Mark(domain.StepPick, domain.StatusDone, "")
-	if err := e.writeReviewCopy(ep); err != nil {
-		return err
-	}
-	return e.repo.SaveEpisode(ctx, ep)
-}
-
-// PlanStoryboard 步骤 3：拆分分镜。
-func (e *Engine) PlanStoryboard(ctx context.Context, episodeID string) (*domain.Storyboard, error) {
+// PlanStoryboard 步骤 2：把故事拆分为分镜，在 story 节点下派生 storyboard 节点。
+func (e *Engine) PlanStoryboard(ctx context.Context, episodeID string, opts DeriveOptions) (*domain.VersionNode, error) {
 	ep, series, err := e.load(ctx, episodeID)
 	if err != nil {
 		return nil, err
 	}
-	if ep.State.Story == nil {
-		return nil, e.fail(ctx, ep, domain.StepStoryboard, fmt.Errorf("尚未选定故事，请先执行 pick"))
+	parent, err := resolveParent(ep, opts.From, domain.StageStory)
+	if err != nil {
+		return nil, err
+	}
+	if parent.Story == nil {
+		return nil, fmt.Errorf("故事节点 %s 缺少内容，请重新生成故事", parent.ID)
 	}
 
-	ep.State.BeginAttempt(domain.StepStoryboard)
+	dynasty := firstNonEmpty(series.Config.Dynasty, parent.Story.Dynasty)
+	// 集级视觉参考（系列人物 + 本集人物/场景）参与派生键：改参考后重跑分镜
+	// 会得到新版本，而不是复用按旧参考生成的分镜。
+	visualRefs := mergeVisualRefs(series, ep.Refs)
+	params := storyboardParams{
+		StoryKey:   parent.ID,
+		Dynasty:    dynasty,
+		Ratio:      series.Config.Ratio,
+		Resolution: series.Config.Resolution,
+		VideoStyle: series.Config.VideoStyle,
+		RefsDigest: refsDigest(visualRefs),
+	}
+	node := ensureNode(ep, domain.StageStoryboard, parent, params, opts.Reroll)
+	ep.ActiveNodeID = node.ID
+	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
+		return nil, err
+	}
+	if node.Done() && node.Storyboard != nil {
+		return node, nil
+	}
+
+	node.BeginRun()
 	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
 		return nil, err
 	}
 
 	sb, err := e.boards.PlanStoryboard(ctx, port.StoryboardRequest{
-		Story:       *ep.State.Story,
-		Dynasty:     firstNonEmpty(series.Config.Dynasty, ep.State.Story.Dynasty),
+		Story:       *parent.Story,
+		Dynasty:     dynasty,
 		Ratio:       series.Config.Ratio,
 		Resolution:  series.Config.Resolution,
 		VideoStyle:  series.Config.VideoStyle,
@@ -167,30 +177,34 @@ func (e *Engine) PlanStoryboard(ctx context.Context, episodeID string) (*domain.
 		EpisodeRefs: visualRefLines(ep.Refs),
 	})
 	if err != nil {
-		return nil, e.fail(ctx, ep, domain.StepStoryboard, err)
+		return nil, e.failNode(ctx, ep, node, err)
 	}
 	if err := ValidateStoryboard(sb); err != nil {
-		return nil, e.fail(ctx, ep, domain.StepStoryboard, err)
+		return nil, e.failNode(ctx, ep, node, err)
 	}
 	normalizeDurations(sb)
 	for i := range sb.Scenes {
 		sb.Scenes[i].ID = i + 1
 	}
 
-	// 本集视觉参考（人物+重复场景）：延续旧参考图关联后落集级事实源，
-	// 分镜审阅副本 storyboard.json 带同一快照。
+	// 本集视觉参考（人物+重复场景）：延续旧参考图关联后落集级事实源
+	// （跨分镜版本共享），分镜审阅副本 storyboard.json 带同一快照。
 	ep.Refs = preserveRefImages(ep.Refs, sb.Refs)
 	sb.Refs = ep.Refs
-	ep.State.Storyboard = sb
-	ep.State.Current = domain.StepProduce
-	ep.State.Mark(domain.StepStoryboard, domain.StatusDone, "")
-	if err := e.writeReviewCopy(ep); err != nil {
-		return nil, err
+
+	if err := os.MkdirAll(node.Dir, 0o755); err != nil {
+		return nil, e.failNode(ctx, ep, node, err)
 	}
+	node.Storyboard = sb
+	node.Refs = ep.Refs
+	if err := writeStoryboardCopy(node); err != nil {
+		return nil, e.failNode(ctx, ep, node, err)
+	}
+	node.Mark(domain.NodeDone, "")
 	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
 		return nil, err
 	}
-	return sb, nil
+	return node, nil
 }
 
 // sceneMedia 单镜的产物规划信息：路径与当前完成情况（以磁盘文件为准）。
@@ -207,11 +221,15 @@ type sceneMedia struct {
 }
 
 // planScenes 按镜头顺序规划产物路径与完成情况。
-func planScenes(ep *domain.Episode) []sceneMedia {
-	scenes := ep.State.Storyboard.Scenes
-	clipsDir := filepath.Join(ep.WorkDir, "clips")
-	audioDir := filepath.Join(ep.WorkDir, "audio")
-	panelsDir := filepath.Join(ep.WorkDir, PanelsDirName)
+//
+// 路径全部落在 media 节点自己的目录里（versions/media-<key>/），因此上游分镜
+// 一变派生键就变、目录就变——旧分镜的片段绝不可能被新分镜误复用（§17 的核心）。
+// 镜头清单来自上游分镜节点（media 节点自身只存产物，不存分镜）。
+func planScenes(node *domain.VersionNode, sb *domain.Storyboard) []sceneMedia {
+	scenes := sb.Scenes
+	clipsDir := filepath.Join(node.Dir, "clips")
+	audioDir := filepath.Join(node.Dir, "audio")
+	panelsDir := filepath.Join(node.Dir, PanelsDirName)
 	plan := make([]sceneMedia, len(scenes))
 	for i, sc := range scenes {
 		m := sceneMedia{
@@ -228,62 +246,72 @@ func planScenes(ep *domain.Episode) []sceneMedia {
 	return plan
 }
 
-// Produce 步骤 4：生产每个镜头的画面片段与旁白音频（支持断点续跑）。
+// Produce 步骤 3：生产每个镜头的画面片段与旁白音频（支持断点续跑）。
 //
 // 默认只对「未完成」的镜头建任务：画面与旁白都已存在的镜头连任务都不建，
 // 不产生任何模型费用；未完成的镜头逐项复用已有产物（插画/片段/旁白），
 // 因此重复执行本步骤等价于「只重试失败镜头」，绝不会重跑已成功的镜头。
+// opts.Scenes 非空时严格只生产这些序号（单镜/多镜重试）。
 //
 // 返回 error 当且仅当本次请求生产的镜头里有失败；整集仍有未完成镜头时
-// 步骤状态标记为 failed 并列出剩余镜头（便于再次续跑）。
-func (e *Engine) Produce(ctx context.Context, episodeID string) error {
-	return e.produce(ctx, episodeID, nil)
-}
-
-// ProduceScenes 只生产指定序号的镜头（单镜/多镜重试），其余镜头一概不碰
-// （只在结果里登记磁盘上已有产物）。传空切片等同于 Produce。
-func (e *Engine) ProduceScenes(ctx context.Context, episodeID string, sceneIDs []int) error {
-	if len(sceneIDs) == 0 {
-		return e.produce(ctx, episodeID, nil)
-	}
-	return e.produce(ctx, episodeID, sceneIDs)
-}
-
-func (e *Engine) produce(ctx context.Context, episodeID string, sceneIDs []int) error {
+// 节点状态标记为 failed 并列出剩余镜头（便于再次续跑）。
+func (e *Engine) Produce(ctx context.Context, episodeID string, opts DeriveOptions) (*domain.VersionNode, error) {
 	ep, series, err := e.load(ctx, episodeID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if ep.State.Storyboard == nil {
-		return fmt.Errorf("尚未生成分镜，请先执行 storyboard")
+	parent, err := resolveParent(ep, opts.From, domain.StageStoryboard)
+	if err != nil {
+		return nil, err
+	}
+	if parent.Storyboard == nil {
+		return nil, fmt.Errorf("分镜节点 %s 缺少内容，请重新拆分分镜", parent.ID)
 	}
 
-	clipsDir := filepath.Join(ep.WorkDir, "clips")
-	audioDir := filepath.Join(ep.WorkDir, "audio")
+	mode := domain.NormalizeVisualMode(series.Config.VisualMode)
+	// 语音参数参与派生键：换声音条目或改其参数后重新生产会得到新版本，
+	// 而不是把旧旁白静默复用（旁白一旦错位用户极难察觉）。
+	voice, model, rate, pitch, instr := e.resolveVoice(ctx, series.Config, series.VoiceID, e.voice, e.instruction)
+	params := mediaParams{
+		StoryboardKey: parent.ID,
+		VisualMode:    mode,
+		VideoStyle:    series.Config.VideoStyle,
+		Ratio:         series.Config.Ratio,
+		Resolution:    series.Config.Resolution,
+		VoiceID:       series.VoiceID,
+		VoiceDigest:   voiceDigest(voice, model, rate, pitch, instr),
+	}
+	node := ensureNode(ep, domain.StageMedia, parent, params, opts.Reroll)
+	ep.ActiveNodeID = node.ID
+	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
+		return nil, err
+	}
+
+	clipsDir := filepath.Join(node.Dir, "clips")
+	audioDir := filepath.Join(node.Dir, "audio")
 	if err := os.MkdirAll(clipsDir, 0o755); err != nil {
-		return err
+		return nil, e.failNode(ctx, ep, node, err)
 	}
 	if err := os.MkdirAll(audioDir, 0o755); err != nil {
-		return err
+		return nil, e.failNode(ctx, ep, node, err)
 	}
 	// comic 小人书模式：每镜一张插画落 panels/，再本地渲染成 clips/ 片段。
-	mode := domain.NormalizeVisualMode(series.Config.VisualMode)
-	panelsDir := filepath.Join(ep.WorkDir, PanelsDirName)
+	panelsDir := filepath.Join(node.Dir, PanelsDirName)
 	if mode == domain.VisualModeComic {
 		if err := os.MkdirAll(panelsDir, 0o755); err != nil {
-			return err
+			return nil, e.failNode(ctx, ep, node, err)
 		}
 	}
 
-	plan := planScenes(ep)
-	selected, err := selectScenes(plan, sceneIDs)
+	plan := planScenes(node, parent.Storyboard)
+	selected, err := selectScenes(plan, opts.Scenes)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	ep.State.BeginAttempt(domain.StepProduce)
+	node.BeginRun()
 	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
-		return err
+		return nil, err
 	}
 
 	n := len(plan)
@@ -360,14 +388,14 @@ func (e *Engine) produce(ctx context.Context, episodeID string, sceneIDs []int) 
 			audioResults[i] = domain.MediaResult{SceneID: sc.ID, Err: r.Err.Error()}
 		}
 	}
-	ep.State.Clips = clipResults
-	ep.State.Audios = audioResults
+	node.Clips = clipResults
+	node.Audios = audioResults
 
 	// 手动停止：保留已完成的产物，便于之后直接续跑（不当作失败）。
 	if ctx.Err() != nil {
-		ep.State.Mark(domain.StepProduce, domain.StatusFailed, "已手动停止（已完成的产物已保留，可续跑）")
+		node.Mark(domain.NodeFailed, "已手动停止（已完成的产物已保留，可续跑）")
 		_ = e.repo.SaveEpisode(context.WithoutCancel(ctx), ep)
-		return ctx.Err()
+		return node, ctx.Err()
 	}
 	_ = e.repo.SaveEpisode(ctx, ep) // 先落盘部分进度
 
@@ -392,24 +420,29 @@ func (e *Engine) produce(ctx context.Context, episodeID string, sceneIDs []int) 
 		if len(remaining) > 0 {
 			cause = fmt.Errorf("%w\n整集仍未完成的镜头：%s（再次执行生产只会重试这些）", cause, joinSceneIDs(remaining))
 		}
-		return e.fail(ctx, ep, domain.StepProduce, cause)
+		return node, e.failNode(ctx, ep, node, cause)
 	}
 	if len(remaining) > 0 {
 		// 本次请求的镜头都成功了，但整集还没齐：不报错（用户请求的动作本身成功），
-		// 仅把步骤标记为 failed 并列出剩余镜头，便于继续续跑。
+		// 仅把节点标记为 failed 并列出剩余镜头，便于继续续跑。
 		msg := fmt.Sprintf("本次生产的镜头已全部完成；整集仍有 %d 镜未完成：%s（再次执行生产只会重试这些）",
 			len(remaining), joinSceneIDs(remaining))
-		ep.State.Mark(domain.StepProduce, domain.StatusFailed, msg)
-		return e.repo.SaveEpisode(ctx, ep)
+		node.Mark(domain.NodeFailed, msg)
+		if err := e.repo.SaveEpisode(ctx, ep); err != nil {
+			return node, err
+		}
+		return node, nil
 	}
 
 	if err := ValidateMedia(clipResults, audioResults, n); err != nil {
-		return e.fail(ctx, ep, domain.StepProduce, err)
+		return node, e.failNode(ctx, ep, node, err)
 	}
 
-	ep.State.Current = domain.StepCompose
-	ep.State.Mark(domain.StepProduce, domain.StatusDone, "")
-	return e.repo.SaveEpisode(ctx, ep)
+	node.Mark(domain.NodeDone, "")
+	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
+		return node, err
+	}
+	return node, nil
 }
 
 // selectScenes 决定本次要生产哪些镜头：sceneIDs 为 nil 表示只选未完成的镜头；
@@ -529,30 +562,54 @@ func (e *Engine) produceAudio(ctx context.Context, series *domain.Series, m scen
 	return domain.MediaResult{SceneID: sc.ID, Path: m.AudioPath, DurationSec: dur}, nil
 }
 
-// Compose 步骤 5：归一化 + 混音拼接 + 烧录字幕，产出成片。
-func (e *Engine) Compose(ctx context.Context, episodeID string) (string, error) {
+// Compose 步骤 4：归一化 + 混音拼接 + 烧录字幕，产出成片（在 media 节点下派生 final 节点）。
+func (e *Engine) Compose(ctx context.Context, episodeID string, opts DeriveOptions) (string, error) {
 	ep, series, err := e.load(ctx, episodeID)
 	if err != nil {
 		return "", err
 	}
-	if len(ep.State.Clips) == 0 || len(ep.State.Audios) == 0 {
-		return "", fmt.Errorf("尚无媒体产物，请先执行 produce")
+	parent, err := resolveParent(ep, opts.From, domain.StageMedia)
+	if err != nil {
+		return "", err
+	}
+	// 镜头清单来自上游分镜节点（media 节点只存产物）。
+	board := ep.NodeByID(parent.ParentID)
+	if board == nil || board.Storyboard == nil {
+		return "", fmt.Errorf("画面节点 %s 的上游分镜已缺失，请重新拆分分镜", parent.ID)
+	}
+	if len(parent.Clips) == 0 || len(parent.Audios) == 0 {
+		return "", fmt.Errorf("画面节点 %s 尚无媒体产物，请先生产画面", parent.ID)
 	}
 
-	outDir := filepath.Join(ep.WorkDir, "output")
-	tmpDir := filepath.Join(ep.WorkDir, "tmp")
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
+	params := finalParams{
+		MediaKey:      parent.ID,
+		Ratio:         series.Config.Ratio,
+		Resolution:    series.Config.Resolution,
+		BurnSubtitles: true,
+	}
+	node := ensureNode(ep, domain.StageFinal, parent, params, opts.Reroll)
+	ep.ActiveNodeID = node.ID
+	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
 		return "", err
+	}
+	if node.Done() && len(node.Outputs) > 0 {
+		return node.Outputs[0], nil
+	}
+
+	outDir := filepath.Join(node.Dir, "output")
+	tmpDir := filepath.Join(node.Dir, "tmp")
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return "", e.failNode(ctx, ep, node, err)
 	}
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
-		return "", err
+		return "", e.failNode(ctx, ep, node, err)
 	}
 
-	clipsByScene := indexMedia(ep.State.Clips)
-	audiosByScene := indexMedia(ep.State.Audios)
-	tracks := make([]port.ClipTrack, 0, len(ep.State.Storyboard.Scenes))
+	clipsByScene := indexMedia(parent.Clips)
+	audiosByScene := indexMedia(parent.Audios)
+	tracks := make([]port.ClipTrack, 0, len(board.Storyboard.Scenes))
 	var expected float64
-	for _, sc := range ep.State.Storyboard.Scenes {
+	for _, sc := range board.Storyboard.Scenes {
 		c, ok1 := clipsByScene[sc.ID]
 		a, ok2 := audiosByScene[sc.ID]
 		if !ok1 || !ok2 {
@@ -569,7 +626,7 @@ func (e *Engine) Compose(ctx context.Context, episodeID string) (string, error) 
 	}
 
 	finalPath := filepath.Join(outDir, fmt.Sprintf("%s-%s.mp4", ep.ID, ratioSuffix(series.Config.Ratio)))
-	ep.State.BeginAttempt(domain.StepCompose)
+	node.BeginRun()
 	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
 		return "", err
 	}
@@ -583,18 +640,17 @@ func (e *Engine) Compose(ctx context.Context, episodeID string) (string, error) 
 		BurnSubtitles: true,
 	})
 	if err != nil {
-		return "", e.fail(ctx, ep, domain.StepCompose, err)
+		return "", e.failNode(ctx, ep, node, err)
 	}
 	if res.DurationSec <= 0 {
-		return "", e.fail(ctx, ep, domain.StepCompose, fmt.Errorf("成片时长异常: %.2f", res.DurationSec))
+		return "", e.failNode(ctx, ep, node, fmt.Errorf("成片时长异常: %.2f", res.DurationSec))
 	}
 	if diff := res.DurationSec - expected; diff > 3 || diff < -3 {
-		return "", e.fail(ctx, ep, domain.StepCompose, fmt.Errorf("成片时长 %.2f 与素材总时长 %.2f 偏差过大", res.DurationSec, expected))
+		return "", e.failNode(ctx, ep, node, fmt.Errorf("成片时长 %.2f 与素材总时长 %.2f 偏差过大", res.DurationSec, expected))
 	}
 
-	ep.State.Outputs = appendIfMissing(ep.State.Outputs, res.FinalPath)
-	ep.State.Current = domain.StepCompose
-	ep.State.Mark(domain.StepCompose, domain.StatusDone, "")
+	node.Outputs = appendIfMissing(node.Outputs, res.FinalPath)
+	node.Mark(domain.NodeDone, "")
 	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
 		return "", err
 	}
@@ -619,17 +675,24 @@ func (e *Engine) PreviewVoice(ctx context.Context, p domain.VoiceProfile, text, 
 	return outPath, err
 }
 
-// Export 从成片导出其他比例版本。
-func (e *Engine) Export(ctx context.Context, episodeID, ratio string) (string, error) {
+// Export 从 final 节点的成片导出其他比例版本，产物追加到同一节点。
+func (e *Engine) Export(ctx context.Context, episodeID, ratio string, opts DeriveOptions) (string, error) {
 	ep, series, err := e.load(ctx, episodeID)
 	if err != nil {
 		return "", err
 	}
-	if len(ep.State.Outputs) == 0 {
-		return "", fmt.Errorf("尚无成片，请先执行 compose")
+	node, err := resolveParent(ep, opts.From, domain.StageFinal)
+	if err != nil {
+		return "", err
 	}
-	src := ep.State.Outputs[0]
-	dst := filepath.Join(ep.WorkDir, "output", fmt.Sprintf("%s-%s.mp4", ep.ID, ratioSuffix(ratio)))
+	if len(node.Outputs) == 0 {
+		return "", fmt.Errorf("成片节点 %s 尚无产物，请先合成成片", node.ID)
+	}
+	src := node.Outputs[0]
+	dst := filepath.Join(node.Dir, "output", fmt.Sprintf("%s-%s.mp4", ep.ID, ratioSuffix(ratio)))
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", err
+	}
 	if err := e.composer.Export(ctx, port.ExportRequest{
 		SrcPath:    src,
 		DstPath:    dst,
@@ -638,8 +701,104 @@ func (e *Engine) Export(ctx context.Context, episodeID, ratio string) (string, e
 	}); err != nil {
 		return "", err
 	}
-	ep.State.Outputs = appendIfMissing(ep.State.Outputs, dst)
+	node.Outputs = appendIfMissing(node.Outputs, dst)
+	ep.ActiveNodeID = node.ID
 	return dst, e.repo.SaveEpisode(ctx, ep)
+}
+
+// Run 从起点沿版本链往下补齐到成片：每步都以 opts.Reroll 决定复用既有节点
+// （零费用续跑）还是开新版本；起点之后缺失的阶段依次执行。
+func (e *Engine) Run(ctx context.Context, episodeID string, opts DeriveOptions) error {
+	ep, _, err := e.load(ctx, episodeID)
+	if err != nil {
+		return err
+	}
+	from := opts.From
+	startIdx := 0
+	if from != "" {
+		n := ep.NodeByID(from)
+		if n == nil {
+			return fmt.Errorf("版本节点 %s 不存在", from)
+		}
+		startIdx = stageIndex(n.Stage) + 1
+	}
+
+	stages := domain.AllStages()
+	for i := startIdx; i < len(stages); i++ {
+		switch stages[i] {
+		case domain.StageStory:
+			n, err := e.GenerateStory(ctx, episodeID, DeriveOptions{Reroll: opts.Reroll})
+			if err != nil {
+				return err
+			}
+			from = n.ID
+		case domain.StageStoryboard:
+			n, err := e.PlanStoryboard(ctx, episodeID, DeriveOptions{From: from, Reroll: opts.Reroll})
+			if err != nil {
+				return err
+			}
+			from = n.ID
+		case domain.StageMedia:
+			n, err := e.Produce(ctx, episodeID, DeriveOptions{From: from, Reroll: opts.Reroll})
+			if err != nil {
+				return err
+			}
+			from = n.ID
+		case domain.StageFinal:
+			if _, err := e.Compose(ctx, episodeID, DeriveOptions{From: from, Reroll: opts.Reroll}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ActivateNode 把某节点设为活跃节点（只改指针，不触碰任何产物）。
+func (e *Engine) ActivateNode(ctx context.Context, episodeID, nodeID string) error {
+	ep, err := e.repo.GetEpisode(ctx, episodeID)
+	if err != nil {
+		return err
+	}
+	if ep.NodeByID(nodeID) == nil {
+		return fmt.Errorf("版本节点 %s 不存在", nodeID)
+	}
+	ep.ActiveNodeID = nodeID
+	return e.repo.SaveEpisode(ctx, ep)
+}
+
+// DeleteNode 删除某节点及其全部后代，并删除对应的版本目录（不可恢复）。
+// 若活跃节点落在被删子树内，活跃指针回退到被删子树的父节点。
+func (e *Engine) DeleteNode(ctx context.Context, episodeID, nodeID string) error {
+	ep, err := e.repo.GetEpisode(ctx, episodeID)
+	if err != nil {
+		return err
+	}
+	root := ep.NodeByID(nodeID)
+	if root == nil {
+		return fmt.Errorf("版本节点 %s 不存在", nodeID)
+	}
+	// 活跃节点是被删节点本身或其后代时，活跃指针回退到父节点。
+	activeRemoved := false
+	for _, n := range ep.ActivePath() {
+		if n.ID == nodeID {
+			activeRemoved = true
+			break
+		}
+	}
+
+	removed := ep.RemoveSubtree(nodeID)
+	if activeRemoved {
+		ep.ActiveNodeID = root.ParentID
+	}
+	for _, n := range removed {
+		if strings.TrimSpace(n.Dir) == "" {
+			continue
+		}
+		if err := os.RemoveAll(n.Dir); err != nil {
+			return fmt.Errorf("删除版本目录 %s: %w", n.Dir, err)
+		}
+	}
+	return e.repo.SaveEpisode(ctx, ep)
 }
 
 // ---- 内部辅助 ----
@@ -670,32 +829,33 @@ func (e *Engine) load(ctx context.Context, episodeID string) (*domain.Episode, *
 	return ep, series, nil
 }
 
-// fail 标记步骤失败、落盘错误信息并返回错误。
-func (e *Engine) fail(ctx context.Context, ep *domain.Episode, step domain.StepName, cause error) error {
-	ep.State.Mark(step, domain.StatusFailed, cause.Error())
+// failNode 标记节点失败、落盘错误信息并返回错误。
+func (e *Engine) failNode(ctx context.Context, ep *domain.Episode, node *domain.VersionNode, cause error) error {
+	node.Mark(domain.NodeFailed, cause.Error())
 	_ = e.repo.SaveEpisode(ctx, ep)
 	return cause
 }
 
-// writeReviewCopy 把选定故事与分镜在集目录落一份人工审阅副本。
-func (e *Engine) writeReviewCopy(ep *domain.Episode) error {
-	if ep.State.Story != nil {
-		md := fmt.Sprintf("# %s\n\n- 朝代：%s\n- 出处：%s\n\n%s\n",
-			ep.State.Story.Title, ep.State.Story.Dynasty, ep.State.Story.Source, ep.State.Story.Content)
-		if err := os.WriteFile(filepath.Join(ep.WorkDir, "story.md"), []byte(md), 0o644); err != nil {
-			return err
-		}
+// writeStoryCopy 在 story 节点目录落一份人工审阅副本 story.md。
+func writeStoryCopy(n *domain.VersionNode) error {
+	if n.Story == nil {
+		return nil
 	}
-	if ep.State.Storyboard != nil {
-		b, err := json.MarshalIndent(ep.State.Storyboard, "", "  ")
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(ep.WorkDir, "storyboard.json"), b, 0o644); err != nil {
-			return err
-		}
+	md := fmt.Sprintf("# %s\n\n- 朝代：%s\n- 出处：%s\n\n%s\n",
+		n.Story.Title, n.Story.Dynasty, n.Story.Source, n.Story.Content)
+	return os.WriteFile(filepath.Join(n.Dir, "story.md"), []byte(md), 0o644)
+}
+
+// writeStoryboardCopy 在 storyboard 节点目录落一份人工审阅副本 storyboard.json。
+func writeStoryboardCopy(n *domain.VersionNode) error {
+	if n.Storyboard == nil {
+		return nil
 	}
-	return nil
+	b, err := json.MarshalIndent(n.Storyboard, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(n.Dir, "storyboard.json"), b, 0o644)
 }
 
 // buildVideoPrompt 组装单镜视频生成 prompt：画面内容 + 运镜，末尾固定追加

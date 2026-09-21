@@ -270,28 +270,30 @@ func TestProduceUsesRefImages(t *testing.T) {
 		{ID: 4, VisualPrompt: "苏秦伏案疾书，皂色儒服", Narration: "第四句", DurationSec: 4, Camera: "中景"},
 	}}
 
-	if _, err := f.eng.GenerateCandidates(ctx, f.epID); err != nil {
+	if _, err := f.eng.GenerateStory(ctx, f.epID, DeriveOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.eng.PlanStoryboard(ctx, f.epID); err != nil {
+	if _, err := f.eng.PlanStoryboard(ctx, f.epID, DeriveOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.eng.Produce(ctx, f.epID); err != nil {
+	if _, err := f.eng.Produce(ctx, f.epID, DeriveOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
 	// 分镜画面里出现「张仪」的镜头应携带参考图（走 video ref）。
 	ep, _ := f.repo.GetEpisode(ctx, f.epID)
+	media := ep.ActiveNodeOfStage(domain.StageMedia)
+	board := ep.ActiveNodeOfStage(domain.StageStoryboard)
 	matched := 0
-	for _, clip := range ep.State.Clips {
+	for _, clip := range media.Clips {
 		if clip.Path == "" {
 			continue
 		}
 		idx := clip.SceneID - 1
-		if idx < 0 || idx >= len(ep.State.Storyboard.Scenes) {
+		if idx < 0 || idx >= len(board.Storyboard.Scenes) {
 			continue
 		}
-		if strings.Contains(ep.State.Storyboard.Scenes[idx].VisualPrompt, "张仪") {
+		if strings.Contains(board.Storyboard.Scenes[idx].VisualPrompt, "张仪") {
 			matched++
 		}
 	}

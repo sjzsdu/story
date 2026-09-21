@@ -86,13 +86,13 @@ func TestProduceComicMode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := f.eng.GenerateCandidates(ctx, f.epID); err != nil {
+	if _, err := f.eng.GenerateStory(ctx, f.epID, DeriveOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.eng.PlanStoryboard(ctx, f.epID); err != nil {
+	if _, err := f.eng.PlanStoryboard(ctx, f.epID, DeriveOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.eng.Produce(ctx, f.epID); err != nil {
+	if _, err := f.eng.Produce(ctx, f.epID, DeriveOptions{}); err != nil {
 		t.Fatalf("comic produce: %v", err)
 	}
 
@@ -115,7 +115,7 @@ func TestProduceComicMode(t *testing.T) {
 	}
 
 	// 续跑：插画与片段均已存在，不应再产生任何模型调用或渲染。
-	if err := f.eng.Produce(ctx, f.epID); err != nil {
+	if _, err := f.eng.Produce(ctx, f.epID, DeriveOptions{}); err != nil {
 		t.Fatalf("comic 续跑: %v", err)
 	}
 	if calls := f.images.CallsCount(); calls != 4 {

@@ -48,31 +48,31 @@ internal/store/sqlite      （Repository 的 SQLite 实现）
 3. 替换 AI 供应商（如未来接入其他厂商）时，只新增一个 provider 实现，**engine 与 CLI 逻辑零改动**。
 4. 所有外部调用接口方法的第一个参数都是 `context.Context`，并返回 error。
 
-## 4. 流水线与状态机
+## 4. 流水线与版本树
 
-每一集（Episode）独立走一遍流水线：
+每一集（Episode）是**一棵版本树容器**（2026-09-21 改造，见 §17）：四个阶段依次派生，每个阶段可存在多份版本节点，节点间靠派生键（内容寻址）串成链；从任意节点都能继续往下派生出一条新的成片，旧分支完整保留。
 
-1. `generate`   — AI **直接生成一篇定稿故事**（标题、朝代、出处、梗概、正文），生成即自动定稿（2026-09-20 起取消「3 个候选人工选择」，见 §14）；不满意可重跑覆盖。
-2. ~~`pick`~~   — 历史步骤，状态位与 `Pick` 方法保留兼容旧数据；新流程在 generate 成功时自动置 done，用户无感知。
-3. `storyboard` — AI 将故事拆为 6–12 个镜头（visual_prompt / narration / duration / camera）。
-4. `produce`    — 按系列设置 `visual_mode` 生产画面并合成旁白；产物落盘，支持断点续跑（已存在的片段默认跳过）。两种模式（见 §13）：`comic`（默认，小人书：每镜一张 AI 插画 → 本地 ffmpeg Ken Burns 渲染片段，仅按图片计费）/ `video`（每镜 AI 视频生成）。
-   - **只重试未完成的镜头（2026-09-21）**：`produce` 先按磁盘产物规划（`planScenes`），**只为「画面或旁白尚未产出」的镜头建任务**，已完成的镜头连任务都不建、零费用；因此直接重跑 `produce` 等价于「只重试失败镜头」。指定镜头用 `Engine.ProduceScenes`（CLI `story produce --scenes 13,15`、server `{"action":"produce","scenes":[13,15]}`、Web 单镜「重试本镜」）；序号不存在直接报错。
+阶段（`domain.Stage`）：
+
+1. `story`      — AI **直接生成一篇定稿故事**（标题、朝代、出处、梗概、正文），生成即定稿（2026-09-20 起取消「3 个候选人工选择」，见 §14）；不满意可「换一版」。
+2. `storyboard` — AI 将故事拆为 6–12 个镜头（visual_prompt / narration / duration / camera），并顺带产出集级视觉参考文字约束（§15）。
+3. `media`      — 按系列设置 `visual_mode` 生产画面并合成旁白；产物落盘，支持断点续跑（已存在的片段默认跳过）。两种模式（见 §13）：`comic`（默认，小人书：每镜一张 AI 插画 → 本地 ffmpeg Ken Burns 渲染片段，仅按图片计费）/ `video`（每镜 AI 视频生成）。
+   - **只重试未完成的镜头（2026-09-21）**：`Produce` 先按磁盘产物规划（`planScenes`），**只为「画面或旁白尚未产出」的镜头建任务**，已完成的镜头连任务都不建、零费用；因此直接重跑 `produce` 等价于「只重试失败镜头」。指定镜头用 `DeriveOptions.Scenes`（CLI `story produce --scenes 13,15`、server `{"action":"produce","scenes":[13,15]}`、Web 单镜「重试本镜」）；序号不存在直接报错。
    - **画面与旁白互相独立**：同一镜内画面失败也照常合成旁白，各自登记错误（`Err` 前缀「画面:」/「旁白:」），避免下次重试把已付费的那一项再跑一遍。
-   - **可手动停止**：Web 运行中「停止」→ `POST /api/episodes/{id}/cancel` → broker 取消该集 job 的 context（kill 正在跑的 bl/ffmpeg 子进程）；已完成的产物全部落盘保留，步骤标注「已手动停止」，之后再次执行即从断点续跑。
-   - 任务成功但整集仍有未完成镜头时（如只点了单镜重试）：不返回错误，仅把步骤标记 `failed` 并列出剩余镜头，便于继续续跑。
-5. `compose`    — ffmpeg 归一化 → 音视频合成 → 拼接 → 烧录硬字幕，产出最终 MP4。
+   - **可手动停止**：Web 运行中「停止」→ `POST /api/episodes/{id}/cancel` → broker 取消该集 job 的 context（kill 正在跑的 bl/ffmpeg 子进程）；已完成的产物全部落盘保留，之后再次执行即从断点续跑。
+   - 任务成功但整集仍有未完成镜头时（如只点了单镜重试）：不返回错误，仅把节点标记 `failed` 并列出剩余镜头，便于继续续跑。
+4. `final`      — ffmpeg 归一化 → 音视频合成 → 拼接 → 烧录硬字幕，产出最终 MP4；多比例导出（`Export`）产物追加到该 final 节点的 `Outputs`。
 
-步骤状态：`pending → running → review → approved → done`，异常分支 `failed`（可重试）。v1 默认自动通过 review 检查点，但状态位保留；人工可随时查看工作目录中的 `story.md`、`storyboard.json` 介入。
+节点状态：`pending → running → done`，异常分支 `failed`（可重试）；`Runs` 记录本节点被执行次数（原 `StepState.Attempts`）。人工可随时查看各版本目录中的 `story.md`、`storyboard.json` 介入。
 
 每一步必须有**自动验收标准**，验收不通过标记 `failed` 并写入错误信息：
 
-| 步骤 | 验收条件 |
+| 阶段 | 验收条件 |
 | --- | --- |
-| generate | 定稿故事 1 篇，含非空标题、出处、正文（生成时自动完成 pick） |
-| ~~pick~~ | 仅旧数据：选中序号存在且故事正文非空；新流程无需人工动作 |
+| story | 定稿故事 1 篇，含非空标题、出处、正文 |
 | storyboard | 镜头 ≥4，每个含非空 visual_prompt / narration，duration 合法 |
-| produce | 每个镜头的视频与音频文件存在且非空、可被 ffprobe 解析 |
-| compose | 最终文件存在、可播放、时长 ≈ 各镜头之和 |
+| media | 每个镜头的视频与音频文件存在且非空、可被 ffprobe 解析 |
+| final | 最终文件存在、可播放、时长 ≈ 各镜头之和 |
 
 ## 5. 并发与重试
 
@@ -84,8 +84,9 @@ internal/store/sqlite      （Repository 的 SQLite 实现）
 
 - 结构化状态全部存 SQLite，经由 `port.Repository` 访问；engine 不知道 SQLite 的存在。
 - 媒体与中间产物是普通文件，根目录 `data/projects/<series-id>/<episode-id>/`：
-  `clips/`（视频片段）、`audio/`（旁白）、`tmp/`（归一化中间件、SRT、concat 清单）、`output/`（成品）。
-- `story.md`、`storyboard.json` 同时在集工作目录落一份副本，专供人工审阅；**事实源以数据库为准**。
+  - `versions/<节点 ID>/`（2026-09-21 起，见 §17）：每个版本节点的产物目录，按阶段分别落 `story.md`、`storyboard.json`、`panels/`+`clips/`+`audio/`、`tmp/`+`output/`；`attempt > 0` 的版本目录追加 `-a<n>` 后缀。
+  - `refs/`：集级视觉参考图，跨分镜版本共享，不随版本搬动。
+- `story.md`、`storyboard.json` 同时在各版本目录内落一份副本，专供人工审阅；**事实源以数据库为准**。
 - `data/` 不入库。
 
 ## 7. 历史准确性与 Prompt 约束
@@ -146,10 +147,10 @@ internal/store/sqlite      （Repository 的 SQLite 实现）
 
 ## 14. 故事生成即定稿，取消候选选择（2026-09-20 增补）
 
-- 决策：取消「generate 生成 3 个候选 → 用户 pick」的人工选择环节（用户反馈选择困难，且多候选白白消耗 token）。`generate` 只产出**一篇定稿口播稿**，成功后 engine 自动把 `pick` 步骤置 done、写入 Story 与 story.md 审阅副本，下一步直接 storyboard。不满意可重跑 generate 覆盖。
-- 兼容：状态结构（Candidates/Selected/StepPick）与 `Engine.Pick`、CLI `story pick`、server `pick` 动作全部保留，用于历史上停在 generate 与 pick 之间的旧数据；前端 StepsBar 不再展示 pick 节点。`StoryRequest.Count` 废弃，provider 忽略。
+- 决策：取消「generate 生成 3 个候选 → 用户 pick」的人工选择环节（用户反馈选择困难，且多候选白白消耗 token）。`generate` 只产出**一篇定稿口播稿**，写入 Story 与 story.md 审阅副本，下一步直接 storyboard。不满意可重跑（现为「换一版」，见 §17）。
+- **2026-09-21 版本树改造后**：pick 链路已彻底移除——`StepPick`/`Candidates`/`Selected`/`Engine.Pick`/CLI `story pick`/server `pick` 动作全部删除；历史上停在 generate 与 pick 之间的旧数据由一次性迁移覆盖（取 `Candidates[Selected-1]` 作为 story 节点内容，见 §17）。`StoryRequest.Count` 废弃，provider 忽略。
 - 模型契约：故事 prompt 输出从 `{"candidates":[...]}` 改为单对象 `{title,dynasty,source,summary,content}`（bailian `storyResponse`），provider 包装为单元素切片返回；验收下限 `minCandidates` 3→1。
-- 一键流程：CLI `story run` 与 server `run` 动作在 Story 为空时直接调用 generate（含旧数据），不再需要 index 参数。
+- 一键流程：CLI `story run` 与 server `run` 动作从指定节点沿链往下补齐，不再需要 index 参数。
 
 ## 15. 视觉参考两级化：人物 + 场景（2026-09-20 增补）
 
@@ -207,6 +208,31 @@ internal/store/sqlite      （Repository 的 SQLite 实现）
   - server：新增 `POST/GET/PUT/DELETE /api/voices/{id}` 与 `/api/voices/preview`（POST，body `voice_id`/`profile`/`voice+rate+pitch+instruction` 三种入口）；造声新增 `POST /api/voices/design` 与 `POST /api/voices/clone`（body 见 §16 造声条目 + `provider`，返回 `{voice, preview_audio_path}`）；`createSeries` 请求体加 `voice_id` 字段。
   - Web：新增独立路由 `/voices` 与 `VoicesPage`（卡片网格 + VoiceFormModal 新建/编辑/复制复用，内置禁删、引用时弹错）；页头三个入口「新建声音 / 声音设计 / 声音复刻」，造声走 `BuildVoiceModal`（design 填描述+试听文本 / clone 用三 Tab 选参考音频来源：上传文件、现场录音、音频 URL，见 §16 三 Tab 条目，成功后内嵌播放试听并刷新列表）；表单含「驱动模型」字段、卡片展示 model；nav 加「声音」入口；新建系列 Modal 加声音下拉（默认 longtian，Field 标「声音（创建后不可更改）」）；系列详情页 Collapsible 标题从「旁白语音画像」改名「声音」，卡片改只读展示 name/voice/rate/pitch/instruction + 试听按钮（编辑入口移到 VoicesPage），各处只显示声音名字不露内部 ID。
 
+## 17. 集级版本树（2026-09-21 增补，用户拍板）
+
+- **背景（要消除的隐患）**：旧模型下一集是一条线（`PipelineState` 只有单个 `Current` + 一张 `Steps` map，产物平铺在同一个 `state_json`），落盘产物按镜头序号命名（`clips/scene-01.mp4`），"是否已完成"只看文件是否存在（`reusable`）。于是**重跑上游不做失效**：重跑 `storyboard` 只覆盖 `Storyboard`，既不清理 `Clips`/`Audios`、磁盘旧片段也还在，再点生产时 `planScenes` 见到 `scene-01.mp4` 就判定已完成并复用——结果**新分镜的旁白文本配上旧旁白音频与旧画面**，`compose` 还会把它当正常成片合成出来，用户察觉不到。
+- **模型**：Episode 成为**版本树容器**（`domain.Episode{ID,SeriesID,Number,Title,Topic,Refs,Nodes,ActiveNodeID,WorkDir,...}`，`internal/domain/episode.go`），下面挂 0..N 条「story→storyboard→media→final」版本链。`domain.State`/`state.go`（`StepName`/`StepStatus`/`StepState`/`PipelineState`/`AllSteps`/`NewPipelineState`）**已删除**。
+- **派生键（内容寻址）**：`domain.VersionNode.ID` = `sha1(derivationSchemaVersion | stage | parentID | paramsJSON | attempt)` 取前 12 位，前缀 stage，形如 `storyboard-3f9a2c1b7d4e`（`internal/engine/derive.go` 的 `nodeKey`）。**只哈希输入不哈希输出**（bl 输出不确定，无法用产物内容定身份）。params 按阶段取：
+  | 阶段 | 派生输入 |
+  | --- | --- |
+  | story | `series_id` + `topic` + `dynasty` |
+  | storyboard | `parentKey` + `dynasty` + `ratio` + `resolution` + `video_style` + `refs` 摘要 |
+  | media | `parentKey` + `visual_mode` + `video_style` + `ratio` + `resolution` + `voice_id` + 声音参数摘要 |
+  | final | `parentKey` + `ratio` + `resolution` + `burn_subtitles`（**故意不含** `subtitle_font`，换字体只重烧字幕不必换 final 版本） |
+- **`derivationSchemaVersion`（当前 =1）**：派生规则版本常量，prompt 模板/参数语义/产物布局发生不向后兼容变化时**递增**，一次性让全部旧派生键失效（旧产物不再被复用），等价于"一次性安全失效"。
+- **`attempt` 语义**：同一组派生输入下的第 n 次尝试（0 起）。`DeriveOptions.Reroll=false` 且同键节点已存在 → **复用**（节点已 done 则零模型调用，未完成则续跑——现有"断点续跑/只重试失败镜头"语义天然保留）；`Reroll=true` → `attempt = Episode.MaxAttempt(parentID, stage) + 1`，得到新节点与新目录，**旧版本原地保留**。`Runs` 记录本节点被执行次数（失败重试与续跑累加）。
+- **派生 API**：`DeriveOptions{From, Reroll, Scenes}`——`From` 为起始父节点 ID（空 = 用 `ActiveNodeID`）；父节点解析 `resolveParent(ep, from, want)`：`From` 非空时严格按它取（**阶段不符即报错**），为空时取活跃路径上对应阶段的节点（取不到则报错如「请先生成故事」）。方法签名：`GenerateStory/PlanStoryboard/Produce(ctx, epID, opts)`、`Compose(ctx, epID, opts) (string, error)`、`Export(ctx, epID, ratio, opts)`、`Run(ctx, epID, opts)`、`ActivateNode(ctx, epID, nodeID)`、`DeleteNode(ctx, epID, nodeID)`。`Produce` 额外返回 `*VersionNode`（便于 `Run` 串联）。`GenerateStory` 忽略 `From`（永远是根）。
+- **目录布局**：`data/projects/<series-id>/<episode-id>/versions/<节点 ID>/`，`attempt > 0` 的目录追加 `-a<n>`；各阶段分别落 `story.md` / `storyboard.json` / `panels/`+`clips/`+`audio/` / `tmp/`+`output/`。`refs/` 仍留在集目录（**集级共享，永不随版本搬动**）。上游一变目录名就变，旧目录不会被误读——这是本次改造要消除的核心隐患。`planScenes`/`produceClip`/`produceAudio` 的复用判定逻辑**完全不变**，只是路径换成节点目录（§4 的断点续跑、画面/旁白解耦、只重试失败镜头、取消保留进度全部保留）。
+- **持久化**：episodes 表经 `ensureColumn` 幂等加 `nodes_json TEXT NOT NULL DEFAULT '[]'` 与 `active_node_id TEXT NOT NULL DEFAULT ''`；`state_json` **保留但迁移后不再读写**（只作迁移前的只读历史快照，便于人工恢复）。`Episode.Nodes` 在 `NewEpisode` 中初始化为空切片（非 nil），保证 JSON 为 `[]` 而非 `null`。
+- **旧集一次性迁移**（`internal/app/migrate_versions.go`，Bootstrap 中 `Open` 之后跑，幂等：`nodes_json IN ('','[]') AND active_node_id = ''` 直接跳过）：把旧 `state_json` 投影成一条线性链——`State.Story` 非空 → story 根节点；**停在 pick**（`Story` 空但 `Candidates`+`Selected` 有值）→ story 节点取 `Candidates[Selected-1]`；`Storyboard`/`Clips`+`Audios`/`Outputs` 非空依次挂 storyboard/media/final 节点；`ActiveNodeID` = 最深的已完成节点。链构造由 engine 的 `DeriveLegacyChain` 负责（**必须走同一套 `resolveVoice`/派生规则**，否则旧集续跑会全部重做、重复计费），app 只负责旧 JSON 解析与文件搬运。**先落库元数据 → 再 rename 文件 → 失败（跨设备等）回退该节点 `Dir` 指向旧路径并保留原文件 → 最终统一 rebase 登记路径并二次落库**（rebase 始终发生，故循环结束后必须无条件 `SaveEpisode`）。`refs/` 永不搬动。
+- **节点删除语义**（`Engine.DeleteNode`）：级联删除该节点及其全部后代（`domain.RemoveSubtree`），逐个 `os.RemoveAll(node.Dir)` 删媒体文件，再写回 `ep.Nodes`；若删的是 `ActiveNodeID`，活跃指针改指其父节点。**不可恢复，Web 侧二次确认**。`ActivateNode` 只改 `ActiveNodeID` 并落库。
+- **入口**：
+  - CLI（`cmd/story/step.go`）：通用 flag `--from <node-id>`、`--reroll`（挂 generate/storyboard/produce/compose/run/export）；`story pick` **已删除**；新增 `story nodes <episode-id>`（打印版本树）、`story activate <episode-id> <node-id>`、`story node-rm <episode-id> <node-id>`。
+  - server：`actionReq` 加 `From`/`Reroll`、**删 `Index`**，`buildAction` 动作名改 `story`（`pick` 移除）；新增两个**同步**端点（零费用、不经 broker）：`POST /api/episodes/{id}/nodes/{nodeID}/activate`、`DELETE /api/episodes/{id}/nodes/{nodeID}`（成功后 `broker.publish(id, evSnapshot, ep)`）。`GET /api/episodes/{id}`、SSE 快照、`serveMedia` 路径穿越防护**无需改动**（版本目录仍在 `WorkDir` 内）。
+  - Web：`types.ts` 以 `Stage`/`NodeStatus`/`VersionNode` 取代 `PipelineState`/`StepState`/`StepName`/`StepStatus`，`Episode` 改 `nodes`/`active_node_id`；`api.ts` action body 加 `from`/`reroll` 并新增 `activateNode`/`deleteNode`；新增 `components/VersionTree.tsx`（**不引入图库**，纯 SVG + Tailwind 手绘：4 列 × 版本行、父→子贝塞尔连线、活跃路径金色高亮、选中卡片展开「从此处继续 / 换一版 / 设为活跃 / 删除」）；`EpisodePage` 改为「版本树 + 工具栏 / 选中节点产物详情（按 stage 四选一）/ 未完成镜头横幅 + 本集视觉参考」三段式；`StepsBar.tsx` **已删除**；`SeriesDetailPage` 集进度改用活跃路径。
+- **工具条语义**：Web 工具栏一律**从活跃节点继续**（不传 `From`，由引擎按活跃路径解析各步骤所需父节点）；「换一版」由版本树卡片发起（`from = 该节点父节点`、`reroll = true`）；未完成镜头汇总只统计**活跃** media 节点（与 `produce` 默认作用对象一致）。
+- **回归测试**（成本红线内全程 mock）：`TestRerollStoryboardIsolatesOldClips`（核心：换分镜后旧 clips 绝不被复用、旧目录文件仍在、视频调用 4→8 且无 Skipped）、`TestSameDerivationReusesNode`（同输入复用同节点、模型零调用）、`TestProduceResumeAfterReroll`、`TestActivateNode`、`TestDeleteNodeRemovesFiles`（级联 + 活跃指针回退父节点）、`TestMigrateLegacyEpisode`（含停在 pick 的中间态、文件搬入版本目录、登记路径改挂、幂等）、`TestLegacyChainReusesMigratedNodes`（迁移后派生键一致：续跑不新建节点、不重拆分镜、只补缺镜）、`TestActivateAndDeleteNodeHTTP`、`TestBuildActionWithFromAndReroll`。
+
 ## 变更记录
 
 - 2026-09-18：初始决策（Go + cobra + SQLite；接口驱动；系列/集模型；并发上限 3、重试 3；百炼为首家 provider；ffmpeg 合成与硬字幕；默认 9:16）。
@@ -227,3 +253,4 @@ internal/store/sqlite      （Repository 的 SQLite 实现）
 - 2026-09-21（造声供应商维度，见 §16 修订）：造声的 provider 从写死 bailian 改为可传入——`App.voiceBuilder` 单实例改为注册表 `voiceBuilders map[string]port.VoiceBuilder`（key=供应商，Bootstrap 登记 `bailian: bl`），`app.BuildVoice` 经新增 `resolveVoiceBuilder(provider)` 选实现（空值默认 bailian，**显式未知供应商报错**而非静默回退，`BuildVoiceInput.Provider` 同时写入新条目 `Provider`）；CLI `story voice design|clone --provider`、server 造声 body 加 `provider`、Web `BuildVoiceModal` 加供应商下拉。`voiceLister`（浏览音色库）保持单一字段未改注册表。
 - 2026-09-21（参考音频来源三 Tab，见 §16）：Web 复刻表单去掉「服务器本地路径」输入，改为**上传音频文件 / 现场录音 / 音频 URL** 三个平级 Tab，录音页给一段可编辑的推荐朗读文本（`CLONE_SAMPLE_TEXT`）。因 `MediaRecorder` 输出 webm/opus（Safari 为 mp4）供应商不认，新增小端口 `port.AudioNormalizer`（ffmpeg 实现 `-vn -ac 1 -ar 16000 -c:a pcm_s16le`）与 `App.SaveVoiceSample`（落 `os.TempDir()/story-voice-samples/`，时长 <3s 报错，`sanitizeAudioExt` 防路径穿越），新增 `POST /api/voices/audio`（multipart，25MB 上限，返回 `{path, duration_sec}`）；前端两段式提交：先上传归一化拿 path，再调既有 `POST /api/voices/clone`（**克隆那一步才计费**）。CLI `story voice clone --audio` 保持不变。
 - 2026-09-21（失败镜头续跑与手动停止，见 §4 修订）：hanshu-e01 曾出现 26 镜中 10 镜因 `bl image generate` 内部 300s headers 超时（`UND_ERR_HEADERS_TIMEOUT`）失败。新增：① `Engine.produce` 改为先规划后建任务（`planScenes`/`selectScenes`），**只为未完成镜头建任务**，已完成镜头零费用跳过，故重跑 produce 即「只重试失败镜头」；② `Engine.ProduceScenes(episodeID, sceneIDs)` 支持指定镜头（CLI `story produce --scenes`、server `actionReq.Scenes`、Web 单镜「重试本镜」），越界序号报错；③ 同镜画面/旁白解耦（`produceClip`/`produceAudio` 各写各的结果槽，画面失败也合成旁白）；④ broker 增加取消能力（`cancels map[string]context.CancelFunc`、`jobCanceled` 状态）与新端点 `POST /api/episodes/{id}/cancel`，取消时保留已落盘进度并标注「已手动停止」；⑤ Web 集页新增未完成镜头汇总横幅（列出每个未完成镜头的画面/旁白错误）、produce 按钮动态文案「③ 仅重试失败镜头（N 镜）」、单镜「重试本镜」、运行中「停止」按钮与 canceled 提示；⑥ 未加 `--retry-failed` 冗余 flag（默认 produce 语义已等价）。engine 新增 `TestProduceSkipsCompletedScenes`/`...ClipFailureStillSynthesizesAudio`/`...ScenesSubset`/`...CanceledKeepsProgress`，server 新增 `TestCancelAction`，成本红线内全程 mock。
+- 2026-09-21（集级版本树改造，见 §17）：一集从「一条流水线」改为**版本树容器**，根治「重跑上游不做失效」隐患（新分镜旁白配旧画面/旧旁白被静默复用）。domain：新增 `version.go`（`Stage`/`NodeStatus`/`VersionNode` + `NodeByID`/`Children`/`ActivePath`/`ActiveNodeOfStage`/`MaxAttempt`/`AddNode`/`RemoveSubtree`），重写 `episode.go`（`Nodes`+`ActiveNodeID`），**删除 `state.go`**；store：episodes 表加 `nodes_json`/`active_node_id`（ensureColumn 幂等），`state_json` 转为只读历史快照；engine：新增 `derive.go`（内容寻址派生键 `nodeKey`、`derivationSchemaVersion=1`、`ensureNode`/`resolveParent`/`nodeDir`/`refsDigest`/`voiceDigest`）与 `legacy.go`（`DeriveLegacyChain`），各步骤方法统一收 `DeriveOptions{From,Reroll,Scenes}`（`GenerateCandidates`→`GenerateStory`、`ProduceScenes` 并入 `Produce`、**`Pick` 删除**），新增 `ActivateNode`/`DeleteNode`；app：新增 `migrate_versions.go` 一次性迁移旧集（先落库再 rename、失败回退 Dir、最终统一 rebase 并二次落库）；server：`actionReq` 加 `from`/`reroll` 删 `index`，新增 activate/delete 两个同步端点；CLI：`step.go` 改新签名 + 通用 `--from`/`--reroll`，新增 `story nodes`/`activate`/`node-rm`，删 `story pick`；Web：`types.ts` 换 `Stage`/`NodeStatus`/`VersionNode`，新增纯 SVG `VersionTree.tsx`（活跃路径金色高亮 + 选中展开「从此处继续/换一版/设为活跃/删除」），`EpisodePage` 改三段式，删 `StepsBar.tsx`，`SeriesDetailPage` 进度改活跃路径。核心回归 `TestRerollStoryboardIsolatesOldClips`（换分镜后旧片段绝不复用、旧目录保留）等 9 个新用例，全程 mock，`go build/vet/test` 与 `npm run build` 全绿。

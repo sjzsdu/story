@@ -107,14 +107,9 @@ var seriesShowCmd = &cobra.Command{
 			fmt.Println("  （暂无集，使用 `story episode create --series " + se.ID + " --title <标题>` 创建）")
 			return nil
 		}
-		fmt.Printf("  %-18s %-6s %-24s %-12s %s\n", "ID", "序号", "标题", "当前步骤", "状态")
+		fmt.Printf("  %-18s %-6s %-24s %s\n", "ID", "序号", "标题", "进度")
 		for _, ep := range eps {
-			cur := ep.State.Current
-			st := ep.State.Steps[cur].Status
-			if ep.State.IsDone() {
-				cur, st = domain.StepCompose, domain.StatusDone
-			}
-			fmt.Printf("  %-18s %-6d %-24s %-12s %s\n", ep.ID, ep.Number, truncate(ep.Title, 22), cur, st)
+			fmt.Printf("  %-18s %-6d %-24s %s\n", ep.ID, ep.Number, truncate(ep.Title, 22), episodeProgress(ep))
 		}
 		return nil
 	},

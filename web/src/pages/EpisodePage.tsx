@@ -2,14 +2,23 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, mediaUrl } from '../api'
-import type { ActionName, Episode, JobEvent, MediaResult, Scene, StoryCandidate, VisualRef } from '../types'
+import type {
+  ActionName,
+  Episode,
+  JobEvent,
+  MediaResult,
+  Scene,
+  Storyboard,
+  StoryCandidate,
+  VersionNode,
+  VisualRef,
+} from '../types'
 import { episodeQueryKey, useEpisodeEvents } from '../useEpisodeEvents'
-import { Button, Card, Collapsible, Empty, ErrorBox, Spinner } from '../components/ui'
-import StepsBar from '../components/StepsBar'
+import { Button, Card, Collapsible, Empty, ErrorBox, Spinner, StatusBadge } from '../components/ui'
+import VersionTree, { STAGE_LABEL, activePath } from '../components/VersionTree'
 
 const ACTION_LABEL: Record<string, string> = {
-  candidates: '生成故事',
-  pick: '选定故事',
+  story: '生成故事',
   storyboard: '拆分分镜',
   produce: '生产画面与旁白',
   compose: '合成成片',
@@ -17,6 +26,8 @@ const ACTION_LABEL: Record<string, string> = {
   export: '导出其他比例',
   'episode-refs': '生成本集视觉参考图',
 }
+
+type ActExtra = { from?: string; reroll?: boolean; ratio?: string; scenes?: number[] }
 
 export default function EpisodePage() {
   const { seriesId = '', episodeId = '' } = useParams()
@@ -28,20 +39,33 @@ export default function EpisodePage() {
   })
   const { job, running } = useEpisodeEvents(episodeId)
   const [actionErr, setActionErr] = useState('')
+  const [selectedId, setSelectedId] = useState('')
+
+  const refresh = () => void queryClient.invalidateQueries({ queryKey: episodeQueryKey(episodeId) })
 
   const action = useMutation({
-    mutationFn: (body: { action: ActionName; index?: number; ratio?: string; scenes?: number[] }) =>
-      api.action(episodeId, body),
+    mutationFn: (body: { action: ActionName } & ActExtra) => api.action(episodeId, body),
     onMutate: () => setActionErr(''),
     onError: (e) => setActionErr((e as Error).message),
-    onSettled: () => void queryClient.invalidateQueries({ queryKey: episodeQueryKey(episodeId) }),
+    onSettled: refresh,
+  })
+
+  const nodeMut = useMutation({
+    mutationFn: (v: { kind: 'activate' | 'delete'; nodeId: string }) =>
+      v.kind === 'activate' ? api.activateNode(episodeId, v.nodeId) : api.deleteNode(episodeId, v.nodeId),
+    onMutate: () => setActionErr(''),
+    onError: (e) => setActionErr((e as Error).message),
+    onSuccess: (_ep, v) => {
+      if (v.kind === 'delete' && v.nodeId === selectedId) setSelectedId('')
+    },
+    onSettled: refresh,
   })
 
   const cancelMut = useMutation({
     mutationFn: () => api.cancelEpisode(episodeId),
     onMutate: () => setActionErr(''),
     onError: (e) => setActionErr((e as Error).message),
-    onSettled: () => void queryClient.invalidateQueries({ queryKey: episodeQueryKey(episodeId) }),
+    onSettled: refresh,
   })
 
   const deleteMut = useMutation({
@@ -62,9 +86,10 @@ export default function EpisodePage() {
   if (error) return <ErrorBox>{(error as Error).message}</ErrorBox>
   if (!ep) return null
 
-  const st = ep.state
-  const act = (a: ActionName, extra?: { index?: number; ratio?: string; scenes?: number[] }) =>
-    action.mutate({ action: a, ...extra })
+  const act = (a: ActionName, extra?: ActExtra) => action.mutate({ action: a, ...extra })
+  const path = activePath(ep)
+  const activeNode = path[path.length - 1] ?? null
+  const selected = ep.nodes.find((n) => n.id === selectedId) ?? activeNode
   const missing = missingScenes(ep)
 
   return (
@@ -112,31 +137,60 @@ export default function EpisodePage() {
       )}
       {!running && job?.status === 'failed' && <ErrorBox>{ACTION_LABEL[job.action] ?? job.action}失败：{job.error}</ErrorBox>}
       {actionErr && <ErrorBox>{actionErr}</ErrorBox>}
-      {!running && missing.length > 0 && <MissingBanner ep={ep} missing={missing} onRetry={() => act('produce')} pending={action.isPending} />}
+      {!running && missing.length > 0 && (
+        <MissingBanner ep={ep} missing={missing} onRetry={() => act('produce')} pending={action.isPending} />
+      )}
 
-      <Card title="流水线">
+      <Card title="版本树" extra={<span className="text-xs text-paper-300/40">每一步的产物按派生键独立成版本；上游一变即自动失效，旧版本完整保留</span>}>
         <div className="flex flex-col gap-5">
-          <StepsBar state={st} />
-          <StepErrors ep={ep} />
-          <Toolbar ep={ep} missing={missing} busy={running} onAction={act} pending={action.isPending} />
+          <VersionTree
+            ep={ep}
+            selectedId={selected?.id ?? ''}
+            busy={running}
+            pending={action.isPending || nodeMut.isPending}
+            onSelect={setSelectedId}
+            onAction={act}
+            onActivate={(id) => nodeMut.mutate({ kind: 'activate', nodeId: id })}
+            onDelete={(id) => nodeMut.mutate({ kind: 'delete', nodeId: id })}
+          />
+          <Toolbar ep={ep} missing={missing} busy={running} pending={action.isPending} onAction={act} />
         </div>
       </Card>
 
-      <StorySection story={st.story} busy={running} pending={action.isPending} onRegenerate={() => act('candidates')} />
+      <NodeDetail
+        ep={ep}
+        node={selected}
+        busy={running}
+        pending={action.isPending}
+        onAction={act}
+      />
+
       <EpisodeRefsSection ep={ep} busy={running} />
-      <StoryboardSection ep={ep} busy={running} pending={action.isPending} onRetryScene={(id) => act('produce', { scenes: [id] })} />
-      <OutputsSection ep={ep} busy={running} onExport={(ratio) => act('export', { ratio })} pending={action.isPending} />
     </div>
   )
 }
 
-/** 未完成镜头：画面或旁白任一缺失（含生成失败）的镜头号列表。 */
+/** activeNodeOfStage 返回活跃路径上指定阶段的节点。 */
+function activeNodeOfStage(ep: Episode, stage: VersionNode['stage']): VersionNode | null {
+  const path = activePath(ep)
+  for (let i = path.length - 1; i >= 0; i--) {
+    if (path[i].stage === stage) return path[i]
+  }
+  return null
+}
+
+/**
+ * missingScenes 列出活跃画面节点中画面或旁白缺失（含失败）的镜头号。
+ * 只统计活跃路径——「生产画面」默认就以活跃路径为准，二者语义一致。
+ */
 function missingScenes(ep: Episode): number[] {
-  const sb = ep.state.storyboard
-  if (!sb) return []
-  const clipById = new Map(ep.state.clips?.map((m) => [m.scene_id, m]) ?? [])
-  const audioById = new Map(ep.state.audios?.map((m) => [m.scene_id, m]) ?? [])
-  return sb.scenes
+  const media = activeNodeOfStage(ep, 'media')
+  if (!media) return []
+  const board = ep.nodes.find((n) => n.id === media.parent_id)
+  if (!board?.storyboard) return []
+  const clipById = new Map((media.clips ?? []).map((m) => [m.scene_id, m]))
+  const audioById = new Map((media.audios ?? []).map((m) => [m.scene_id, m]))
+  return board.storyboard.scenes
     .filter((sc) => !clipById.get(sc.id)?.path || !audioById.get(sc.id)?.path)
     .map((sc) => sc.id)
 }
@@ -189,12 +243,9 @@ function MissingBanner({
   onRetry: () => void
   pending: boolean
 }) {
-  const clipErr = new Map(
-    (ep.state.clips ?? []).filter((m) => m.err).map((m) => [m.scene_id, m.err as string]),
-  )
-  const audioErr = new Map(
-    (ep.state.audios ?? []).filter((m) => m.err).map((m) => [m.scene_id, m.err as string]),
-  )
+  const media = activeNodeOfStage(ep, 'media')
+  const clipErr = new Map((media?.clips ?? []).filter((m) => m.err).map((m) => [m.scene_id, m.err as string]))
+  const audioErr = new Map((media?.audios ?? []).filter((m) => m.err).map((m) => [m.scene_id, m.err as string]))
   return (
     <div className="rounded-xl border border-seal-500/40 bg-seal-600/10 px-4 py-3 space-y-2">
       <div className="flex flex-wrap items-center gap-3">
@@ -225,21 +276,7 @@ function MissingBanner({
   )
 }
 
-function StepErrors({ ep }: { ep: Episode }) {
-  const failed = Object.entries(ep.state.steps).filter(([, v]) => v.status === 'failed' && v.error)
-  if (failed.length === 0) return null
-  return (
-    <div className="space-y-2">
-      {failed.map(([name, v]) => (
-        <div key={name} className="text-sm">
-          <span className="text-seal-500 font-medium">「{ACTION_LABEL[name] ?? name}」错误：</span>
-          <span className="text-paper-300/75">{v.error}</span>
-        </div>
-      ))}
-    </div>
-  )
-}
-
+/** 工具栏：一律从活跃节点继续（引擎按活跃路径解析各步骤所需的父节点）。 */
 function Toolbar({
   ep,
   missing,
@@ -251,31 +288,102 @@ function Toolbar({
   missing: number[]
   busy: boolean
   pending: boolean
-  onAction: (a: ActionName, extra?: { index?: number; ratio?: string; scenes?: number[] }) => void
+  onAction: (a: ActionName, extra?: ActExtra) => void
 }) {
-  const produceLabel =
-    missing.length > 0 ? `③ 仅重试失败镜头（${missing.length} 镜）` : '③ 生产画面与旁白'
+  const disabled = busy || pending
+  const hasStory = ep.nodes.some((n) => n.stage === 'story')
+  const produceLabel = missing.length > 0 ? `③ 仅重试失败镜头（${missing.length} 镜）` : '③ 生产画面与旁白'
   return (
     <div className="flex flex-wrap gap-2.5 items-center">
-      <Button variant="seal" disabled={busy || pending} onClick={() => onAction('candidates')}>
-        {ep.state.story ? '① 重新生成故事' : '① 生成故事'}
+      <Button variant="seal" disabled={disabled} onClick={() => onAction('story', hasStory ? { reroll: true } : undefined)}>
+        {hasStory ? '① 重新生成故事（新版本）' : '① 生成故事'}
       </Button>
-      <Button variant="primary" disabled={busy || pending} onClick={() => onAction('storyboard')}>
+      <Button variant="primary" disabled={disabled} onClick={() => onAction('storyboard')}>
         ② 拆分分镜
       </Button>
-      <Button variant="primary" disabled={busy || pending} onClick={() => onAction('produce')}>
+      <Button variant="primary" disabled={disabled} onClick={() => onAction('produce')}>
         {produceLabel}
       </Button>
-      <Button variant="primary" disabled={busy || pending} onClick={() => onAction('compose')}>
+      <Button variant="primary" disabled={disabled} onClick={() => onAction('compose')}>
         ④ 合成成片
       </Button>
-      <Button variant="outline" disabled={busy || pending} onClick={() => onAction('run')}>
+      <Button variant="outline" disabled={disabled} onClick={() => onAction('run')}>
         ⚡ 一键跑到底
       </Button>
       <span className="self-center text-xs text-paper-300/35">
-        生产时已完成的镜头（画面/旁白）会自动复用跳过，不会重复出图或合成
+        已完成的镜头（画面/旁白）自动复用跳过；要产出另一版请到版本树上点「换一版」
       </span>
     </div>
+  )
+}
+
+/** 选中节点的产物详情：按阶段四选一渲染。 */
+function NodeDetail({
+  ep,
+  node,
+  busy,
+  pending,
+  onAction,
+}: {
+  ep: Episode
+  node: VersionNode | null
+  busy: boolean
+  pending: boolean
+  onAction: (a: ActionName, extra?: ActExtra) => void
+}) {
+  if (!node) {
+    return (
+      <Card>
+        <Empty text="还没有任何版本。点击「① 生成故事」开始，AI 直接产出一篇定稿口播稿。" />
+      </Card>
+    )
+  }
+
+  const header = (
+    <span className="flex items-center gap-3">
+      <span>{STAGE_LABEL[node.stage]} v{node.attempt + 1}</span>
+      <StatusBadge status={node.status} />
+      {node.id === ep.active_node_id && (
+        <span className="text-[10px] rounded bg-gold-500/20 px-1.5 py-0.5 text-gold-500">活跃</span>
+      )}
+    </span>
+  )
+  const extra = <span className="text-xs text-paper-300/30 font-body">{node.id}</span>
+
+  if (node.stage === 'story') {
+    return <StorySection story={node.story} busy={busy} pending={pending} header={header} extra={extra} error={node.error} onRegenerate={() => onAction('story', { reroll: true })} />
+  }
+  if (node.stage === 'final') {
+    return (
+      <OutputsSection
+        ep={ep}
+        node={node}
+        busy={busy}
+        pending={pending}
+        header={header}
+        extra={extra}
+        onExport={(ratio) => onAction('export', { ratio, from: node.id })}
+      />
+    )
+  }
+
+  // storyboard / media：分镜内容在上游分镜节点，画面与旁白在下游画面节点。
+  const board = node.stage === 'storyboard' ? node : ep.nodes.find((n) => n.id === node.parent_id)
+  const media =
+    node.stage === 'media'
+      ? node
+      : ep.nodes.find((n) => n.parent_id === node.id && n.stage === 'media')
+  return (
+    <StoryboardSection
+      ep={ep}
+      board={board}
+      media={media}
+      busy={busy}
+      pending={pending}
+      header={header}
+      extra={extra}
+      onRetryScene={(sceneId) => board && onAction('produce', { from: board.id, scenes: [sceneId] })}
+    />
   )
 }
 
@@ -283,65 +391,79 @@ function StorySection({
   story,
   busy,
   pending,
+  header,
+  extra,
+  error,
   onRegenerate,
 }: {
   story?: StoryCandidate
   busy: boolean
   pending: boolean
+  header: React.ReactNode
+  extra: React.ReactNode
+  error?: string
   onRegenerate: () => void
 }) {
-  if (!story) {
-    return (
-      <Card>
-        <Empty text="还没有故事。点击「① 生成故事」，AI 直接产出一篇定稿，无需在候选间选择。" />
-      </Card>
-    )
-  }
   return (
     <Card
-      title={
-        <span>
-          《{story.title}》
-          <span className="ml-3 text-xs text-paper-300/45 font-body">
-            {story.dynasty} · {story.source}
-          </span>
-        </span>
-      }
+      title={story ? <span>{header} 《{story.title}》</span> : header}
       extra={
         <div className="flex items-center gap-3">
-          <span className="text-xs text-paper-300/35">工作目录 story.md 可人工修改</span>
+          {extra}
           <Button variant="outline" className="px-2.5 py-1 text-xs" disabled={busy || pending} onClick={onRegenerate}>
-            重新生成
+            换一版故事
           </Button>
         </div>
       }
     >
-      <p className="mb-3 text-sm text-paper-300/60 leading-relaxed">{story.summary}</p>
-      <div className="rounded-lg bg-ink-950/50 border border-ink-800 p-5 text-[15px] leading-8 text-paper-300/90 whitespace-pre-wrap font-display">
-        {story.content}
-      </div>
+      {error && <ErrorBox>{error}</ErrorBox>}
+      {!story ? (
+        <Empty text="本版本尚未产出故事。点「换一版故事」重跑，或执行版本树上的「从此处继续」。" />
+      ) : (
+        <>
+          <p className="mb-3 text-sm text-paper-300/60 leading-relaxed">
+            {story.dynasty} · {story.source} — {story.summary}
+          </p>
+          <div className="rounded-lg bg-ink-950/50 border border-ink-800 p-5 text-[15px] leading-8 text-paper-300/90 whitespace-pre-wrap font-display">
+            {story.content}
+          </div>
+        </>
+      )}
     </Card>
   )
 }
 
 function StoryboardSection({
   ep,
+  board,
+  media,
   busy,
   pending,
+  header,
+  extra,
   onRetryScene,
 }: {
   ep: Episode
+  board?: VersionNode
+  media?: VersionNode
   busy: boolean
   pending: boolean
+  header: React.ReactNode
+  extra: React.ReactNode
   onRetryScene: (id: number) => void
 }) {
-  const sb = ep.state.storyboard
-  if (!sb) return null
-  const clipById = new Map<number, MediaResult>(ep.state.clips?.map((m) => [m.scene_id, m]) ?? [])
-  const audioById = new Map<number, MediaResult>(ep.state.audios?.map((m) => [m.scene_id, m]) ?? [])
-
+  const sb: Storyboard | undefined = board?.storyboard
+  if (!sb) {
+    return (
+      <Card title={header} extra={extra}>
+        <Empty text="本版本尚未产出分镜。执行版本树上的「从此处继续」拆分分镜。" />
+      </Card>
+    )
+  }
+  const clipById = new Map<number, MediaResult>((media?.clips ?? []).map((m) => [m.scene_id, m]))
+  const audioById = new Map<number, MediaResult>((media?.audios ?? []).map((m) => [m.scene_id, m]))
   return (
-    <Card title={`分镜脚本（${sb.scenes.length} 镜）`}>
+    <Card title={`${header} · 分镜脚本（${sb.scenes.length} 镜）`} extra={extra}>
       <ol className="space-y-4">
         {sb.scenes.map((sc) => (
           <SceneCard
@@ -405,12 +527,7 @@ function SceneCard({
             </div>
             {incomplete && (
               <div className="flex flex-wrap items-center gap-2.5">
-                <Button
-                  variant="seal"
-                  className="px-3 py-1.5 text-xs"
-                  disabled={busy || pending}
-                  onClick={onRetry}
-                >
+                <Button variant="seal" className="px-3 py-1.5 text-xs" disabled={busy || pending} onClick={onRetry}>
                   重试本镜
                 </Button>
                 <span className="text-xs text-paper-300/40">
@@ -462,7 +579,7 @@ function EpisodeRefsSection({ ep, busy }: { ep: Episode; busy: boolean }) {
     onSettled: () => void queryClient.invalidateQueries({ queryKey: episodeQueryKey(ep.id) }),
   })
 
-  const hasStoryboard = !!ep.state.storyboard
+  const hasStoryboard = ep.nodes.some((n) => n.stage === 'storyboard')
   const badge = (
     <span className="text-xs text-paper-300/40">
       {refs.length} 条参考 · {withImage} 张图
@@ -471,7 +588,7 @@ function EpisodeRefsSection({ ep, busy }: { ep: Episode; busy: boolean }) {
 
   return (
     <Collapsible
-      summary="本集视觉参考（人物 / 场景一致性约束）"
+      summary="本集视觉参考（人物 / 场景一致性约束，跨分镜版本共享）"
       badge={badge}
       defaultOpen={refs.length > 0}
     >
@@ -504,7 +621,7 @@ function EpisodeRefsSection({ ep, busy }: { ep: Episode; busy: boolean }) {
           <Empty
             text={
               hasStoryboard
-                ? '本分镜为旧版数据，未产出视觉参考。重新执行一次「② 拆分分镜」即可获得人物/场景的文字约束（不产生图片费用）。'
+                ? '本分镜为旧版数据，未产出视觉参考。重新执行一次「拆分分镜」即可获得人物/场景的文字约束（不产生图片费用）。'
                 : '拆分分镜后，这里会列出本集人物与重复出现的场景（如兰若寺大殿），用于跨镜头一致性约束。'
             }
           />
@@ -554,20 +671,26 @@ function RefGroup({ title, refs, ep }: { title: string; refs: VisualRef[]; ep: E
 
 function OutputsSection({
   ep,
+  node,
   busy,
   pending,
+  header,
+  extra,
   onExport,
 }: {
   ep: Episode
+  node: VersionNode
   busy: boolean
   pending: boolean
+  header: React.ReactNode
+  extra: React.ReactNode
   onExport: (ratio: string) => void
 }) {
-  const outs = ep.state.outputs ?? []
+  const outs = node.outputs ?? []
   const ratios = ['16:9', '9:16', '1:1', '3:4']
   return (
     <Card
-      title="成片与多比例导出"
+      title={`${header} · 成片与多比例导出`}
       extra={
         <div className="flex items-center gap-2">
           <span className="text-xs text-paper-300/40 mr-1">导出：</span>
@@ -576,11 +699,12 @@ function OutputsSection({
               {r}
             </Button>
           ))}
+          {extra}
         </div>
       }
     >
       {outs.length === 0 ? (
-        <Empty text="尚无成片。完成分镜后依次执行 ④ 生产 → ⑤ 合成" />
+        <Empty text="本版本尚无成片。执行版本树上的「从此处继续」合成成片。" />
       ) : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
           {outs.map((p) => (

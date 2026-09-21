@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjzsdu/story/internal/app"
 	"github.com/sjzsdu/story/internal/domain"
+	"github.com/sjzsdu/story/internal/engine"
 )
 
 // Server HTTP 服务，复用 CLI 同一个 app 容器。
@@ -52,6 +53,9 @@ func (s *Server) routes() {
 	// 停止该集正在执行的后台动作（kill 正在跑的 bl/ffmpeg，已完成产物全部保留）。
 	s.mux.HandleFunc("POST /api/episodes/{id}/cancel", s.cancelActionHTTP)
 	s.mux.HandleFunc("POST /api/episodes/{id}/refs", s.generateEpisodeRefs)
+	// §17 版本树：切换活跃节点 / 删除节点（含后代与媒体文件），均为同步操作。
+	s.mux.HandleFunc("POST /api/episodes/{id}/nodes/{nodeID}/activate", s.activateNodeHTTP)
+	s.mux.HandleFunc("DELETE /api/episodes/{id}/nodes/{nodeID}", s.deleteNodeHTTP)
 	s.mux.HandleFunc("GET /api/episodes/{id}/events", s.handleSSE)
 	s.mux.HandleFunc("GET /api/episodes/{id}/media", s.serveMedia)
 	s.mux.HandleFunc("GET /api/voices", s.listVoices)
@@ -283,8 +287,11 @@ func (s *Server) deleteEpisode(w http.ResponseWriter, r *http.Request) {
 // ---------- 动作触发 ----------
 
 type actionReq struct {
-	Action string `json:"action"` // candidates|pick|storyboard|produce|compose|run|export
-	Index  int    `json:"index"`
+	Action string `json:"action"` // story|storyboard|produce|compose|run|export
+	// From 起始父节点 ID（§17 版本树）：留空表示以集当前活跃节点为准。
+	From string `json:"from"`
+	// Reroll 为 true 时开新版本（Attempt+1）而不是复用同派生输入的既有节点。
+	Reroll bool   `json:"reroll"`
 	Ratio  string `json:"ratio"`
 	// Scenes 指定要生产的镜头序号（仅 produce 动作使用）。留空表示只生产所有
 	// 未完成的镜头——已成功的镜头不会被重复出图/合成。
@@ -321,6 +328,44 @@ func (s *Server) runActionHTTP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
 }
 
+// activateNodeHTTP 把某版本节点设为活跃节点（同步操作，不产生费用、不经 broker）。
+func (s *Server) activateNodeHTTP(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.episodeOrError(w, r); !ok {
+		return
+	}
+	id, nodeID := r.PathValue("id"), r.PathValue("nodeID")
+	if err := s.app.Engine.ActivateNode(r.Context(), id, nodeID); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ep, err := s.app.GetEpisode(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.broker.publish(id, evSnapshot, ep)
+	writeJSON(w, http.StatusOK, ep)
+}
+
+// deleteNodeHTTP 删除某版本节点及其全部后代与媒体文件（同步操作，不可恢复）。
+func (s *Server) deleteNodeHTTP(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.episodeOrError(w, r); !ok {
+		return
+	}
+	id, nodeID := r.PathValue("id"), r.PathValue("nodeID")
+	if err := s.app.Engine.DeleteNode(r.Context(), id, nodeID); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ep, err := s.app.GetEpisode(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.broker.publish(id, evSnapshot, ep)
+	writeJSON(w, http.StatusOK, ep)
+}
+
 // cancelActionHTTP 停止该集正在执行的后台动作。没有在跑的任务时返回 canceled=false。
 func (s *Server) cancelActionHTTP(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -339,68 +384,30 @@ func (s *Server) cancelActionHTTP(w http.ResponseWriter, r *http.Request) {
 // buildAction 把动作名映射为 engine 调用；run 为多步串联。
 func (s *Server) buildAction(episodeID string, req actionReq) (func(ctx context.Context) error, error) {
 	eng := s.app.Engine
+	opts := engine.DeriveOptions{From: req.From, Reroll: req.Reroll, Scenes: req.Scenes}
 	switch req.Action {
-	case "candidates":
-		return func(ctx context.Context) error { _, err := eng.GenerateCandidates(ctx, episodeID); return err }, nil
-	case "pick":
-		if req.Index < 1 {
-			return nil, fmt.Errorf("pick 需要 index ≥ 1")
-		}
-		return func(ctx context.Context) error { return eng.Pick(ctx, episodeID, req.Index) }, nil
-	case "storyboard":
-		return func(ctx context.Context) error { _, err := eng.PlanStoryboard(ctx, episodeID); return err }, nil
-	case "produce":
-		scenes := req.Scenes
+	case "story":
 		return func(ctx context.Context) error {
-			// 指定镜头 = 单镜/多镜重试；留空 = 只生产所有未完成的镜头。
-			if len(scenes) > 0 {
-				return eng.ProduceScenes(ctx, episodeID, scenes)
-			}
-			return eng.Produce(ctx, episodeID)
+			_, err := eng.GenerateStory(ctx, episodeID, engine.DeriveOptions{Reroll: req.Reroll})
+			return err
 		}, nil
+	case "storyboard":
+		return func(ctx context.Context) error { _, err := eng.PlanStoryboard(ctx, episodeID, opts); return err }, nil
+	case "produce":
+		return func(ctx context.Context) error { _, err := eng.Produce(ctx, episodeID, opts); return err }, nil
 	case "compose":
-		return func(ctx context.Context) error { _, err := eng.Compose(ctx, episodeID); return err }, nil
+		return func(ctx context.Context) error { _, err := eng.Compose(ctx, episodeID, opts); return err }, nil
 	case "export":
 		if strings.TrimSpace(req.Ratio) == "" {
 			return nil, fmt.Errorf("export 需要 ratio（16:9/9:16/1:1/3:4）")
 		}
-		return func(ctx context.Context) error { _, err := eng.Export(ctx, episodeID, req.Ratio); return err }, nil
+		return func(ctx context.Context) error { _, err := eng.Export(ctx, episodeID, req.Ratio, opts); return err }, nil
 	case "run":
-		return s.buildRunAction(episodeID, req.Index), nil
+		return func(ctx context.Context) error {
+			return eng.Run(ctx, episodeID, engine.DeriveOptions{From: req.From, Reroll: req.Reroll})
+		}, nil
 	default:
 		return nil, fmt.Errorf("未知动作: %s", req.Action)
-	}
-}
-
-func (s *Server) buildRunAction(episodeID string, index int) func(ctx context.Context) error {
-	eng := s.app.Engine
-	// index 仅为兼容旧请求保留：新流程 generate 自动定稿，无需也不再使用候选序号。
-	_ = index
-	return func(ctx context.Context) error {
-		ep, err := s.app.GetEpisode(ctx, episodeID)
-		if err != nil {
-			return err
-		}
-		if ep.State.Story == nil {
-			// 含旧版停在 generate 后未 pick 的数据：直接生成定稿故事。
-			if _, err := eng.GenerateCandidates(ctx, episodeID); err != nil {
-				return err
-			}
-		}
-		ep, err = s.app.GetEpisode(ctx, episodeID)
-		if err != nil {
-			return err
-		}
-		if ep.State.Storyboard == nil || ep.State.Steps[domain.StepStoryboard].Status != domain.StatusDone {
-			if _, err := eng.PlanStoryboard(ctx, episodeID); err != nil {
-				return err
-			}
-		}
-		if err := eng.Produce(ctx, episodeID); err != nil {
-			return err
-		}
-		_, err = eng.Compose(ctx, episodeID)
-		return err
 	}
 }
 

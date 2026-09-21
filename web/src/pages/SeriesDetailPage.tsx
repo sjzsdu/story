@@ -7,13 +7,20 @@ import { Button, Card, Collapsible, Empty, ErrorBox, Field, Modal, Spinner, Text
 import { StatusBadge } from '../components/ui'
 import PlanPanel from '../components/PlanPanel'
 import VoiceProfileCard from '../components/VoiceProfileCard'
+import { STAGE_LABEL, activePath } from '../components/VersionTree'
 import { useSeriesEvents } from '../useSeriesEvents'
 
+// §17 版本树：集进度取活跃路径上最深的已执行节点。
 function episodeProgress(ep: Episode) {
-  if (ep.state.steps.compose.status === 'done') {
-    return { step: 'compose' as const, status: ep.state.steps.compose.status }
+  const path = activePath(ep)
+  for (let i = path.length - 1; i >= 0; i--) {
+    if (path[i].status !== 'pending') {
+      return { step: path[i].stage, status: path[i].status }
+    }
   }
-  return { step: ep.state.current, status: ep.state.steps[ep.state.current].status }
+  return path.length
+    ? { step: path[0].stage, status: path[0].status }
+    : { step: 'story' as const, status: 'pending' as const }
 }
 
 function visualModeLabel(mode: string | undefined): string {
@@ -157,7 +164,7 @@ export default function SeriesDetailPage() {
                       {ep.topic && <div className="text-xs text-paper-300/45 truncate mt-0.5">{ep.topic}</div>}
                     </div>
                     <div className="shrink-0 flex items-center gap-3">
-                      <span className="text-xs text-paper-300/40 hidden sm:inline">{p.step}</span>
+                      <span className="text-xs text-paper-300/40 hidden sm:inline">{STAGE_LABEL[p.step]}</span>
                       <StatusBadge status={p.status} />
                       <button
                         type="button"

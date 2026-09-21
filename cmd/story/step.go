@@ -8,48 +8,42 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sjzsdu/story/internal/domain"
+	"github.com/sjzsdu/story/internal/engine"
 )
 
-var pickIndex int
-var exportRatio string
+var (
+	exportRatio   string
+	produceScenes string
+	fromNode      string
+	rerollFlag    bool
+)
 
-var candidatesCmd = &cobra.Command{
-	Use:   "candidates <episode-id>",
-	Short: "步骤1：AI 生成本集故事（直接定稿，无需人工选择）",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println(">>> 正在生成本集故事（约需 30-60 秒，生成即定稿）...")
-		candidates, err := application.Engine.GenerateCandidates(rootCtx, args[0])
-		if err != nil {
-			return err
-		}
-		s := candidates[0]
-		fmt.Printf("\n《%s》  %s · %s\n", s.Title, s.Dynasty, s.Source)
-		fmt.Println(wrapIndent(s.Summary, "    "))
-		ep, _ := application.GetEpisode(rootCtx, args[0])
-		fmt.Printf("\n审阅副本: %s\n", ep.WorkDir+"/story.md")
-		fmt.Println("不满意可重新执行本命令覆盖；满意则进入下一步:")
-		fmt.Printf("story storyboard %s\n", args[0])
-		return nil
-	},
+// deriveOpts 组装本次派生的选项（--from / --reroll）。
+func deriveOpts() engine.DeriveOptions {
+	return engine.DeriveOptions{From: fromNode, Reroll: rerollFlag}
 }
 
-var pickCmd = &cobra.Command{
-	Use:        "pick <episode-id>",
-	Short:      "（旧版兼容）手动选定故事；新版 candidates 已自动定稿，通常无需执行",
-	Args:       cobra.ExactArgs(1),
-	Deprecated: "新版 story candidates 生成后自动定稿，pick 仅用于兼容旧数据",
+var generateCmd = &cobra.Command{
+	Use:     "generate <episode-id>",
+	Aliases: []string{"candidates"},
+	Short:   "步骤1：AI 生成本集故事（直接定稿）",
+	Long: "生成本集故事定稿。同一组派生输入（系列 + 主题 + 朝代）已产出的版本会直接复用，\n" +
+		"不重复调用模型；用 --reroll 可另开一版（旧版保留在版本树里）。",
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := application.Engine.Pick(rootCtx, args[0], pickIndex); err != nil {
-			return err
-		}
-		ep, err := application.GetEpisode(rootCtx, args[0])
+		fmt.Println(">>> 正在生成本集故事（约需 30-60 秒，生成即定稿）...")
+		node, err := application.Engine.GenerateStory(rootCtx, args[0], deriveOpts())
 		if err != nil {
 			return err
 		}
-		fmt.Printf("已选定 #%d 《%s》（%s · %s）\n", pickIndex, ep.State.Story.Title, ep.State.Story.Dynasty, ep.State.Story.Source)
-		fmt.Printf("审阅副本: %s\n", ep.WorkDir+"/story.md")
-		fmt.Printf("下一步: story storyboard %s\n", ep.ID)
+		s := node.Story
+		if s != nil {
+			fmt.Printf("\n《%s》  %s · %s\n", s.Title, s.Dynasty, s.Source)
+			fmt.Println(wrapIndent(s.Summary, "    "))
+		}
+		fmt.Printf("\n节点 %s（v%d）\n审阅副本: %s/story.md\n", node.ID, node.Attempt+1, node.Dir)
+		fmt.Println("不满意可加 --reroll 另开一版；满意则进入下一步:")
+		fmt.Printf("story storyboard %s\n", args[0])
 		return nil
 	},
 }
@@ -60,23 +54,21 @@ var storyboardCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Println(">>> 正在拆分分镜（约需 30-60 秒）...")
-		sb, err := application.Engine.PlanStoryboard(rootCtx, args[0])
+		node, err := application.Engine.PlanStoryboard(rootCtx, args[0], deriveOpts())
 		if err != nil {
 			return err
 		}
+		sb := node.Storyboard
 		total := 0
 		for _, sc := range sb.Scenes {
 			total += sc.DurationSec
 		}
 		fmt.Printf("已生成 %d 个镜头，预计总时长约 %d 秒\n", len(sb.Scenes), total)
-		ep, _ := application.GetEpisode(rootCtx, args[0])
-		fmt.Printf("审阅副本: %s\n", ep.WorkDir+"/storyboard.json")
-		fmt.Printf("下一步: story produce %s\n", ep.ID)
+		fmt.Printf("节点 %s（v%d）\n审阅副本: %s/storyboard.json\n", node.ID, node.Attempt+1, node.Dir)
+		fmt.Printf("下一步: story produce %s\n", args[0])
 		return nil
 	},
 }
-
-var produceScenes string
 
 var produceCmd = &cobra.Command{
 	Use:   "produce <episode-id>",
@@ -84,7 +76,8 @@ var produceCmd = &cobra.Command{
 	Long: "生产本集的画面片段与旁白。\n" +
 		"默认只生产「画面或旁白尚未产出」的镜头：已成功的镜头不会被重复出图/合成，\n" +
 		"因此直接重跑本命令即等价于「只重试失败镜头」。\n" +
-		"用 --scenes 可只重试指定镜头，例如 --scenes 13,15,17。",
+		"用 --scenes 可只重试指定镜头（如 --scenes 13,15,17）；\n" +
+		"用 --reroll 可基于同一分镜另开一版画面（旧版片段原样保留）。",
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		scenes, err := parseSceneIDs(produceScenes)
@@ -99,33 +92,30 @@ var produceCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		n := len(ep.State.Storyboard.Scenes)
 		if len(scenes) > 0 {
 			fmt.Printf(">>> 只重试镜头 %s（并发 %d，失败重试 %d 次）...\n",
 				formatSceneIDs(scenes), se.Config.MaxConcurrency, se.Config.MaxRetries)
 		} else {
-			fmt.Printf(">>> 开始生产 %d 个镜头（并发 %d，失败重试 %d 次；已完成的镜头自动跳过）...\n",
-				n, se.Config.MaxConcurrency, se.Config.MaxRetries)
+			fmt.Printf(">>> 开始生产（并发 %d，失败重试 %d 次；已完成的镜头自动跳过）...\n",
+				se.Config.MaxConcurrency, se.Config.MaxRetries)
 		}
 
-		if len(scenes) > 0 {
-			err = application.Engine.ProduceScenes(rootCtx, args[0], scenes)
-		} else {
-			err = application.Engine.Produce(rootCtx, args[0])
-		}
+		opts := deriveOpts()
+		opts.Scenes = scenes
+		node, err := application.Engine.Produce(rootCtx, args[0], opts)
 		if err != nil {
 			fmt.Println("生产未全部成功，已保留进度；可重跑 produce（只会重试未完成的镜头），或用 --scenes 指定镜头。")
 			return err
 		}
-		ep, _ = application.GetEpisode(rootCtx, args[0])
-		cr, cp, cf := countMedia(ep.State.Clips)
-		ar, ap, af := countMedia(ep.State.Audios)
+		cr, cp, cf := countMedia(node.Clips)
+		ar, ap, af := countMedia(node.Audios)
 		fmt.Printf("画面：复用 %d，本次生产 %d，未完成 %d\n", cr, cp, cf)
 		fmt.Printf("旁白：复用 %d，本次生产 %d，未完成 %d\n", ar, ap, af)
-		if st := ep.State.Steps[domain.StepProduce].Status; st == domain.StatusDone {
-			fmt.Printf("下一步: story compose %s\n", ep.ID)
-		} else {
-			fmt.Printf("整集仍有镜头未完成: %s\n", ep.State.Steps[domain.StepProduce].Error)
+		fmt.Printf("节点 %s（v%d）: %s\n", node.ID, node.Attempt+1, node.Status)
+		if node.Done() {
+			fmt.Printf("下一步: story compose %s\n", node.ID)
+		} else if node.Error != "" {
+			fmt.Printf("整集仍有镜头未完成: %s\n", node.Error)
 		}
 		return nil
 	},
@@ -137,7 +127,7 @@ var composeCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Println(">>> 正在合成成片...")
-		final, err := application.Engine.Compose(rootCtx, args[0])
+		final, err := application.Engine.Compose(rootCtx, args[0], deriveOpts())
 		if err != nil {
 			return err
 		}
@@ -150,37 +140,21 @@ var composeCmd = &cobra.Command{
 var runCmd = &cobra.Command{
 	Use:   "run <episode-id>",
 	Short: "一键执行 generate → storyboard → produce → compose（供 Agent 自动驱动）",
-	Args:  cobra.ExactArgs(1),
+	Long: "从起点沿版本链往下补齐到成片。已产出的节点直接复用（零费用续跑）；\n" +
+		"用 --from <node-id> 可从任意节点继续，用 --reroll 可整条链另开一版。",
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Println(">>> 沿版本链补齐到成片（已有节点直接复用）...")
+		if err := application.Engine.Run(rootCtx, args[0], engine.DeriveOptions{From: fromNode, Reroll: rerollFlag}); err != nil {
+			return err
+		}
 		ep, err := application.GetEpisode(rootCtx, args[0])
 		if err != nil {
 			return err
 		}
-		// 历史数据可能停在 generate 之后、未 pick：Story 为空时直接重新生成定稿。
-		if ep.State.Story == nil {
-			fmt.Println(">>> [1/4] 生成本集故事...")
-			if _, err := application.Engine.GenerateCandidates(rootCtx, args[0]); err != nil {
-				return err
-			}
+		if n := ep.NodeByID(ep.ActiveNodeID); n != nil && len(n.Outputs) > 0 {
+			fmt.Printf("\n全部完成: %s\n", n.Outputs[0])
 		}
-		if ep.State.Storyboard == nil || ep.State.Steps[domain.StepStoryboard].Status != domain.StatusDone {
-			fmt.Println(">>> [2/4] 拆分分镜...")
-			if _, err := application.Engine.PlanStoryboard(rootCtx, args[0]); err != nil {
-				return err
-			}
-		}
-		if ep.State.Steps[domain.StepProduce].Status != domain.StatusDone {
-			fmt.Println(">>> [3/4] 生产画面与旁白...")
-			if err := application.Engine.Produce(rootCtx, args[0]); err != nil {
-				return err
-			}
-		}
-		fmt.Println(">>> [4/4] 合成成片...")
-		final, err := application.Engine.Compose(rootCtx, args[0])
-		if err != nil {
-			return err
-		}
-		fmt.Printf("\n全部完成: %s\n", final)
 		return nil
 	},
 }
@@ -193,7 +167,7 @@ var exportCmd = &cobra.Command{
 		if exportRatio == "" {
 			return fmt.Errorf("--ratio 不能为空，可选 16:9 / 9:16 / 1:1 / 3:4")
 		}
-		dst, err := application.Engine.Export(rootCtx, args[0], exportRatio)
+		dst, err := application.Engine.Export(rootCtx, args[0], exportRatio, deriveOpts())
 		if err != nil {
 			return err
 		}
@@ -204,7 +178,7 @@ var exportCmd = &cobra.Command{
 
 var statusCmd = &cobra.Command{
 	Use:   "status <episode-id>",
-	Short: "查看一集的流水线状态",
+	Short: "查看一集的版本树状态",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ep, err := application.GetEpisode(rootCtx, args[0])
@@ -216,44 +190,135 @@ var statusCmd = &cobra.Command{
 	},
 }
 
+var nodesCmd = &cobra.Command{
+	Use:   "nodes <episode-id>",
+	Short: "打印该集的版本树（节点 ID / 版本 / 状态 / 摘要）",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ep, err := application.GetEpisode(rootCtx, args[0])
+		if err != nil {
+			return err
+		}
+		printVersionTree(ep)
+		return nil
+	},
+}
+
+var activateCmd = &cobra.Command{
+	Use:   "activate <episode-id> <node-id>",
+	Short: "把某个版本节点设为活跃节点（切换成片/分镜等详情）",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := application.Engine.ActivateNode(rootCtx, args[0], args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("活跃节点已切换为 %s\n", args[1])
+		return nil
+	},
+}
+
+var nodeRmCmd = &cobra.Command{
+	Use:   "node-rm <episode-id> <node-id>",
+	Short: "删除版本节点及其全部后代与媒体文件（不可恢复）",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := application.Engine.DeleteNode(rootCtx, args[0], args[1]); err != nil {
+			return err
+		}
+		fmt.Printf("已删除节点 %s 及其后代（含媒体文件）\n", args[1])
+		return nil
+	},
+}
+
 func printStatus(ep *domain.Episode) {
 	fmt.Printf("集: %s  《%s》（系列 %s 第 %d 集）\n", ep.ID, ep.Title, ep.SeriesID, ep.Number)
-	fmt.Printf("工作目录: %s\n\n", ep.WorkDir)
-	fmt.Println("流水线:")
-	for _, step := range domain.AllSteps() {
-		st := ep.State.Steps[step]
-		mark := "○"
-		switch st.Status {
-		case domain.StatusDone, domain.StatusApproved:
-			mark = "●"
-		case domain.StatusRunning:
-			mark = "◐"
-		case domain.StatusFailed:
-			mark = "✗"
-		case domain.StatusReview:
-			mark = "?"
+	fmt.Printf("工作目录: %s\n", ep.WorkDir)
+	printVersionTree(ep)
+}
+
+func printVersionTree(ep *domain.Episode) {
+	fmt.Printf("\n版本树（活跃节点 %s）:\n", orDash(ep.ActiveNodeID))
+	active := make(map[string]bool, len(ep.Nodes))
+	for _, n := range ep.ActivePath() {
+		active[n.ID] = true
+	}
+	if len(ep.Nodes) == 0 {
+		fmt.Println("  （空，尚未开始）")
+		return
+	}
+	for _, stage := range domain.AllStages() {
+		fmt.Printf("  [%s]\n", domain.StageLabel(stage))
+		found := false
+		for _, n := range ep.Nodes {
+			if n.Stage != stage {
+				continue
+			}
+			found = true
+			line := fmt.Sprintf("    %s %s  v%d  %s", nodeMark(n), n.ID, n.Attempt+1, n.Status)
+			if active[n.ID] {
+				line += "  ← 活跃"
+			}
+			if n.Runs > 1 {
+				line += fmt.Sprintf("（执行 %d 次）", n.Runs)
+			}
+			fmt.Println(line)
+			if s := nodeSummary(n); s != "" {
+				fmt.Println("        " + s)
+			}
+			if n.Error != "" {
+				fmt.Println("        错误: " + wrapIndent(n.Error, "        "))
+			}
 		}
-		line := fmt.Sprintf("  %s %-11s %s", mark, step, st.Status)
-		if st.Attempts > 1 {
-			line += fmt.Sprintf("（第 %d 次尝试）", st.Attempts)
-		}
-		fmt.Println(line)
-		if st.Error != "" {
-			fmt.Println("      错误: " + wrapIndent(st.Error, "      "))
+		if !found {
+			fmt.Println("    （无）")
 		}
 	}
-	if ep.State.Story != nil {
-		fmt.Printf("\n故事: 《%s》（%s · %s）\n", ep.State.Story.Title, ep.State.Story.Dynasty, ep.State.Story.Source)
+}
+
+func nodeMark(n *domain.VersionNode) string {
+	switch n.Status {
+	case domain.NodeDone:
+		return "●"
+	case domain.NodeRunning:
+		return "◐"
+	case domain.NodeFailed:
+		return "✗"
+	default:
+		return "○"
 	}
-	if ep.State.Storyboard != nil {
-		fmt.Printf("分镜: %d 个\n", len(ep.State.Storyboard.Scenes))
-	}
-	if len(ep.State.Outputs) > 0 {
-		fmt.Println("\n成片:")
-		for _, o := range ep.State.Outputs {
-			fmt.Println("  " + o)
+}
+
+// nodeSummary 给出版本节点的一行人读摘要（按阶段取不同内容）。
+func nodeSummary(n *domain.VersionNode) string {
+	switch n.Stage {
+	case domain.StageStory:
+		if n.Story != nil {
+			return fmt.Sprintf("《%s》（%s · %s）", n.Story.Title, n.Story.Dynasty, n.Story.Source)
+		}
+	case domain.StageStoryboard:
+		if n.Storyboard != nil {
+			return fmt.Sprintf("%d 镜", len(n.Storyboard.Scenes))
+		}
+	case domain.StageMedia:
+		if len(n.Clips) > 0 || len(n.Audios) > 0 {
+			cr, cp, cf := countMedia(n.Clips)
+			ar, ap, af := countMedia(n.Audios)
+			return fmt.Sprintf("画面 复用%d/新%d/未完成%d，旁白 复用%d/新%d/未完成%d",
+				cr, cp, cf, ar, ap, af)
+		}
+	case domain.StageFinal:
+		if len(n.Outputs) > 0 {
+			return strings.Join(n.Outputs, "，")
 		}
 	}
+	return ""
+}
+
+func orDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "-"
+	}
+	return s
 }
 
 func wrapIndent(s, indent string) string {
@@ -306,10 +371,18 @@ func countMedia(ms []domain.MediaResult) (reused, produced, failed int) {
 }
 
 func init() {
-	pickCmd.Flags().IntVar(&pickIndex, "index", 0, "故事序号（仅旧版多候选数据需要）")
 	exportCmd.Flags().StringVar(&exportRatio, "ratio", "", "目标比例：16:9 / 9:16 / 1:1 / 3:4")
 	produceCmd.Flags().StringVar(&produceScenes, "scenes", "",
 		"只生产指定镜头（如 13,15,17）；留空＝只生产所有未完成的镜头")
 
-	rootCmd.AddCommand(candidatesCmd, pickCmd, storyboardCmd, produceCmd, composeCmd, runCmd, exportCmd, statusCmd)
+	// --from / --reroll：版本树通用派生选项（§17）。
+	for _, c := range []*cobra.Command{generateCmd, storyboardCmd, produceCmd, composeCmd, runCmd, exportCmd} {
+		c.Flags().BoolVar(&rerollFlag, "reroll", false, "另开一版（Attempt+1），不复用同派生输入的既有节点")
+	}
+	for _, c := range []*cobra.Command{storyboardCmd, produceCmd, composeCmd, runCmd, exportCmd} {
+		c.Flags().StringVar(&fromNode, "from", "", "从指定版本节点往下派生；留空＝以集当前活跃节点为准")
+	}
+
+	rootCmd.AddCommand(generateCmd, storyboardCmd, produceCmd, composeCmd, runCmd, exportCmd,
+		statusCmd, nodesCmd, activateCmd, nodeRmCmd)
 }

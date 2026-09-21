@@ -7,12 +7,14 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sjzsdu/story/internal/app"
 	"github.com/sjzsdu/story/internal/config"
+	"github.com/sjzsdu/story/internal/domain"
 )
 
 func newTestServer(t *testing.T) (*httptest.Server, *app.App, string) {
@@ -97,14 +99,14 @@ func TestSeriesAndEpisodeFlow(t *testing.T) {
 	}
 	res.Body.Close()
 
-	// 非法动作体。
+	// 未知动作（pick 已随版本树移除）应 400。
 	res, err = http.Post(ts.URL+"/api/episodes/guiguzi-e01/actions", "application/json",
 		strings.NewReader(`{"action":"pick"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("pick 缺 index 应 400，得到 %d", res.StatusCode)
+		t.Fatalf("未知动作应 400，得到 %d", res.StatusCode)
 	}
 	res.Body.Close()
 }
@@ -199,6 +201,140 @@ func TestCancelAction(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("对不存在的集停止应 404，得到 %d", res.StatusCode)
+	}
+}
+
+// TestActivateAndDeleteNodeHTTP 覆盖 §17 版本树的两个同步端点：
+// 切换活跃节点、删除节点（含后代与媒体目录）。手工种树，不触发任何模型调用。
+func TestActivateAndDeleteNodeHTTP(t *testing.T) {
+	ts, a, _ := newTestServer(t)
+	ctx := context.Background()
+	if _, err := a.CreateSeries(ctx, app.CreateSeriesInput{Name: "鬼谷子"}); err != nil {
+		t.Fatal(err)
+	}
+	ep, err := a.CreateEpisode(ctx, "guiguzi", "入秦", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 手工种一棵两节点的树：story → storyboard（不调用模型）。
+	storyDir := filepath.Join(ep.WorkDir, "versions", "story-1")
+	boardDir := filepath.Join(ep.WorkDir, "versions", "storyboard-1")
+	if err := os.MkdirAll(boardDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(boardDir, "storyboard.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ep.Nodes = []*domain.VersionNode{
+		{ID: "story-1", Stage: domain.StageStory, Status: domain.NodeDone, Dir: storyDir},
+		{ID: "storyboard-1", Stage: domain.StageStoryboard, ParentID: "story-1", Status: domain.NodeDone, Dir: boardDir},
+	}
+	ep.ActiveNodeID = "storyboard-1"
+	if err := a.Repo.SaveEpisode(ctx, ep); err != nil {
+		t.Fatal(err)
+	}
+
+	// 切到 story 节点。
+	res, err := http.Post(ts.URL+"/api/episodes/guiguzi-e01/nodes/story-1/activate", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("切换活跃节点应 200，得到 %d", res.StatusCode)
+	}
+	var got domain.Episode
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ActiveNodeID != "story-1" {
+		t.Fatalf("活跃节点 = %s，期望 story-1", got.ActiveNodeID)
+	}
+
+	// 不存在的节点应 400。
+	res, err = http.Post(ts.URL+"/api/episodes/guiguzi-e01/nodes/nope/activate", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("切换不存在的节点应 400，得到 %d", res.StatusCode)
+	}
+
+	// 先激活分镜节点，再删除它：活跃指针应回退到父节点，目录被删。
+	if res, err = http.Post(ts.URL+"/api/episodes/guiguzi-e01/nodes/storyboard-1/activate", "application/json", nil); err != nil {
+		t.Fatal(err)
+	} else {
+		res.Body.Close()
+	}
+	req, err := http.NewRequest(http.MethodDelete, ts.URL+"/api/episodes/guiguzi-e01/nodes/storyboard-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("删除节点应 200，得到 %d", res.StatusCode)
+	}
+	after, err := a.GetEpisode(ctx, "guiguzi-e01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.NodeByID("storyboard-1") != nil {
+		t.Fatal("节点应已删除")
+	}
+	if after.ActiveNodeID != "story-1" {
+		t.Fatalf("活跃指针应回退到父节点，实际 %s", after.ActiveNodeID)
+	}
+	if _, err := os.Stat(boardDir); !os.IsNotExist(err) {
+		t.Fatalf("媒体目录应被删除: %v", err)
+	}
+
+	// 删除不存在的节点应 400。
+	req, err = http.NewRequest(http.MethodDelete, ts.URL+"/api/episodes/guiguzi-e01/nodes/nope", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("删除不存在的节点应 400，得到 %d", res.StatusCode)
+	}
+}
+
+// TestBuildActionWithFromAndReroll 覆盖动作映射：from 指向不存在的节点时
+// 在触碰任何 provider 之前就报错（零费用），且已移除的 pick 不再是合法动作。
+func TestBuildActionWithFromAndReroll(t *testing.T) {
+	_, a, _ := newTestServer(t)
+	ctx := context.Background()
+	if _, err := a.CreateSeries(ctx, app.CreateSeriesInput{Name: "鬼谷子"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.CreateEpisode(ctx, "guiguzi", "入秦", ""); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{app: a}
+
+	fn, err := s.buildAction("guiguzi-e01", actionReq{Action: "produce", From: "node-not-exist"})
+	if err != nil {
+		t.Fatalf("动作映射不应失败: %v", err)
+	}
+	if err := fn(ctx); err == nil || !strings.Contains(err.Error(), "版本节点 node-not-exist 不存在") {
+		t.Fatalf("from 指向不存在的节点应报错，实际: %v", err)
+	}
+
+	if _, err := s.buildAction("guiguzi-e01", actionReq{Action: "pick"}); err == nil {
+		t.Fatal("pick 已随版本树移除，应报未知动作")
+	}
+	if _, err := s.buildAction("guiguzi-e01", actionReq{Action: "export"}); err == nil {
+		t.Fatal("export 缺 ratio 应报错")
 	}
 }
 

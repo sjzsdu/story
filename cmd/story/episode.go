@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/sjzsdu/story/internal/domain"
 	"github.com/spf13/cobra"
 )
 
@@ -37,7 +38,7 @@ var episodeCreateCmd = &cobra.Command{
 			fmt.Printf("  主题: %s\n", ep.Topic)
 		}
 		fmt.Printf("  目录: %s\n", ep.WorkDir)
-		fmt.Printf("\n下一步: story candidates %s\n", ep.ID)
+		fmt.Printf("\n下一步: story generate %s\n", ep.ID)
 		return nil
 	},
 }
@@ -58,11 +59,32 @@ var episodeListCmd = &cobra.Command{
 			return nil
 		}
 		for _, ep := range eps {
-			fmt.Printf("%-18s  E%02d  %-28s  [%s/%s]\n",
-				ep.ID, ep.Number, truncate(ep.Title, 26), ep.State.Current, ep.State.Steps[ep.State.Current].Status)
+			fmt.Printf("%-18s  E%02d  %-28s  [%s]\n",
+				ep.ID, ep.Number, truncate(ep.Title, 26), episodeProgress(ep))
 		}
 		return nil
 	},
+}
+
+// episodeProgress 用版本树里最深的一条链概括该集进度，如「成片 ● / 画面 ◐」。
+func episodeProgress(ep *domain.Episode) string {
+	if len(ep.Nodes) == 0 {
+		return "未开始"
+	}
+	byStage := make(map[domain.Stage]*domain.VersionNode, len(ep.Nodes))
+	for _, n := range ep.Nodes {
+		cur, ok := byStage[n.Stage]
+		if !ok || n.Attempt > cur.Attempt {
+			byStage[n.Stage] = n
+		}
+	}
+	latest := domain.StageStory
+	for _, st := range domain.AllStages() {
+		if _, ok := byStage[st]; ok {
+			latest = st
+		}
+	}
+	return fmt.Sprintf("%s %s", domain.StageLabel(latest), byStage[latest].Status)
 }
 
 func init() {

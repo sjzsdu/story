@@ -2,14 +2,21 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/sjzsdu/story/internal/domain"
+	"github.com/sjzsdu/story/internal/engine"
 	"github.com/sjzsdu/story/internal/port"
+	sqlitestore "github.com/sjzsdu/story/internal/store/sqlite"
 	"github.com/sjzsdu/story/testutil/mock"
 )
 
@@ -126,6 +133,131 @@ func TestSaveVoiceSample(t *testing.T) {
 			t.Errorf("原始件目录 = %s, 期望 %s（路径穿越必须被截断）", filepath.Dir(src), wantDir)
 		}
 	})
+}
+
+// TestMigrateLegacyEpisode 覆盖 §17 旧集迁移：停在 pick 中间态的数据能取到被选故事、
+// 旧布局产物搬进 versions/<节点键>/ 且登记路径改挂、迁移幂等。
+func TestMigrateLegacyEpisode(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "story.db")
+	store, err := sqlitestore.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	workRoot := t.TempDir()
+	now := time.Now()
+	series := &domain.Series{
+		ID: "guiguzi", Name: "鬼谷子", Dynasty: "战国",
+		Config:    domain.SeriesConfig{Dynasty: "战国", Ratio: "9:16", Resolution: "1080P", TTSVoice: "longtian_v3"},
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateSeries(ctx, series); err != nil {
+		t.Fatal(err)
+	}
+	workDir := filepath.Join(workRoot, "guiguzi", "guiguzi-e01")
+	for _, sub := range []string{"clips", "audio", "tmp", "output"} {
+		if err := os.MkdirAll(filepath.Join(workDir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clipPath := filepath.Join(workDir, "clips", "scene-01.mp4")
+	audioPath := filepath.Join(workDir, "audio", "scene-01.mp3")
+	outPath := filepath.Join(workDir, "output", "guiguzi-e01-9x16.mp4")
+	for _, p := range []string{filepath.Join(workDir, "story.md"), clipPath, audioPath, outPath} {
+		if err := os.WriteFile(p, []byte("old"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ep := domain.NewEpisode("guiguzi-e01", "guiguzi", 1, "捭阖之术", "", workDir)
+	if err := store.CreateEpisode(ctx, ep); err != nil {
+		t.Fatal(err)
+	}
+
+	// 旧流水线状态：停在 generate 与 pick 之间（只有候选与选中序号，没有 Story）。
+	legacy := fmt.Sprintf(`{
+		"candidates":[{"index":1,"title":"捭阖初试","dynasty":"战国","source":"《鬼谷子》","content":"正文"}],
+		"selected":1,
+		"storyboard":{"scenes":[{"id":1,"visual_prompt":"v","narration":"n","duration_sec":5}]},
+		"clips":[{"scene_id":1,"path":%q,"duration_sec":5}],
+		"audios":[{"scene_id":1,"path":%q,"duration_sec":5}],
+		"outputs":[%q]
+	}`, clipPath, audioPath, outPath)
+	seedLegacyState(t, dbPath, ep.ID, legacy)
+
+	eng := engine.New(store, &mock.StoryGen{}, &mock.BoardPlanner{}, &mock.VideoGen{},
+		&mock.SpeechGen{}, &mock.Composer{SceneDuration: 5}, &mock.SeriesPlanner{}, &mock.ImageGen{},
+		workRoot, 2, 2, "longtian_v3", "沉稳")
+	a := &App{Repo: store, Engine: eng}
+
+	if err := MigrateEpisodesToVersionTree(ctx, a, store); err != nil {
+		t.Fatalf("迁移: %v", err)
+	}
+
+	got, err := store.GetEpisode(ctx, ep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Nodes) != 4 {
+		t.Fatalf("节点数 = %d，期望 4", len(got.Nodes))
+	}
+	if path := got.ActivePath(); len(path) != 4 {
+		t.Fatalf("活跃路径 = %d 段，期望 4", len(path))
+	}
+	for _, st := range domain.AllStages() {
+		if got.ActiveNodeOfStage(st) == nil {
+			t.Fatalf("活跃路径缺少「%s」节点", domain.StageLabel(st))
+		}
+	}
+	// 停在 pick 的旧数据：故事取自被选中的候选。
+	story := got.ActiveNodeOfStage(domain.StageStory)
+	if story.Story == nil || story.Story.Title != "捭阖初试" {
+		t.Fatalf("应取到被选候选作为故事: %+v", story.Story)
+	}
+	// 旧布局产物已搬进版本目录，旧位置不再存在。
+	media := got.ActiveNodeOfStage(domain.StageMedia)
+	if _, err := os.Stat(filepath.Join(media.Dir, "clips", "scene-01.mp4")); err != nil {
+		t.Fatalf("片段应已搬进版本目录: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "clips")); !os.IsNotExist(err) {
+		t.Fatal("旧 clips 目录应已搬走")
+	}
+	if len(media.Clips) != 1 || !strings.HasPrefix(media.Clips[0].Path, media.Dir) {
+		t.Fatalf("登记的画面路径应改挂到版本目录: %+v", media.Clips)
+	}
+	final := got.ActiveNodeOfStage(domain.StageFinal)
+	if len(final.Outputs) != 1 || !strings.HasPrefix(final.Outputs[0], final.Dir) {
+		t.Fatalf("登记的成片路径应改挂到版本目录: %+v", final.Outputs)
+	}
+
+	// 幂等：重复迁移不新增节点、不重复搬动。
+	if err := MigrateEpisodesToVersionTree(ctx, a, store); err != nil {
+		t.Fatalf("重复迁移: %v", err)
+	}
+	again, err := store.GetEpisode(ctx, ep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Nodes) != 4 {
+		t.Fatalf("重复迁移不应新增节点: %d", len(again.Nodes))
+	}
+	if again.ActiveNodeID != got.ActiveNodeID {
+		t.Fatalf("重复迁移不应改变活跃指针: %s → %s", got.ActiveNodeID, again.ActiveNodeID)
+	}
+}
+
+// seedLegacyState 直接写旧 state_json（迁移前的历史快照，新代码不再写入该列）。
+func seedLegacyState(t *testing.T, dbPath, id, raw string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE episodes SET state_json = ? WHERE id = ?`, raw, id); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestSanitizeAudioExt 覆盖扩展名白名单（不信任上传文件名）。

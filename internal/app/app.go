@@ -83,7 +83,7 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*App, error) {
 		cfg.MaxConcurrency, cfg.MaxRetries,
 		cfg.TTSVoice, cfg.TTSInstruction,
 	)
-	return &App{
+	app := &App{
 		Cfg:    cfg,
 		Repo:   store,
 		Engine: eng,
@@ -94,7 +94,19 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*App, error) {
 		},
 		// 参考音频归一化复用 ffmpeg composer（§16 复刻：录音/上传件统一转码）。
 		audioNormalizer: composer,
-	}, nil
+	}
+	if err := bootstrapApp(ctx, app, store); err != nil {
+		return nil, err
+	}
+	return app, nil
+}
+
+// bootstrapApp 装配完成后的收尾：§17 旧集一次性迁移到版本树（幂等）。
+func bootstrapApp(ctx context.Context, a *App, store *sqlitestore.Store) error {
+	if err := MigrateEpisodesToVersionTree(ctx, a, store); err != nil {
+		return fmt.Errorf("迁移旧集到版本树: %w", err)
+	}
+	return nil
 }
 
 // Close 释放资源。
@@ -207,7 +219,7 @@ func (a *App) resolveCreateSeriesVoiceID(ctx context.Context, in CreateSeriesInp
 	return vid, nil
 }
 
-// CreateEpisode 在系列下创建一集，并初始化工作目录与流水线状态。
+// CreateEpisode 在系列下创建一集，并初始化工作目录（版本产物落在其 versions/ 子目录）。
 func (a *App) CreateEpisode(ctx context.Context, seriesID, title, topic string) (*domain.Episode, error) {
 	series, err := a.Repo.GetSeries(ctx, seriesID)
 	if err != nil {
@@ -219,24 +231,11 @@ func (a *App) CreateEpisode(ctx context.Context, seriesID, title, topic string) 
 	}
 	id := fmt.Sprintf("%s-e%02d", series.ID, number)
 	workDir := filepath.Join(a.Cfg.ProjectsDir(), series.ID, id)
-	for _, sub := range []string{"clips", "audio", "tmp", "output"} {
-		if err := os.MkdirAll(filepath.Join(workDir, sub), 0o755); err != nil {
-			return nil, err
-		}
+	if err := os.MkdirAll(filepath.Join(workDir, engine.VersionsDirName), 0o755); err != nil {
+		return nil, err
 	}
 
-	now := time.Now()
-	ep := &domain.Episode{
-		ID:        id,
-		SeriesID:  series.ID,
-		Number:    number,
-		Title:     title,
-		Topic:     topic,
-		State:     *domain.NewPipelineState(),
-		WorkDir:   workDir,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
+	ep := domain.NewEpisode(id, series.ID, number, title, topic, workDir)
 	if err := a.Repo.CreateEpisode(ctx, ep); err != nil {
 		return nil, err
 	}

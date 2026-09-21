@@ -24,21 +24,6 @@ func TestValidateCandidates(t *testing.T) {
 	}
 }
 
-func TestValidateSelection(t *testing.T) {
-	cs := []domain.StoryCandidate{
-		{Content: "a"}, {Content: "b"}, {Content: "c"},
-	}
-	if err := ValidateSelection(cs, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := ValidateSelection(cs, 0); err == nil {
-		t.Fatal("序号 0 应越界")
-	}
-	if err := ValidateSelection(cs, 4); err == nil {
-		t.Fatal("序号 4 应越界")
-	}
-}
-
 func TestValidateStoryboard(t *testing.T) {
 	mk := func(n, dur int) *domain.Storyboard {
 		var sc []domain.Scene

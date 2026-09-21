@@ -37,12 +37,9 @@ func TestSeriesEpisodeCRUD(t *testing.T) {
 		t.Fatalf("系列配置往返错误: %+v", got.Config)
 	}
 
-	ep := &domain.Episode{
-		ID: "guiguzi-e01", SeriesID: "guiguzi", Number: 1, Title: "捭阖之术",
-		State:     *domain.NewPipelineState(),
-		WorkDir:   "/tmp/guiguzi-e01",
-		CreatedAt: now, UpdatedAt: now,
-	}
+	ep := domain.NewEpisode("guiguzi-e01", "guiguzi", 1, "捭阖之术", "", "/tmp/guiguzi-e01")
+	ep.CreatedAt = now
+	ep.UpdatedAt = now
 	if err := store.CreateEpisode(ctx, ep); err != nil {
 		t.Fatal(err)
 	}
@@ -55,9 +52,12 @@ func TestSeriesEpisodeCRUD(t *testing.T) {
 		t.Fatalf("下一集序号 = %d, 期望 2", n)
 	}
 
-	// 更新状态并重新读取，验证 JSON 状态往返。
-	ep.State.Current = domain.StepProduce
-	ep.State.Mark(domain.StepGenerate, domain.StatusDone, "")
+	// 更新版本树并重新读取，验证 nodes 与活跃指针往返。
+	ep.Nodes = append(ep.Nodes,
+		&domain.VersionNode{ID: "story-abc", Stage: domain.StageStory, ParentID: "", Attempt: 0, Status: domain.NodeDone, Dir: "/tmp/guiguzi-e01/versions/story-abc"},
+		&domain.VersionNode{ID: "media-def", Stage: domain.StageMedia, ParentID: "story-abc", Attempt: 0, Status: domain.NodeRunning, Dir: "/tmp/guiguzi-e01/versions/media-def", Error: "画面: x"},
+	)
+	ep.ActiveNodeID = "media-def"
 	if err := store.SaveEpisode(ctx, ep); err != nil {
 		t.Fatal(err)
 	}
@@ -65,11 +65,15 @@ func TestSeriesEpisodeCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.State.Current != domain.StepProduce {
-		t.Fatalf("状态往返失败: current=%s", reloaded.State.Current)
+	if len(reloaded.Nodes) != 2 {
+		t.Fatalf("节点数 = %d, 期望 2", len(reloaded.Nodes))
 	}
-	if reloaded.State.Steps[domain.StepGenerate].Status != domain.StatusDone {
-		t.Fatal("步骤状态往返失败")
+	if reloaded.ActiveNodeID != "media-def" {
+		t.Fatalf("活跃指针往返失败: %s", reloaded.ActiveNodeID)
+	}
+	reloadedMedia := reloaded.NodeByID("media-def")
+	if reloadedMedia == nil || reloadedMedia.ParentID != "story-abc" || reloadedMedia.Status != domain.NodeRunning || reloadedMedia.Error != "画面: x" {
+		t.Fatalf("media 节点往返失败: %+v", reloadedMedia)
 	}
 
 	eps, err := store.ListEpisodes(ctx, "guiguzi")

@@ -60,10 +60,28 @@ export const api = {
       method: 'DELETE',
     }),
 
-  action: (id: string, body: { action: ActionName; index?: number; ratio?: string; scenes?: number[] }) =>
+  // action 触发后台流水线动作；from/reroll 为 §17 版本树参数：
+  // from 指定起始父节点（留空用集当前活跃节点），reroll 为 true 时开新版本而非复用既有节点。
+  action: (
+    id: string,
+    body: { action: ActionName; from?: string; reroll?: boolean; ratio?: string; scenes?: number[] },
+  ) =>
     request<{ job: unknown }>(`/api/episodes/${encodeURIComponent(id)}/actions`, {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+
+  // activateNode 把某版本节点设为活跃节点（同步、零费用）。
+  activateNode: (id: string, nodeId: string) =>
+    request<Episode>(
+      `/api/episodes/${encodeURIComponent(id)}/nodes/${encodeURIComponent(nodeId)}/activate`,
+      { method: 'POST' },
+    ),
+
+  // deleteNode 删除节点及其全部后代与媒体文件（同步、不可恢复）。
+  deleteNode: (id: string, nodeId: string) =>
+    request<Episode>(`/api/episodes/${encodeURIComponent(id)}/nodes/${encodeURIComponent(nodeId)}`, {
+      method: 'DELETE',
     }),
 
   // cancelEpisode 停止正在执行的任务：已完成产物全部保留，之后可再次执行续跑。

@@ -1,20 +1,8 @@
 // 与 Go internal/domain 的 JSON 结构一一对应。
 
-export type StepName = 'generate' | 'pick' | 'storyboard' | 'produce' | 'compose'
-export type StepStatus =
-  | 'pending'
-  | 'running'
-  | 'review'
-  | 'approved'
-  | 'done'
-  | 'failed'
-
-export interface StepState {
-  status: StepStatus
-  attempts: number
-  error?: string
-  updated_at: string
-}
+// §17 版本树：一集由四个阶段依次派生，每个阶段可有多份版本（Attempt 递增）。
+export type Stage = 'story' | 'storyboard' | 'media' | 'final'
+export type NodeStatus = 'pending' | 'running' | 'done' | 'failed'
 
 export interface StoryCandidate {
   index: number
@@ -46,16 +34,25 @@ export interface MediaResult {
   err?: string
 }
 
-export interface PipelineState {
-  current: StepName
-  steps: Record<StepName, StepState>
-  candidates?: StoryCandidate[]
-  selected?: number
+// VersionNode 版本树上的一个节点：某阶段在一组派生输入下的一次产出。
+// id 即派生键（内容寻址），上游输入一变 id 与产物目录就变，旧产物天然不会被复用。
+export interface VersionNode {
+  id: string
+  stage: Stage
+  parent_id?: string
+  attempt: number // 同一组派生输入下的第 n 次尝试（0 起）；>0 即「换一版」
+  runs: number // 本节点被执行次数（失败重试与续跑累加）
+  status: NodeStatus
+  error?: string
+  dir: string
   story?: StoryCandidate
   storyboard?: Storyboard
+  refs?: VisualRef[]
   clips?: MediaResult[]
   audios?: MediaResult[]
   outputs?: string[]
+  created_at: string
+  updated_at: string
 }
 
 export interface SeriesConfig {
@@ -146,8 +143,10 @@ export interface Episode {
   number: number
   title: string
   topic: string
-  state: PipelineState
+  // §17：集级视觉参考（事实源，跨分镜版本共享）。
   refs?: VisualRef[]
+  nodes: VersionNode[]
+  active_node_id: string
   workdir: string
   created_at: string
   updated_at: string
@@ -181,14 +180,14 @@ export interface PlanSession {
 }
 
 export type ActionName =
-  | 'candidates'
-  | 'pick'
+  | 'story'
   | 'storyboard'
   | 'produce'
   | 'compose'
   | 'run'
   | 'export'
   | 'keyframes'
+  | 'episode-refs'
 
 export interface JobEvent {
   id: string

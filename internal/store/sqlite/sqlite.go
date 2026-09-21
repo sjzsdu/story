@@ -37,16 +37,18 @@ CREATE TABLE IF NOT EXISTS series (
     updated_at  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS episodes (
-    id         TEXT PRIMARY KEY,
-    series_id  TEXT NOT NULL REFERENCES series(id) ON DELETE CASCADE,
-    number     INTEGER NOT NULL,
-    title      TEXT NOT NULL,
-    topic      TEXT NOT NULL DEFAULT '',
-    state_json TEXT NOT NULL,
-    refs_json  TEXT NOT NULL DEFAULT '[]',
-    workdir    TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
+    id             TEXT PRIMARY KEY,
+    series_id      TEXT NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+    number         INTEGER NOT NULL,
+    title          TEXT NOT NULL,
+    topic          TEXT NOT NULL DEFAULT '',
+    state_json     TEXT NOT NULL DEFAULT '{}',
+    nodes_json     TEXT NOT NULL DEFAULT '[]',
+    active_node_id TEXT NOT NULL DEFAULT '',
+    refs_json      TEXT NOT NULL DEFAULT '[]',
+    workdir        TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
     UNIQUE(series_id, number)
 );
 CREATE TABLE IF NOT EXISTS plan_sessions (
@@ -94,6 +96,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		{"series", "characters_json", "TEXT NOT NULL DEFAULT '[]'"},
 		{"plan_sessions", "characters_json", "TEXT NOT NULL DEFAULT '[]'"},
 		{"episodes", "refs_json", "TEXT NOT NULL DEFAULT '[]'"},
+		// §17：版本树（nodes_json）与活跃节点指针（active_node_id）。
+		// 旧库的 state_json 列保留为迁移前的只读历史快照，新代码不再写入。
+		{"episodes", "nodes_json", "TEXT NOT NULL DEFAULT '[]'"},
+		{"episodes", "active_node_id", "TEXT NOT NULL DEFAULT ''"},
 		// §16：series.voice_id 引用顶层 Voice 实体，创建后锁定（UpdateSeries 不写该列）。
 		{"series", "voice_id", "TEXT NOT NULL DEFAULT ''"},
 		// §16：voices.provider 标识 TTS 供应商，旧行默认 bailian。
@@ -235,10 +241,16 @@ func (s *Store) DeleteSeries(ctx context.Context, id string) error {
 // ---- Episode ----
 
 // CreateEpisode 插入集。
+//
+// state_json 仅供旧库的 NOT NULL 约束占位（新集没有历史状态），
+// 真正的产物状态存在 nodes_json / active_node_id（§17 版本树）。
 func (s *Store) CreateEpisode(ctx context.Context, ep *domain.Episode) error {
-	state, err := json.Marshal(ep.State)
+	nodes, err := json.Marshal(ep.Nodes)
 	if err != nil {
 		return err
+	}
+	if ep.Nodes == nil {
+		nodes = []byte("[]")
 	}
 	refs, err := json.Marshal(ep.Refs)
 	if err != nil {
@@ -248,10 +260,10 @@ func (s *Store) CreateEpisode(ctx context.Context, ep *domain.Episode) error {
 		refs = []byte("[]")
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO episodes (id, series_id, number, title, topic, state_json, refs_json, workdir, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ep.ID, ep.SeriesID, ep.Number, ep.Title, ep.Topic, string(state), string(refs), ep.WorkDir,
-		formatTime(ep.CreatedAt), formatTime(ep.UpdatedAt),
+		`INSERT INTO episodes (id, series_id, number, title, topic, state_json, nodes_json, active_node_id, refs_json, workdir, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?)`,
+		ep.ID, ep.SeriesID, ep.Number, ep.Title, ep.Topic, string(nodes), ep.ActiveNodeID,
+		string(refs), ep.WorkDir, formatTime(ep.CreatedAt), formatTime(ep.UpdatedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("创建集 %s: %w", ep.ID, err)
@@ -262,7 +274,7 @@ func (s *Store) CreateEpisode(ctx context.Context, ep *domain.Episode) error {
 // GetEpisode 按 ID 查询集。
 func (s *Store) GetEpisode(ctx context.Context, id string) (*domain.Episode, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, series_id, number, title, topic, state_json, refs_json, workdir, created_at, updated_at
+		`SELECT id, series_id, number, title, topic, nodes_json, active_node_id, refs_json, workdir, created_at, updated_at
 		 FROM episodes WHERE id = ?`, id)
 	ep, err := scanEpisode(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -274,7 +286,7 @@ func (s *Store) GetEpisode(ctx context.Context, id string) (*domain.Episode, err
 // ListEpisodes 列出某系列下的全部集（按序号升序）。
 func (s *Store) ListEpisodes(ctx context.Context, seriesID string) ([]*domain.Episode, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, series_id, number, title, topic, state_json, refs_json, workdir, created_at, updated_at
+		`SELECT id, series_id, number, title, topic, nodes_json, active_node_id, refs_json, workdir, created_at, updated_at
 		 FROM episodes WHERE series_id = ? ORDER BY number ASC`, seriesID)
 	if err != nil {
 		return nil, err
@@ -291,11 +303,14 @@ func (s *Store) ListEpisodes(ctx context.Context, seriesID string) ([]*domain.Ep
 	return out, rows.Err()
 }
 
-// SaveEpisode 整体写回集（含流水线状态）。
+// SaveEpisode 整体写回集（含版本树）。state_json 为迁移前的历史快照，不在此写入。
 func (s *Store) SaveEpisode(ctx context.Context, ep *domain.Episode) error {
-	state, err := json.Marshal(ep.State)
+	nodes, err := json.Marshal(ep.Nodes)
 	if err != nil {
 		return err
+	}
+	if ep.Nodes == nil {
+		nodes = []byte("[]")
 	}
 	refs, err := json.Marshal(ep.Refs)
 	if err != nil {
@@ -306,8 +321,8 @@ func (s *Store) SaveEpisode(ctx context.Context, ep *domain.Episode) error {
 	}
 	ep.UpdatedAt = time.Now()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE episodes SET title=?, topic=?, state_json=?, refs_json=?, workdir=?, updated_at=? WHERE id=?`,
-		ep.Title, ep.Topic, string(state), string(refs), ep.WorkDir, formatTime(ep.UpdatedAt), ep.ID,
+		`UPDATE episodes SET title=?, topic=?, nodes_json=?, active_node_id=?, refs_json=?, workdir=?, updated_at=? WHERE id=?`,
+		ep.Title, ep.Topic, string(nodes), ep.ActiveNodeID, string(refs), ep.WorkDir, formatTime(ep.UpdatedAt), ep.ID,
 	)
 	if err != nil {
 		return err
@@ -437,13 +452,15 @@ func scanSeries(r rowScanner) (*domain.Series, error) {
 
 func scanEpisode(r rowScanner) (*domain.Episode, error) {
 	var ep domain.Episode
-	var stateJSON, refsJSON, created, updated string
+	var nodesJSON, refsJSON, created, updated string
 	if err := r.Scan(&ep.ID, &ep.SeriesID, &ep.Number, &ep.Title, &ep.Topic,
-		&stateJSON, &refsJSON, &ep.WorkDir, &created, &updated); err != nil {
+		&nodesJSON, &ep.ActiveNodeID, &refsJSON, &ep.WorkDir, &created, &updated); err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal([]byte(stateJSON), &ep.State); err != nil {
-		return nil, fmt.Errorf("解析集状态 %s: %w", ep.ID, err)
+	if nodesJSON != "" {
+		if err := json.Unmarshal([]byte(nodesJSON), &ep.Nodes); err != nil {
+			return nil, fmt.Errorf("解析集版本树 %s: %w", ep.ID, err)
+		}
 	}
 	if refsJSON != "" {
 		if err := json.Unmarshal([]byte(refsJSON), &ep.Refs); err != nil {
@@ -453,6 +470,40 @@ func scanEpisode(r rowScanner) (*domain.Episode, error) {
 	ep.CreatedAt = parseTime(created)
 	ep.UpdatedAt = parseTime(updated)
 	return &ep, nil
+}
+
+// ListUnmigratedEpisodes 列出尚未迁移到版本树的集 ID（§17 一次性迁移用）。
+// 判据：版本树为空且活跃指针为空。
+func (s *Store) ListUnmigratedEpisodes(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM episodes WHERE nodes_json IN ('', '[]') AND active_node_id = '' ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// LegacyEpisodeState 返回某集迁移前的 state_json 原文（§17 一次性迁移专用；
+// 迁移完成后该列不再被任何代码读写，仅作历史快照保留）。
+func (s *Store) LegacyEpisodeState(ctx context.Context, id string) ([]byte, error) {
+	var raw string
+	err := s.db.QueryRowContext(ctx, `SELECT state_json FROM episodes WHERE id = ?`, id).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: 集 %s", ErrNotFound, id)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []byte(raw), nil
 }
 
 func formatTime(t time.Time) string {

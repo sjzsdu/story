@@ -1,17 +1,15 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { StepStatus } from '../types'
+import type { NodeStatus } from '../types'
 
-const STATUS_META: Record<StepStatus | 'idle', { label: string; cls: string; dot: string }> = {
+const STATUS_META: Record<NodeStatus | 'idle', { label: string; cls: string; dot: string }> = {
   pending: { label: '未开始', cls: 'text-paper-300/50 border-ink-700 bg-ink-900', dot: 'bg-paper-300/30' },
   running: { label: '进行中', cls: 'text-gold-500 border-gold-500/40 bg-gold-500/10', dot: 'bg-gold-500 animate-pulse' },
-  review: { label: '待确认', cls: 'text-sky-300 border-sky-400/40 bg-sky-400/10', dot: 'bg-sky-300' },
-  approved: { label: '已通过', cls: 'text-emerald-300 border-emerald-400/40 bg-emerald-400/10', dot: 'bg-emerald-300' },
   done: { label: '已完成', cls: 'text-emerald-300 border-emerald-400/40 bg-emerald-400/10', dot: 'bg-emerald-300' },
   failed: { label: '失败', cls: 'text-seal-500 border-seal-500/40 bg-seal-600/10', dot: 'bg-seal-500' },
-  idle: { label: '空闲', cls: 'text-paper-300/50 border-ink-700 bg-ink-900', dot: 'bg-paper-300/30' },
+  idle: { label: '未开始', cls: 'text-paper-300/50 border-ink-700 bg-ink-900', dot: 'bg-paper-300/30' },
 }
 
-export function StatusBadge({ status }: { status: StepStatus }) {
+export function StatusBadge({ status }: { status: NodeStatus | 'idle' }) {
   const m = STATUS_META[status] ?? STATUS_META.pending
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs ${m.cls}`}>
