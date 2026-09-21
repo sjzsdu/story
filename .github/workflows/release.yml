@@ -1,6 +1,7 @@
 name: Release
 
 # 推送 v* tag 时触发：构建多平台二进制并发布 GitHub Release。
+# 注意：本文件必须存在于默认分支 main 上，否则 Actions 不会执行该 workflow。
 on:
   push:
     tags:
