@@ -5,8 +5,8 @@ data/
 story.yaml
 config.sh
 
-# 编译产物
-story
+# 编译产物（只忽略仓库根目录的二进制，避免误伤 cmd/story 目录）
+/story
 /bin/
 .version-stamp
 
@@ -20,3 +20,4 @@ web/npm-debug.log*
 *.swp
 *.swo
 *~
+.trae

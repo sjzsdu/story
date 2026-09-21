@@ -30,6 +30,12 @@ export default function SeriesDetailPage() {
   })
   const [showCreate, setShowCreate] = useState(false)
   const { job: seriesJob, running: seriesBusy } = useSeriesEvents(seriesId)
+  // 声音名反查（折叠 badge 显示名字而非内部 ID）。
+  const { data: voicesData } = useQuery({
+    queryKey: ['voices'],
+    queryFn: api.listVoices,
+    staleTime: 60_000,
+  })
 
   const deleteSeriesMut = useMutation({
     mutationFn: () => api.deleteSeries(seriesId),
@@ -54,6 +60,7 @@ export default function SeriesDetailPage() {
   if (!data) return null
 
   const { series: s, episodes } = data
+  const voiceName = voicesData?.find((v) => v.id === s.voice_id)?.name
   const namedChars = (s.characters ?? []).filter((c) => c.name.trim())
   const charsDone = namedChars.filter((c) => c.ref_image).length
 
@@ -105,7 +112,7 @@ export default function SeriesDetailPage() {
       </Collapsible>
 
       {/* 声音（§16：顶层实体，创建后锁定） */}
-      <Collapsible summary="声音" badge={<span className="text-xs text-paper-300/40">{s.voice_id || '未关联'}</span>}>
+      <Collapsible summary="声音" badge={<span className="text-xs text-paper-300/40">{voiceName || '未关联'}</span>}>
         <VoiceProfileCard seriesId={s.id} />
       </Collapsible>
 

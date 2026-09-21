@@ -29,6 +29,12 @@ type Config struct {
 	// TTSInstruction 默认旁白风格指令。
 	TTSInstruction string `yaml:"tts_instruction"`
 
+	// BailianAPIKey 百炼 API Key（造声 HTTP 直连用）；留空回退
+	// DASHSCOPE_API_KEY 环境变量与 ~/.bailian/config.json。
+	BailianAPIKey string `yaml:"bailian_api_key"`
+	// BailianBaseURL 百炼 HTTP 服务地址（造声用）；留空用中国内地默认地址。
+	BailianBaseURL string `yaml:"bailian_base_url"`
+
 	// DefaultRatio 新系列默认画面比例。
 	DefaultRatio string `yaml:"default_ratio"`
 	// DefaultResolution 新系列默认分辨率。
@@ -87,6 +93,12 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("STORY_TTS_VOICE"); v != "" {
 		cfg.TTSVoice = v
+	}
+	if v := os.Getenv("STORY_BAILIAN_API_KEY"); v != "" {
+		cfg.BailianAPIKey = v
+	}
+	if v := os.Getenv("STORY_BAILIAN_BASE_URL"); v != "" {
+		cfg.BailianBaseURL = v
 	}
 	if v := os.Getenv("STORY_MAX_CONCURRENCY"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

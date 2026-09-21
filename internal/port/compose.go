@@ -73,3 +73,15 @@ type VideoComposer interface {
 	// ProbeDuration 探测媒体文件时长（秒），供验收使用。
 	ProbeDuration(ctx context.Context, path string) (float64, error)
 }
+
+// AudioNormalizer 把任意来源音频归一化为供应商可用的统一格式。
+//
+// 场景（§16 声音复刻）：浏览器录音产出 `audio/webm;codecs=opus`（Chrome/Firefox）
+// 或 `audio/mp4`（Safari），用户上传件格式与采样率也五花八门，供应商复刻接口
+// 不接受这些形态，故统一转 16kHz 单声道 PCM wav 后再提交。
+// 实现方为 ffmpeg provider（与 VideoComposer 同一实例）。
+type AudioNormalizer interface {
+	// NormalizeAudio 把 srcPath 转码为 16kHz 单声道 16-bit PCM wav（dstPath），
+	// 并返回转码后的时长（秒），供调用方做长度校验与 UI 提示。
+	NormalizeAudio(ctx context.Context, srcPath, dstPath string) (float64, error)
+}

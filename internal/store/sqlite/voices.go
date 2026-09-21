@@ -28,9 +28,9 @@ func (s *Store) CreateVoice(ctx context.Context, v *domain.Voice) error {
 	}
 	v.UpdatedAt = v.CreatedAt
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO voices (id, name, voice, instruction, rate, pitch, style_note, is_builtin, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		v.ID, v.Name, v.Voice, v.Instruction, v.Rate, v.Pitch, v.StyleNote,
+		`INSERT INTO voices (id, name, provider, voice, model, instruction, rate, pitch, style_note, is_builtin, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		v.ID, v.Name, domain.NormalizeVoiceProvider(v.Provider), v.Voice, v.Model, v.Instruction, v.Rate, v.Pitch, v.StyleNote,
 		btoi(v.IsBuiltin), formatTime(v.CreatedAt), formatTime(v.UpdatedAt),
 	)
 	if err != nil {
@@ -42,7 +42,7 @@ func (s *Store) CreateVoice(ctx context.Context, v *domain.Voice) error {
 // GetVoice 按 ID 查询声音条目。
 func (s *Store) GetVoice(ctx context.Context, id string) (*domain.Voice, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, voice, instruction, rate, pitch, style_note, is_builtin, created_at, updated_at
+		`SELECT id, name, provider, voice, model, instruction, rate, pitch, style_note, is_builtin, created_at, updated_at
 		 FROM voices WHERE id = ?`, id)
 	v, err := scanVoice(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -54,7 +54,7 @@ func (s *Store) GetVoice(ctx context.Context, id string) (*domain.Voice, error) 
 // ListVoices 列出全部声音（内置在前，按创建时间升序）。
 func (s *Store) ListVoices(ctx context.Context) ([]*domain.Voice, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, voice, instruction, rate, pitch, style_note, is_builtin, created_at, updated_at
+		`SELECT id, name, provider, voice, model, instruction, rate, pitch, style_note, is_builtin, created_at, updated_at
 		 FROM voices ORDER BY is_builtin DESC, created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -76,8 +76,8 @@ func (s *Store) ListVoices(ctx context.Context) ([]*domain.Voice, error) {
 func (s *Store) UpdateVoice(ctx context.Context, v *domain.Voice) error {
 	v.UpdatedAt = time.Now()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE voices SET name=?, voice=?, instruction=?, rate=?, pitch=?, style_note=?, is_builtin=?, updated_at=? WHERE id=?`,
-		v.Name, v.Voice, v.Instruction, v.Rate, v.Pitch, v.StyleNote,
+		`UPDATE voices SET name=?, provider=?, voice=?, model=?, instruction=?, rate=?, pitch=?, style_note=?, is_builtin=?, updated_at=? WHERE id=?`,
+		v.Name, domain.NormalizeVoiceProvider(v.Provider), v.Voice, v.Model, v.Instruction, v.Rate, v.Pitch, v.StyleNote,
 		btoi(v.IsBuiltin), formatTime(v.UpdatedAt), v.ID,
 	)
 	if err != nil {
@@ -139,13 +139,47 @@ func SeedBuiltinVoices(ctx context.Context, s *Store, presets []domain.VoiceProf
 		now := time.Now()
 		_, err := s.db.ExecContext(ctx,
 			`INSERT OR IGNORE INTO voices
-			 (id, name, voice, instruction, rate, pitch, style_note, is_builtin, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-			p.Key, p.Name, p.Voice, p.Instruction, p.Rate, p.Pitch, p.StyleNote,
+			 (id, name, provider, voice, model, instruction, rate, pitch, style_note, is_builtin, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+			p.Key, p.Name, domain.NormalizeVoiceProvider(p.Provider), p.Voice, p.Model, p.Instruction, p.Rate, p.Pitch, p.StyleNote,
 			formatTime(now), formatTime(now),
 		)
 		if err != nil {
 			return fmt.Errorf("seed 内置声音 %s: %w", p.Key, err)
+		}
+	}
+	return nil
+}
+
+// legacyBuiltinVoiceIDs 旧版内置声音条目 ID（名人风格化名）→ 新 ID（音色真实名）。
+// 仅用于一次性数据修正；新库不会出现这些 ID。
+var legacyBuiltinVoiceIDs = map[string]string{
+	"wangliqun":   domain.VoiceIDLongtian,
+	"kaishu":      domain.VoiceIDLongze,
+	"yizhongtian": domain.VoiceIDLongcheng,
+	"shuoshu":     domain.VoiceIDLongfei,
+	"cangsang":    domain.VoiceIDLonghao,
+	"zhixing":     domain.VoiceIDLongxiaoxia,
+}
+
+// RemapLegacyBuiltinVoices 修正名人风格化名时代的历史数据：
+//  1. series.voice_id 旧 ID → 对应真实 ID（目标行已由 SeedBuiltinVoices 插入）；
+//  2. 删除旧内置条目（is_builtin=1）。
+//
+// 幂等：修正完成后再运行，UPDATE/DELETE 均匹配 0 行。
+// 必须在 SeedBuiltinVoices 之后调用。
+func RemapLegacyBuiltinVoices(ctx context.Context, s *Store) error {
+	for oldID, newID := range legacyBuiltinVoiceIDs {
+		if _, err := s.GetVoice(ctx, newID); err != nil {
+			return fmt.Errorf("重映射目标声音 %s 不存在（应先 seed）: %w", newID, err)
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE series SET voice_id = ? WHERE voice_id = ?`, newID, oldID); err != nil {
+			return fmt.Errorf("重映射 series.voice_id %s→%s: %w", oldID, newID, err)
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`DELETE FROM voices WHERE id = ? AND is_builtin = 1`, oldID); err != nil {
+			return fmt.Errorf("删除旧内置声音 %s: %w", oldID, err)
 		}
 	}
 	return nil
@@ -156,7 +190,7 @@ func SeedBuiltinVoices(ctx context.Context, s *Store, presets []domain.VoiceProf
 //  1. voice_id 已有 → 跳过（不动）。
 //  2. VoiceProfile 非空且对应内置条目存在 → 用预设 key 作 voice_id。
 //  3. TTSVoice 或 fallback 非空 → 若该 voice_id 已有匹配条目则用，否则按自定义参数建用户条目并写回 ID。
-//  4. 全空 → 写默认条目 ID（wangliqun）。
+//  4. 全空 → 写默认条目 ID（longtian）。
 //
 // 不删 SeriesConfig 旧字段（兼容期保留）；engine resolveVoice 优先用 voice_id。
 func MigrateSeriesVoiceIDs(ctx context.Context, s *Store, fallbackVoice, fallbackInstr string) error {
@@ -231,6 +265,7 @@ func resolveMigrationVoiceID(ctx context.Context, s *Store, cfg domain.SeriesCon
 		v := &domain.Voice{
 			ID:          id,
 			Name:        "自定义 " + voice,
+			Provider:    domain.VoiceProviderBailian,
 			Voice:       voice,
 			Instruction: firstNonEmptyStr(cfg.TTSInstruction, fallbackInstr),
 			Rate:        cfg.TTSRate,
@@ -243,18 +278,19 @@ func resolveMigrationVoiceID(ctx context.Context, s *Store, cfg domain.SeriesCon
 		return id, nil
 	}
 	// 规则 4：全空 → 默认条目。
-	return domain.VoiceProfileWangliqun, nil
+	return domain.DefaultVoiceID, nil
 }
 
 // ---- 辅助 ----
 
 func scanVoice(r rowScanner) (*domain.Voice, error) {
 	var v domain.Voice
-	var instr, style, created, updated string
+	var instr, model, style, created, updated string
 	var isBuiltin int
-	if err := r.Scan(&v.ID, &v.Name, &v.Voice, &instr, &v.Rate, &v.Pitch, &style, &isBuiltin, &created, &updated); err != nil {
+	if err := r.Scan(&v.ID, &v.Name, &v.Provider, &v.Voice, &model, &instr, &v.Rate, &v.Pitch, &style, &isBuiltin, &created, &updated); err != nil {
 		return nil, err
 	}
+	v.Model = model
 	v.Instruction = instr
 	v.StyleNote = style
 	v.IsBuiltin = isBuiltin != 0

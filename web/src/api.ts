@@ -7,6 +7,7 @@ import type {
   Series,
   SeriesDetail,
   JobEvent,
+  SystemVoice,
   Voice,
 } from './types'
 
@@ -59,11 +60,18 @@ export const api = {
       method: 'DELETE',
     }),
 
-  action: (id: string, body: { action: ActionName; index?: number; ratio?: string }) =>
+  action: (id: string, body: { action: ActionName; index?: number; ratio?: string; scenes?: number[] }) =>
     request<{ job: unknown }>(`/api/episodes/${encodeURIComponent(id)}/actions`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  // cancelEpisode 停止正在执行的任务：已完成产物全部保留，之后可再次执行续跑。
+  cancelEpisode: (id: string) =>
+    request<{ canceled: boolean; job: JobEvent | null }>(
+      `/api/episodes/${encodeURIComponent(id)}/cancel`,
+      { method: 'POST' },
+    ),
 
   // ---- AI 分集策划 ----
   getPlan: (seriesId: string) =>
@@ -115,7 +123,9 @@ export const api = {
 
   createVoice: (body: {
     name: string
+    provider?: string
     voice: string
+    model?: string
     instruction?: string
     rate?: number
     pitch?: number
@@ -127,7 +137,9 @@ export const api = {
 
   updateVoice: (id: string, body: {
     name?: string
+    provider?: string
     voice?: string
+    model?: string
     instruction?: string
     rate?: number
     pitch?: number
@@ -136,6 +148,59 @@ export const api = {
     method: 'PUT',
     body: JSON.stringify(body),
   }),
+
+  // 造声（§16）：声音设计（文字描述生成全新音色）与声音复刻（上传音频克隆音色）。
+  // 成功后返回新建的声音条目与试听音频路径（按新建音色个数计费）。
+  designVoice: (body: {
+    name: string
+    provider?: string
+    prompt: string
+    preview_text?: string
+    target_model?: string
+    language_hints?: string[]
+    style_note?: string
+  }) => request<{ voice: Voice; preview_audio_path: string }>('/api/voices/design', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
+
+  cloneVoice: (body: {
+    name: string
+    provider?: string
+    audio_path?: string
+    audio_url?: string
+    target_model?: string
+    language_hints?: string[]
+    max_prompt_audio_length?: number
+    enable_preprocess?: boolean
+    style_note?: string
+  }) => request<{ voice: Voice; preview_audio_path: string }>('/api/voices/clone', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
+
+  // uploadVoiceSample 上传参考音频（浏览器选择的文件 / 现场录音）到服务器。
+  // 服务端用 ffmpeg 统一归一化为 16kHz 单声道 wav 并返回服务器路径与时长，
+  // 前端再拿该路径调 cloneVoice（复刻只在这一步计费）。
+  // 注意：必须用 headers: {} 覆盖 request 里默认的 JSON Content-Type，
+  // 否则 multipart boundary 会丢失、后端解析失败。
+  uploadVoiceSample: (blob: Blob, filename: string) => {
+    const fd = new FormData()
+    fd.append('file', blob, filename)
+    return request<{ path: string; duration_sec: number }>('/api/voices/audio', {
+      method: 'POST',
+      body: fd,
+      headers: {},
+    })
+  },
+
+  // listSystemVoices 浏览某 TTS 供应商的系统音色（只取元数据，不合成、不产生费用）。
+  listSystemVoices: (provider: string, model?: string) => {
+    const q = model ? `?model=${encodeURIComponent(model)}` : ''
+    return request<SystemVoice[]>(
+      `/api/voice-providers/${encodeURIComponent(provider)}/voices${q}`,
+    )
+  },
 
   deleteVoice: (id: string) =>
     request<{ status: string; id: string }>(

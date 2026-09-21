@@ -1,25 +1,81 @@
 package domain
 
-import "time"
-
-// 预设语音画像 key（SeriesConfig.VoiceProfile）。
-// 画像 = 系统声音 + 语速 + 音高 + 风格指令，逼近某种讲述风格。
-// 注意：使用系统声音模拟风格，非真人声音克隆（§8 法律红线）。
-// 升级为顶层 Voice 实体后，这些 key 同时作为内置 voices 表行的 ID。
-const (
-	// VoiceProfileWangliqun 王立群风格：沉稳、有书卷气、节奏从容。
-	VoiceProfileWangliqun = "wangliqun"
-	// VoiceProfileKaishu 凯叔风格：温暖、有亲和力、戏剧化停顿。
-	VoiceProfileKaishu = "kaishu"
-	// VoiceProfileYizhongtian 易中天风格：轻快、有对话感、机智。
-	VoiceProfileYizhongtian = "yizhongtian"
-	// VoiceProfileShuoshu 说书人风格：热血磁性、抑扬顿挫、戏剧化。
-	VoiceProfileShuoshu = "shuoshu"
-	// VoiceProfileCangsang 沧桑低吟：多情忧郁、有历史厚重感。
-	VoiceProfileCangsang = "cangsang"
-	// VoiceProfileZhixing 知性女声：沉稳权威、知性。
-	VoiceProfileZhixing = "zhixing"
+import (
+	"strings"
+	"time"
 )
+
+// 内置声音条目 ID（voices 表主键；§16）。
+//
+// 2026-09-20 修订：ID 与音色真实身份一致。初版用名人风格化名
+// （wangliqun/kaishu/yizhongtian/shuoshu/cangsang/zhixing），但系统音色
+// 实际调不出名人味道，名不副实；已由 RemapLegacyBuiltinVoices 一次性
+// 重映射到下列真实 ID，旧条目删除。
+const (
+	// VoiceIDLongtian 龙天（longtian_v3）：磁性理智男。
+	VoiceIDLongtian = "longtian"
+	// VoiceIDLongze 龙泽（longze_v3）：温暖元气男。
+	VoiceIDLongze = "longze"
+	// VoiceIDLongcheng 龙橙（longcheng_v3）：智慧青年男。
+	VoiceIDLongcheng = "longcheng"
+	// VoiceIDLongfei 龙飞（longfei_v3）：热血磁性男。
+	VoiceIDLongfei = "longfei"
+	// VoiceIDLonghao 龙浩（longhao_v3）：多情忧郁男。
+	VoiceIDLonghao = "longhao"
+	// VoiceIDLongxiaoxia 龙小夏（longxiaoxia_v3）：沉稳权威女。
+	VoiceIDLongxiaoxia = "longxiaoxia"
+
+	// DefaultVoiceID 默认声音条目 ID（空值/旧 key 兜底）。
+	DefaultVoiceID = VoiceIDLongtian
+)
+
+// TTS 供应商标识（Voice.Provider）。
+// 一条声音条目只属于一个供应商（2026-09-20 决策）：Voice 字段存该供应商
+// 体系内的音色 ID，参数面（Instruction/Rate/Pitch）也随供应商而异。
+// 空值/未知值一律归一为 bailian（兼容 §16 旧数据）。
+const (
+	// VoiceProviderBailian 阿里云百炼 CosyVoice（bl speech synthesize）。
+	VoiceProviderBailian = "bailian"
+)
+
+// 造声方式（VoiceBuildRequest.Kind，§16 声音设计 / 声音复刻）。
+const (
+	// VoiceBuildDesign 声音设计：用文字描述从零生成音色（无需录音素材）。
+	VoiceBuildDesign = "design"
+	// VoiceBuildClone 声音复刻：上传个人音频克隆音色。
+	VoiceBuildClone = "clone"
+)
+
+// VoiceBuildModelDefault 造声（设计/复刻）默认驱动模型。
+// 与 config.Default().TTSModel 一致：造出的音色必须用同一模型合成，否则必失败。
+const VoiceBuildModelDefault = "cosyvoice-v3-flash"
+
+// NormalizeVoiceProvider 归一供应商 key：去空白、小写；空或未知回退 bailian。
+func NormalizeVoiceProvider(p string) string {
+	p = strings.ToLower(strings.TrimSpace(p))
+	switch p {
+	case VoiceProviderBailian:
+		return p
+	case "":
+		return VoiceProviderBailian
+	default:
+		// 未来接入新供应商时在此补 case；当前只认识百炼。
+		return VoiceProviderBailian
+	}
+}
+
+// SystemVoice 供应商的系统音色（浏览音色库时的列表项，值对象）。
+// 由 VoiceLister port 实时获取，不落库（音色随供应商更新，避免维护硬编码清单）。
+type SystemVoice struct {
+	// ID 供应商体系内的音色参数值（如 longtian_v3）。
+	ID string `json:"id"`
+	// Name 音色显示名（如 龙天）。
+	Name string `json:"name"`
+	// Description 音色特质（如 磁性理智男）。
+	Description string `json:"description"`
+	// Language 支持语言（如 中文/英文）。
+	Language string `json:"language"`
+}
 
 // VoiceProfile 语音画像：对 TTS 合成参数的打包（值对象）。
 // 作为 engine 内部解析后的 DTO；持久化顶层实体使用 Voice。
@@ -28,8 +84,13 @@ type VoiceProfile struct {
 	Key string `json:"key,omitempty"`
 	// Name 显示名。
 	Name string `json:"name"`
-	// Voice bl 语音 ID（如 longtian_v3）。
+	// Provider TTS 供应商标识（空值归一 bailian）。
+	Provider string `json:"provider,omitempty"`
+	// Voice 该供应商体系内的音色 ID（百炼下如 longtian_v3）。
 	Voice string `json:"voice"`
+	// Model 驱动该音色的 TTS 模型（造声音色必填：设计/复刻音色必须用
+	// 造声时的 target_model 合成；空则用全局 tts_model）。
+	Model string `json:"model,omitempty"`
 	// Instruction 风格指令（部分音色不支持，provider 自动降级）。
 	Instruction string `json:"instruction,omitempty"`
 	// Rate 语速 0.5-2.0，默认 1.0。
@@ -48,8 +109,13 @@ type Voice struct {
 	ID string `json:"id"`
 	// Name 显示名。
 	Name string `json:"name"`
-	// Voice bl 语音 ID（如 longtian_v3）。
+	// Provider TTS 供应商标识（一条声音只属于一个供应商；空值归一 bailian）。
+	Provider string `json:"provider"`
+	// Voice 该供应商体系内的音色 ID（百炼下如 longtian_v3）。
 	Voice string `json:"voice"`
+	// Model 驱动该音色的 TTS 模型；造声音色（设计/复刻）必填，
+	// 空值表示用全局 tts_model（系统音色走此路径）。
+	Model string `json:"model,omitempty"`
 	// Instruction 风格指令（部分音色不支持，provider 自动降级）。
 	Instruction string `json:"instruction,omitempty"`
 	// Rate 语速 0.5-2.0，0 表示用音色默认。
@@ -71,7 +137,9 @@ func (v *Voice) ToProfile() VoiceProfile {
 	return VoiceProfile{
 		Key:         v.ID,
 		Name:        v.Name,
+		Provider:    v.Provider,
 		Voice:       v.Voice,
+		Model:       v.Model,
 		Instruction: v.Instruction,
 		Rate:        v.Rate,
 		Pitch:       v.Pitch,

@@ -5,13 +5,15 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
 )
 
-// Client 封装对 bl 命令行的调用。零 HTTP 依赖，全部通过 os/exec 完成。
+// Client 封装对 bl 命令行的调用。常规能力零 HTTP 依赖，全部通过 os/exec 完成；
+// 造声（声音设计/复刻）因 bl 无对应命令而直连百炼 HTTP 接口（§2 例外）。
 type Client struct {
 	// Bin bl 可执行文件路径或命令名。
 	Bin string
@@ -23,6 +25,13 @@ type Client struct {
 	TTSModel string
 	// ImageModel 图片模型，空则用 bl 默认。
 	ImageModel string
+	// APIKey 百炼 API Key（造声等 HTTP 直连接口用）；空则回退
+	// DASHSCOPE_API_KEY 环境变量与 ~/.bailian/config.json。
+	APIKey string
+	// BaseURL 百炼 HTTP 服务地址（造声用）；空则用 defaultBaseURL。
+	BaseURL string
+	// HTTPClient 造声等直连 HTTP 调用用的客户端；空则用 defaultHTTPClient。
+	HTTPClient *http.Client
 	// TimeoutSec bl 单次请求超时秒数；<=0 时用 defaultTimeoutSec。
 	// 视频生成等长任务在各自调用处显式传更大的 --timeout。
 	TimeoutSec int
@@ -32,12 +41,21 @@ type Client struct {
 // （bl 内置超时过短会报 code 5 Request timed out），文本/图片统一放宽到 10 分钟。
 const defaultTimeoutSec = 600
 
-// NewClient 创建客户端。
-func NewClient(bin, textModel, videoModel, ttsModel, imageModel string) *Client {
+// NewClient 创建客户端。apiKey/baseURL 供造声等 HTTP 直连接口使用，
+// 可为空（空值在调用时回退环境变量 / 本地 bl 配置 / 默认地址）。
+func NewClient(bin, textModel, videoModel, ttsModel, imageModel, apiKey, baseURL string) *Client {
 	if bin == "" {
 		bin = "bl"
 	}
-	return &Client{Bin: bin, TextModel: textModel, VideoModel: videoModel, TTSModel: ttsModel, ImageModel: imageModel}
+	return &Client{
+		Bin:        bin,
+		TextModel:  textModel,
+		VideoModel: videoModel,
+		TTSModel:   ttsModel,
+		ImageModel: imageModel,
+		APIKey:     apiKey,
+		BaseURL:    baseURL,
+	}
 }
 
 // run 执行 bl 子命令，返回 stdout。错误信息会带上 stderr 片段便于排查。

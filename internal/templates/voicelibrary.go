@@ -2,83 +2,69 @@ package templates
 
 import "github.com/sjzsdu/story/internal/domain"
 
-// VoicePresets 预设语音画像库。
-// 使用百炼系统声音 + 语速/音高参数模拟讲述风格，非真人声音克隆。
-// 声音列表见 bl speech synthesize --list-voices --model cosyvoice-v3-flash。
+// VoicePresets 内置声音条目定义（经 SeedBuiltinVoices 写入 voices 表）。
+//
+// 2026-09-20 修订：只描述系统音色的**真实身份与本来特质**，不再用
+// 名人风格化名（如「王立群风格」），也不附加调不出对应味道的模拟参数——
+// 名实必须相符。语速/音高/风格指令一律留空走音色默认；想要变体风格，
+// 由用户在声音页复制条目自行调整。
+// 声音清单以 bl speech synthesize --list-voices --model cosyvoice-v3-flash 为准。
 var VoicePresets = []domain.VoiceProfile{
 	{
-		Key:        domain.VoiceProfileWangliqun,
-		Name:       "王立群风格",
-		Voice:      "longtian_v3",
-		Rate:       0.9,
-		Pitch:      1.0,
-		StyleNote:  "磁性理智男，语速沉稳，有书卷气，节奏从容",
-		Instruction: "",
+		Key:       domain.VoiceIDLongtian,
+		Name:      "龙天",
+		Voice:     "longtian_v3",
+		Provider:  domain.VoiceProviderBailian,
+		StyleNote: "磁性理智男",
 	},
 	{
-		Key:        domain.VoiceProfileKaishu,
-		Name:       "凯叔风格",
-		Voice:      "longze_v3",
-		Rate:       0.85,
-		Pitch:      1.0,
-		StyleNote:  "温暖元气男，语速偏慢，有亲和力和戏剧化停顿",
-		Instruction: "",
+		Key:       domain.VoiceIDLongze,
+		Name:      "龙泽",
+		Voice:     "longze_v3",
+		Provider:  domain.VoiceProviderBailian,
+		StyleNote: "温暖元气男",
 	},
 	{
-		Key:        domain.VoiceProfileYizhongtian,
-		Name:       "易中天风格",
-		Voice:      "longcheng_v3",
-		Rate:       1.05,
-		Pitch:      1.0,
-		StyleNote:  "智慧青年男，语速轻快，有对话感和机智",
-		Instruction: "",
+		Key:       domain.VoiceIDLongcheng,
+		Name:      "龙橙",
+		Voice:     "longcheng_v3",
+		Provider:  domain.VoiceProviderBailian,
+		StyleNote: "智慧青年男",
 	},
 	{
-		Key:        domain.VoiceProfileShuoshu,
-		Name:       "说书人风格",
-		Voice:      "longfei_v3",
-		Rate:       1.0,
-		Pitch:      1.0,
-		StyleNote:  "热血磁性男，抑扬顿挫，戏剧化讲述",
-		Instruction: "",
+		Key:       domain.VoiceIDLongfei,
+		Name:      "龙飞",
+		Voice:     "longfei_v3",
+		Provider:  domain.VoiceProviderBailian,
+		StyleNote: "热血磁性男",
 	},
 	{
-		Key:        domain.VoiceProfileCangsang,
-		Name:       "沧桑低吟",
-		Voice:      "longhao_v3",
-		Rate:       0.85,
-		Pitch:      0.95,
-		StyleNote:  "多情忧郁男，语速慢，有历史厚重感和沧桑",
-		Instruction: "",
+		Key:       domain.VoiceIDLonghao,
+		Name:      "龙浩",
+		Voice:     "longhao_v3",
+		Provider:  domain.VoiceProviderBailian,
+		StyleNote: "多情忧郁男",
 	},
 	{
-		Key:        domain.VoiceProfileZhixing,
-		Name:       "知性女声",
-		Voice:      "longxiaoxia_v3",
-		Rate:       0.95,
-		Pitch:      1.0,
-		StyleNote:  "沉稳权威女，知性，节奏稳定",
-		Instruction: "",
+		Key:       domain.VoiceIDLongxiaoxia,
+		Name:      "龙小夏",
+		Voice:     "longxiaoxia_v3",
+		Provider:  domain.VoiceProviderBailian,
+		StyleNote: "沉稳权威女",
 	},
 }
 
-// MatchVoiceProfile 按预设 key 查找语音画像；空值/未知值回退王立群风格（默认）。
+// MatchVoiceProfile 按 key 查找内置声音；空值/未知值回退默认（龙天）。
 func MatchVoiceProfile(key string) domain.VoiceProfile {
 	for _, p := range VoicePresets {
 		if p.Key == key {
 			return p
 		}
 	}
-	// 空值回退默认
-	for _, p := range VoicePresets {
-		if p.Key == domain.VoiceProfileWangliqun {
-			return p
-		}
-	}
-	return VoicePresets[0]
+	return MatchVoiceProfile(domain.DefaultVoiceID)
 }
 
-// VoiceProfileByKey 返回预设 key 列表（供 API 列表用）。
+// VoiceProfileByKey 返回内置声音列表（供 API 列表用）。
 func VoiceProfileList() []domain.VoiceProfile {
 	return VoicePresets
 }

@@ -34,7 +34,7 @@ WEB_DIST     := $(WEB_DIR)/dist/index.html
 WEB_DEPS     := $(WEB_DIR)/node_modules/.package-lock.json
 
 # 前端源文件（任一改动即触发重建）
-WEB_SRCS     := $(shell find $(WEB_DIR)/src $(WEB_DIR)/index.html $(WEB_DIR)/package.json $(WEB_DIR)/vite.config.ts 2>/dev/null)
+WEB_SRCS     := $(shell find $(WEB_DIR)/src $(WEB_DIR)/public $(WEB_DIR)/index.html $(WEB_DIR)/package.json $(WEB_DIR)/vite.config.ts 2>/dev/null)
 
 # Go 源文件
 GO_SRCS      := $(shell find . -name '*.go' -not -path './web/*' 2>/dev/null)
@@ -52,12 +52,12 @@ $(WEB_DEPS): $(WEB_DIR)/package-lock.json
 $(WEB_DIST): $(WEB_DEPS) $(WEB_SRCS)
 	cd $(WEB_DIR) && npm run build
 
-# 完整性检查：dist 缺失、assets 为空或仍是占位页时自动重建。
+# 前端构建：依赖 $(WEB_DIST) —— 源码/依赖任一更新即自动重建（见其规则）。
+# 额外兜底：dist 缺失、assets 为空或仍是占位页时强制重建，
 # 保证 make build / install 无需人工预构建前端，绝不把占位页嵌进二进制。
-web: FORCE
-	@if [ ! -f $(WEB_DIST) ] || [ -z "$$(ls $(WEB_DIR)/dist/assets 2>/dev/null)" ] || grep -q story-web-placeholder $(WEB_DIST); then \
-		echo ">>> 前端产物缺失/不完整/为占位页，自动构建..."; \
-		$(MAKE) --no-print-directory $(WEB_DEPS); \
+web: $(WEB_DIST)
+	@if [ -z "$$(ls $(WEB_DIR)/dist/assets 2>/dev/null)" ] || grep -q story-web-placeholder $(WEB_DIST) 2>/dev/null; then \
+		echo ">>> 前端产物缺失/不完整/为占位页，重新构建..."; \
 		cd $(WEB_DIR) && npm run build; \
 	fi
 
@@ -131,7 +131,7 @@ help:
 	@echo "目标:"
 	@echo "  all / build     构建二进制 $(BINARY)（含前端嵌入）"
 	@echo "  web             仅构建前端到 $(WEB_DIR)/dist"
-	@echo "  install         完整安装：自动构建前端（缺失/占位页时）+ 编译 + 安装"
+	@echo "  install         完整安装：重建前端（源码变更/缺失/占位页）+ 编译 + 安装"
 	@echo "  uninstall       卸载已安装的二进制"
 	@echo "  run             构建并运行"
 	@echo "  serve           构建并启动 Web UI 服务"

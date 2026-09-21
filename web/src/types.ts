@@ -68,7 +68,7 @@ export interface SeriesConfig {
   tts_instruction: string
   tts_rate?: number
   tts_pitch?: number
-  voice_profile?: string // 预设 key：wangliqun/kaishu/yizhongtian/shuoshu/cangsang/zhixing
+  voice_profile?: string // 内置声音 key：longtian/longze/longcheng/longfei/longhao/longxiaoxia
   target_platforms?: string[]
   max_concurrency: number
   max_retries: number
@@ -78,7 +78,9 @@ export interface SeriesConfig {
 export interface Voice {
   id: string
   name: string
-  voice: string // 百炼语音 ID，如 longtian_v3
+  provider: string // TTS 供应商标识，如 bailian
+  voice: string // 该供应商体系内音色 ID，百炼下如 longtian_v3
+  model?: string // 驱动模型：造声（声音设计/复刻）出来的音色必填，普通音色留空
   instruction?: string
   rate?: number
   pitch?: number
@@ -88,10 +90,19 @@ export interface Voice {
   updated_at: string
 }
 
+// SystemVoice 供应商系统音色（浏览音色库挑选，不落库）。
+export interface SystemVoice {
+  id: string
+  name: string
+  description: string
+  language: string
+}
+
 // VoiceProfile 旧值对象类型（兼容期保留，server preview/试音仍接收）。
 export interface VoiceProfile {
   key?: string
   name: string
+  provider?: string
   voice: string
   instruction?: string
   rate?: number
@@ -182,7 +193,7 @@ export type ActionName =
 export interface JobEvent {
   id: string
   action: ActionName | string
-  status: 'running' | 'done' | 'failed'
+  status: 'running' | 'done' | 'failed' | 'canceled'
   error?: string
   started_at: string
   ended_at?: string

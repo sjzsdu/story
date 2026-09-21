@@ -193,8 +193,63 @@ func (e *Engine) PlanStoryboard(ctx context.Context, episodeID string) (*domain.
 	return sb, nil
 }
 
-// Produce 步骤 4：并发生成每个镜头的视频片段与旁白音频（支持断点续跑）。
+// sceneMedia 单镜的产物规划信息：路径与当前完成情况（以磁盘文件为准）。
+type sceneMedia struct {
+	Scene domain.Scene
+	// Index 镜头在分镜中的位置（0 起），供运镜缺省轮换使用。
+	Index     int
+	ClipPath  string
+	AudioPath string
+	PanelPath string
+	// ClipOK/AudioOK 画面片段与旁白音频是否已存在且非空（存在即视为已完成，不再触碰）。
+	ClipOK  bool
+	AudioOK bool
+}
+
+// planScenes 按镜头顺序规划产物路径与完成情况。
+func planScenes(ep *domain.Episode) []sceneMedia {
+	scenes := ep.State.Storyboard.Scenes
+	clipsDir := filepath.Join(ep.WorkDir, "clips")
+	audioDir := filepath.Join(ep.WorkDir, "audio")
+	panelsDir := filepath.Join(ep.WorkDir, PanelsDirName)
+	plan := make([]sceneMedia, len(scenes))
+	for i, sc := range scenes {
+		m := sceneMedia{
+			Scene:     sc,
+			Index:     i,
+			ClipPath:  filepath.Join(clipsDir, fmt.Sprintf("scene-%02d.mp4", sc.ID)),
+			AudioPath: filepath.Join(audioDir, fmt.Sprintf("scene-%02d.mp3", sc.ID)),
+			PanelPath: filepath.Join(panelsDir, fmt.Sprintf("scene-%02d.png", sc.ID)),
+		}
+		m.ClipOK = reusable(m.ClipPath)
+		m.AudioOK = reusable(m.AudioPath)
+		plan[i] = m
+	}
+	return plan
+}
+
+// Produce 步骤 4：生产每个镜头的画面片段与旁白音频（支持断点续跑）。
+//
+// 默认只对「未完成」的镜头建任务：画面与旁白都已存在的镜头连任务都不建，
+// 不产生任何模型费用；未完成的镜头逐项复用已有产物（插画/片段/旁白），
+// 因此重复执行本步骤等价于「只重试失败镜头」，绝不会重跑已成功的镜头。
+//
+// 返回 error 当且仅当本次请求生产的镜头里有失败；整集仍有未完成镜头时
+// 步骤状态标记为 failed 并列出剩余镜头（便于再次续跑）。
 func (e *Engine) Produce(ctx context.Context, episodeID string) error {
+	return e.produce(ctx, episodeID, nil)
+}
+
+// ProduceScenes 只生产指定序号的镜头（单镜/多镜重试），其余镜头一概不碰
+// （只在结果里登记磁盘上已有产物）。传空切片等同于 Produce。
+func (e *Engine) ProduceScenes(ctx context.Context, episodeID string, sceneIDs []int) error {
+	if len(sceneIDs) == 0 {
+		return e.produce(ctx, episodeID, nil)
+	}
+	return e.produce(ctx, episodeID, sceneIDs)
+}
+
+func (e *Engine) produce(ctx context.Context, episodeID string, sceneIDs []int) error {
 	ep, series, err := e.load(ctx, episodeID)
 	if err != nil {
 		return err
@@ -220,15 +275,20 @@ func (e *Engine) Produce(ctx context.Context, episodeID string) error {
 		}
 	}
 
+	plan := planScenes(ep)
+	selected, err := selectScenes(plan, sceneIDs)
+	if err != nil {
+		return err
+	}
+
 	ep.State.BeginAttempt(domain.StepProduce)
 	if err := e.repo.SaveEpisode(ctx, ep); err != nil {
 		return err
 	}
 
-	scenes := ep.State.Storyboard.Scenes
-	tasks := make([]Task, len(scenes))
-	clipResults := make([]domain.MediaResult, len(scenes))
-	audioResults := make([]domain.MediaResult, len(scenes))
+	n := len(plan)
+	clipResults := make([]domain.MediaResult, n)
+	audioResults := make([]domain.MediaResult, n)
 	// 全片唯一视觉风格：每镜视频 prompt 统一追加风格锚句，不信任 LLM 在
 	// visual_prompt 中自由书写画风词（防止镜头间写实/动漫漂移）。
 	style := templates.MatchStyle(series.Config.VideoStyle)
@@ -236,132 +296,237 @@ func (e *Engine) Produce(ctx context.Context, episodeID string) error {
 	// video 模式据此匹配参考图；comic 模式文字约束已在分镜 prompt 生效。
 	visualRefs := mergeVisualRefs(series, ep.Refs)
 
-	for i, sc := range scenes {
-		i, sc := i, sc
-		clipPath := filepath.Join(clipsDir, fmt.Sprintf("scene-%02d.mp4", sc.ID))
-		audioPath := filepath.Join(audioDir, fmt.Sprintf("scene-%02d.mp3", sc.ID))
-		panelPath := filepath.Join(panelsDir, fmt.Sprintf("scene-%02d.png", sc.ID))
-
-		tasks[i] = Task{
-			Index: i,
+	tasks := make([]Task, 0, n)
+	taskScene := make([]int, 0, n) // 任务下标 → plan 下标
+	for i, m := range plan {
+		if !selected[i] {
+			// 本次不生产的镜头：只登记磁盘上已有产物供 compose 使用，不触碰生成。
+			if m.ClipOK {
+				dur, _ := e.composer.ProbeDuration(ctx, m.ClipPath)
+				clipResults[i] = domain.MediaResult{SceneID: m.Scene.ID, Path: m.ClipPath, DurationSec: dur, Skipped: true}
+			}
+			if m.AudioOK {
+				dur, _ := e.composer.ProbeDuration(ctx, m.AudioPath)
+				audioResults[i] = domain.MediaResult{SceneID: m.Scene.ID, Path: m.AudioPath, DurationSec: dur, Skipped: true}
+			}
+			continue
+		}
+		idx := i
+		sc := m.Scene
+		taskScene = append(taskScene, i)
+		tasks = append(tasks, Task{
+			Index: len(tasks),
 			Name:  fmt.Sprintf("scene-%02d", sc.ID),
 			Fn: func(ctx context.Context) error {
-				// 画面（已存在片段则续跑复用）
-				if reusable(clipPath) {
-					dur, _ := e.composer.ProbeDuration(ctx, clipPath)
-					clipResults[i] = domain.MediaResult{SceneID: sc.ID, Path: clipPath, DurationSec: dur, Skipped: true}
-				} else if mode == domain.VisualModeComic {
-					// comic 小人书模式：AI 出插画（已出则续用）→ ffmpeg Ken Burns
-					// 本地渲染成同规格片段；除出图外不产生任何模型费用。
-					if !reusable(panelPath) {
-						if e.images == nil {
-							return fmt.Errorf("未配置图片生成能力（ImageGenerator），无法使用 comic 模式")
-						}
-						if _, err := e.images.GenerateImage(ctx, port.ImageRequest{
-							OutPath: panelPath,
-							Prompt:  buildImagePrompt(sc, style),
-							Size:    panelImageSize(series.Config.Ratio),
-						}); err != nil {
-							return fmt.Errorf("插画生成: %w", err)
-						}
-					}
-					if err := e.composer.RenderStill(ctx, port.StillRequest{
-						ImagePath:   panelPath,
-						OutPath:     clipPath,
-						DurationSec: sc.DurationSec,
-						Ratio:       series.Config.Ratio,
-						Resolution:  series.Config.Resolution,
-						Motion:      motionForScene(sc, i),
-					}); err != nil {
-						return fmt.Errorf("静帧运镜渲染: %w", err)
-					}
-					dur, err := e.composer.ProbeDuration(ctx, clipPath)
-					if err != nil {
-						return fmt.Errorf("视频验收探测: %w", err)
-					}
-					clipResults[i] = domain.MediaResult{SceneID: sc.ID, Path: clipPath, DurationSec: dur}
+				// 画面与旁白互不影响：画面失败也照常合成旁白，
+				// 避免下次重试时把已付费的插画再生成一遍。
+				clipRes, clipErr := e.produceClip(ctx, series, mode, visualRefs, style, m)
+				if clipErr != nil {
+					clipResults[idx] = domain.MediaResult{SceneID: sc.ID, Err: "画面: " + clipErr.Error()}
 				} else {
-					// video 模式：AI 视频生成；画面含已生成参考图的人物/场景时，
-					// 走 bl video ref 保持形象与环境一致。
-					prompt := buildVideoPrompt(sc, style)
-					refImgs := refImagesForScene(sc.VisualPrompt, visualRefs)
-					if len(refImgs) > 0 {
-						prompt = refPromptPrefix(visualRefs, refImgs) + prompt
-					}
-					if _, err := e.videos.GenerateClip(ctx, port.ClipRequest{
-						OutPath:     clipPath,
-						Prompt:      prompt,
-						RefImages:   refImgs,
-						DurationSec: sc.DurationSec,
-						Ratio:       series.Config.Ratio,
-						Resolution:  series.Config.Resolution,
-						Watermark:   true,
-					}); err != nil {
-						return fmt.Errorf("视频生成: %w", err)
-					}
-					dur, err := e.composer.ProbeDuration(ctx, clipPath)
-					if err != nil {
-						return fmt.Errorf("视频验收探测: %w", err)
-					}
-					clipResults[i] = domain.MediaResult{SceneID: sc.ID, Path: clipPath, DurationSec: dur}
+					clipResults[idx] = clipRes
 				}
-
-				// 旁白（已存在则续跑复用）
-				if reusable(audioPath) {
-					dur, _ := e.composer.ProbeDuration(ctx, audioPath)
-					audioResults[i] = domain.MediaResult{SceneID: sc.ID, Path: audioPath, DurationSec: dur, Skipped: true}
+				audioRes, audioErr := e.produceAudio(ctx, series, m)
+				if audioErr != nil {
+					audioResults[idx] = domain.MediaResult{SceneID: sc.ID, Err: "旁白: " + audioErr.Error()}
 				} else {
-					// 解析语音画像：§16 起优先按 series.voice_id 查表，回退旧字段。
-					voice, rate, pitch, instr := e.resolveVoice(ctx, series.Config, series.VoiceID, e.voice, e.instruction)
-					if _, err := e.speech.Synthesize(ctx, port.SpeechRequest{
-						OutPath:     audioPath,
-						Text:        sc.Narration,
-						Voice:       voice,
-						Instruction: instr,
-						Rate:        rate,
-						Pitch:       pitch,
-						Format:      "mp3",
-					}); err != nil {
-						return fmt.Errorf("旁白合成: %w", err)
-					}
-					dur, err := e.composer.ProbeDuration(ctx, audioPath)
-					if err != nil {
-						return fmt.Errorf("音频验收探测: %w", err)
-					}
-					audioResults[i] = domain.MediaResult{SceneID: sc.ID, Path: audioPath, DurationSec: dur}
+					audioResults[idx] = audioRes
+				}
+				switch {
+				case clipErr != nil && audioErr != nil:
+					return fmt.Errorf("画面: %v；旁白: %v", clipErr, audioErr)
+				case clipErr != nil:
+					return fmt.Errorf("画面: %w", clipErr)
+				case audioErr != nil:
+					return fmt.Errorf("旁白: %w", audioErr)
 				}
 				return nil
 			},
-		}
+		})
 	}
 
 	batch := e.batchFor(series)
 	results := batch.RunBatch(ctx, tasks)
+	failed := CollectFailures(results)
 
-	// 失败的镜头补登记信息，保证状态完整。
-	for _, r := range CollectFailures(results) {
-		sc := scenes[r.Index]
-		if clipResults[r.Index].Path == "" {
-			clipResults[r.Index] = domain.MediaResult{SceneID: sc.ID, Err: r.Err.Error()}
+	// 没跑到的任务（如被取消）补登记错误，保证状态完整。
+	for _, r := range failed {
+		i := taskScene[r.Index]
+		sc := plan[i].Scene
+		if clipResults[i].Path == "" && clipResults[i].Err == "" {
+			clipResults[i] = domain.MediaResult{SceneID: sc.ID, Err: r.Err.Error()}
 		}
-		if audioResults[r.Index].Path == "" {
-			audioResults[r.Index] = domain.MediaResult{SceneID: sc.ID, Err: r.Err.Error()}
+		if audioResults[i].Path == "" && audioResults[i].Err == "" {
+			audioResults[i] = domain.MediaResult{SceneID: sc.ID, Err: r.Err.Error()}
 		}
 	}
 	ep.State.Clips = clipResults
 	ep.State.Audios = audioResults
+
+	// 手动停止：保留已完成的产物，便于之后直接续跑（不当作失败）。
+	if ctx.Err() != nil {
+		ep.State.Mark(domain.StepProduce, domain.StatusFailed, "已手动停止（已完成的产物已保留，可续跑）")
+		_ = e.repo.SaveEpisode(context.WithoutCancel(ctx), ep)
+		return ctx.Err()
+	}
 	_ = e.repo.SaveEpisode(ctx, ep) // 先落盘部分进度
 
-	if failed := CollectFailures(results); len(failed) > 0 {
-		return e.fail(ctx, ep, domain.StepProduce, &FailedError{Items: failed})
+	// 剩余未完成的镜头 = 本次失败的 + 本次未请求生产的。
+	remaining := make([]int, 0, n)
+	remainingSelected := make([]int, 0, n)
+	for i, m := range plan {
+		if clipResults[i].Path != "" && audioResults[i].Path != "" {
+			continue
+		}
+		remaining = append(remaining, m.Scene.ID)
+		if selected[i] {
+			remainingSelected = append(remainingSelected, m.Scene.ID)
+		}
 	}
-	if err := ValidateMedia(clipResults, audioResults, len(scenes)); err != nil {
+
+	if len(remainingSelected) > 0 {
+		cause := error(&FailedError{Items: failed})
+		if len(failed) == 0 {
+			cause = fmt.Errorf("镜头 %s 生产未完成", joinSceneIDs(remainingSelected))
+		}
+		if len(remaining) > 0 {
+			cause = fmt.Errorf("%w\n整集仍未完成的镜头：%s（再次执行生产只会重试这些）", cause, joinSceneIDs(remaining))
+		}
+		return e.fail(ctx, ep, domain.StepProduce, cause)
+	}
+	if len(remaining) > 0 {
+		// 本次请求的镜头都成功了，但整集还没齐：不报错（用户请求的动作本身成功），
+		// 仅把步骤标记为 failed 并列出剩余镜头，便于继续续跑。
+		msg := fmt.Sprintf("本次生产的镜头已全部完成；整集仍有 %d 镜未完成：%s（再次执行生产只会重试这些）",
+			len(remaining), joinSceneIDs(remaining))
+		ep.State.Mark(domain.StepProduce, domain.StatusFailed, msg)
+		return e.repo.SaveEpisode(ctx, ep)
+	}
+
+	if err := ValidateMedia(clipResults, audioResults, n); err != nil {
 		return e.fail(ctx, ep, domain.StepProduce, err)
 	}
 
 	ep.State.Current = domain.StepCompose
 	ep.State.Mark(domain.StepProduce, domain.StatusDone, "")
 	return e.repo.SaveEpisode(ctx, ep)
+}
+
+// selectScenes 决定本次要生产哪些镜头：sceneIDs 为 nil 表示只选未完成的镜头；
+// 显式给出时严格只选给定镜头（序号不存在直接报错）。
+func selectScenes(plan []sceneMedia, sceneIDs []int) ([]bool, error) {
+	selected := make([]bool, len(plan))
+	if sceneIDs == nil {
+		for i, m := range plan {
+			selected[i] = !m.ClipOK || !m.AudioOK
+		}
+		return selected, nil
+	}
+	want := make(map[int]bool, len(sceneIDs))
+	for _, id := range sceneIDs {
+		want[id] = true
+	}
+	found := make(map[int]bool, len(sceneIDs))
+	for i, m := range plan {
+		if want[m.Scene.ID] {
+			selected[i] = true
+			found[m.Scene.ID] = true
+		}
+	}
+	for id := range want {
+		if !found[id] {
+			return nil, fmt.Errorf("分镜中没有镜头 #%d", id)
+		}
+	}
+	return selected, nil
+}
+
+// produceClip 生产单镜画面：已存在片段直接复用；comic 模式出插画后本地运镜渲染，
+// video 模式调视频模型（有匹配参考图时走参考图路径）。
+func (e *Engine) produceClip(ctx context.Context, series *domain.Series, mode string, visualRefs []domain.VisualRef, style templates.VisualStylePack, m sceneMedia) (domain.MediaResult, error) {
+	sc := m.Scene
+	if reusable(m.ClipPath) {
+		dur, _ := e.composer.ProbeDuration(ctx, m.ClipPath)
+		return domain.MediaResult{SceneID: sc.ID, Path: m.ClipPath, DurationSec: dur, Skipped: true}, nil
+	}
+	if mode == domain.VisualModeComic {
+		// comic 小人书模式：AI 出插画（已出则续用）→ ffmpeg Ken Burns
+		// 本地渲染成同规格片段；除出图外不产生任何模型费用。
+		if !reusable(m.PanelPath) {
+			if e.images == nil {
+				return domain.MediaResult{}, fmt.Errorf("未配置图片生成能力（ImageGenerator），无法使用 comic 模式")
+			}
+			if _, err := e.images.GenerateImage(ctx, port.ImageRequest{
+				OutPath: m.PanelPath,
+				Prompt:  buildImagePrompt(sc, style),
+				Size:    panelImageSize(series.Config.Ratio),
+			}); err != nil {
+				return domain.MediaResult{}, fmt.Errorf("插画生成: %w", err)
+			}
+		}
+		if err := e.composer.RenderStill(ctx, port.StillRequest{
+			ImagePath:   m.PanelPath,
+			OutPath:     m.ClipPath,
+			DurationSec: sc.DurationSec,
+			Ratio:       series.Config.Ratio,
+			Resolution:  series.Config.Resolution,
+			Motion:      motionForScene(sc, m.Index),
+		}); err != nil {
+			return domain.MediaResult{}, fmt.Errorf("静帧运镜渲染: %w", err)
+		}
+	} else {
+		// video 模式：AI 视频生成；画面含已生成参考图的人物/场景时，
+		// 走 bl video ref 保持形象与环境一致。
+		prompt := buildVideoPrompt(sc, style)
+		refImgs := refImagesForScene(sc.VisualPrompt, visualRefs)
+		if len(refImgs) > 0 {
+			prompt = refPromptPrefix(visualRefs, refImgs) + prompt
+		}
+		if _, err := e.videos.GenerateClip(ctx, port.ClipRequest{
+			OutPath:     m.ClipPath,
+			Prompt:      prompt,
+			RefImages:   refImgs,
+			DurationSec: sc.DurationSec,
+			Ratio:       series.Config.Ratio,
+			Resolution:  series.Config.Resolution,
+			Watermark:   true,
+		}); err != nil {
+			return domain.MediaResult{}, fmt.Errorf("视频生成: %w", err)
+		}
+	}
+	dur, err := e.composer.ProbeDuration(ctx, m.ClipPath)
+	if err != nil {
+		return domain.MediaResult{}, fmt.Errorf("视频验收探测: %w", err)
+	}
+	return domain.MediaResult{SceneID: sc.ID, Path: m.ClipPath, DurationSec: dur}, nil
+}
+
+// produceAudio 合成单镜旁白：已存在则复用。
+func (e *Engine) produceAudio(ctx context.Context, series *domain.Series, m sceneMedia) (domain.MediaResult, error) {
+	sc := m.Scene
+	if reusable(m.AudioPath) {
+		dur, _ := e.composer.ProbeDuration(ctx, m.AudioPath)
+		return domain.MediaResult{SceneID: sc.ID, Path: m.AudioPath, DurationSec: dur, Skipped: true}, nil
+	}
+	// 解析语音画像：§16 起优先按 series.voice_id 查表，回退旧字段。
+	voice, model, rate, pitch, instr := e.resolveVoice(ctx, series.Config, series.VoiceID, e.voice, e.instruction)
+	if _, err := e.speech.Synthesize(ctx, port.SpeechRequest{
+		OutPath:     m.AudioPath,
+		Text:        sc.Narration,
+		Voice:       voice,
+		Model:       model,
+		Instruction: instr,
+		Rate:        rate,
+		Pitch:       pitch,
+		Format:      "mp3",
+	}); err != nil {
+		return domain.MediaResult{}, fmt.Errorf("旁白合成: %w", err)
+	}
+	dur, err := e.composer.ProbeDuration(ctx, m.AudioPath)
+	if err != nil {
+		return domain.MediaResult{}, fmt.Errorf("音频验收探测: %w", err)
+	}
+	return domain.MediaResult{SceneID: sc.ID, Path: m.AudioPath, DurationSec: dur}, nil
 }
 
 // Compose 步骤 5：归一化 + 混音拼接 + 烧录字幕，产出成片。
@@ -445,6 +610,7 @@ func (e *Engine) PreviewVoice(ctx context.Context, p domain.VoiceProfile, text, 
 		OutPath:     outPath,
 		Text:        text,
 		Voice:       p.Voice,
+		Model:       p.Model,
 		Instruction: p.Instruction,
 		Rate:        p.Rate,
 		Pitch:       p.Pitch,
@@ -556,6 +722,15 @@ func indexMedia(ms []domain.MediaResult) map[int]domain.MediaResult {
 		m[v.SceneID] = v
 	}
 	return m
+}
+
+// joinSceneIDs 把镜头序号拼成「#13、#15」形式，便于在错误信息里人读。
+func joinSceneIDs(ids []int) string {
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = fmt.Sprintf("#%d", id)
+	}
+	return strings.Join(parts, "、")
 }
 
 func firstNonEmpty(vals ...string) string {

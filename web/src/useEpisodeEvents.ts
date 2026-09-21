@@ -25,7 +25,7 @@ export function useEpisodeEvents(episodeId: string | undefined) {
     es.addEventListener('job', (e) => {
       const j = JSON.parse((e as MessageEvent).data) as JobEvent
       setJob(j)
-      if (j.status === 'done' || j.status === 'failed') {
+      if (j.status === 'done' || j.status === 'failed' || j.status === 'canceled') {
         void queryClient.invalidateQueries({ queryKey: episodeQueryKey(episodeId) })
         void queryClient.invalidateQueries({ queryKey: ['series'] })
       }

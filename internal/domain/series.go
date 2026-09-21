@@ -4,10 +4,10 @@ import "time"
 
 // Series 系列（如「鬼谷子」），包含若干集。
 type Series struct {
-	ID          string             `json:"id"`
-	Name        string             `json:"name"`
-	Dynasty     string             `json:"dynasty"`
-	Description string             `json:"description"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Dynasty     string `json:"dynasty"`
+	Description string `json:"description"`
 	// VoiceID 引用的声音条目 ID（顶层 Voice 实体，§16）。
 	// 创建系列时选定，之后锁定不可改（store.UpdateSeries SQL 不含该列）。
 	VoiceID    string             `json:"voice_id"`
@@ -38,7 +38,7 @@ type SeriesConfig struct {
 	TTSRate float64 `json:"tts_rate,omitempty"`
 	// TTSPitch 音高 0.5-2.0，默认 1.0。
 	TTSPitch float64 `json:"tts_pitch,omitempty"`
-	// VoiceProfile 旁白语音画像预设 key（如 wangliqun/kaishu/yizhongtian）。
+	// VoiceProfile 旁白语音画像 key（旧字段；内置 key 如 longtian/longze/longcheng）。
 	// 空值时使用 TTSVoice（兼容旧数据）；非空时由 voicelibrary.go 解析覆盖 TTSVoice/Rate/Pitch。
 	VoiceProfile string `json:"voice_profile,omitempty"`
 	// TargetPlatforms 目标发布平台（仅记录，供导出参考）。

@@ -454,3 +454,108 @@ func (m *Composer) Export(_ context.Context, req port.ExportRequest) error {
 	}
 	return os.WriteFile(req.DstPath, []byte("fake-export"), 0o644)
 }
+
+// ---- 造声（声音设计 / 声音复刻，§16）----
+
+// VoiceBuild 造声 mock：返回固定音色 ID，并按需写一个假试听音频。
+type VoiceBuild struct {
+	mu       sync.Mutex
+	Calls    int
+	Err      error
+	VoiceID  string
+	Target   string
+	Requests []port.VoiceBuildRequest
+}
+
+// BuildVoice 实现 port.VoiceBuilder。
+func (m *VoiceBuild) BuildVoice(_ context.Context, req port.VoiceBuildRequest) (port.VoiceBuildResult, error) {
+	m.mu.Lock()
+	m.Calls++
+	m.Requests = append(m.Requests, req)
+	voiceID, target, err := m.VoiceID, m.Target, m.Err
+	m.mu.Unlock()
+	if err != nil {
+		return port.VoiceBuildResult{}, err
+	}
+	if voiceID == "" {
+		voiceID = "mock-voice-id"
+	}
+	if target == "" {
+		target = req.TargetModel
+	}
+	if req.PreviewAudioPath != "" {
+		if err := os.MkdirAll(filepath.Dir(req.PreviewAudioPath), 0o755); err != nil {
+			return port.VoiceBuildResult{}, err
+		}
+		if err := os.WriteFile(req.PreviewAudioPath, []byte("fake-wav"), 0o644); err != nil {
+			return port.VoiceBuildResult{}, err
+		}
+	}
+	return port.VoiceBuildResult{VoiceID: voiceID, TargetModel: target, PreviewAudioPath: req.PreviewAudioPath}, nil
+}
+
+// CallsCount 线程安全地读取调用次数。
+func (m *VoiceBuild) CallsCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.Calls
+}
+
+// VoiceList 系统音色列表 mock。
+type VoiceList struct {
+	Voices []domain.SystemVoice
+	Err    error
+}
+
+// ListSystemVoices 实现 port.VoiceLister。
+func (m *VoiceList) ListSystemVoices(_ context.Context, _ string) ([]domain.SystemVoice, error) {
+	return m.Voices, m.Err
+}
+
+// AudioNorm 参考音频归一化 mock：按需写一个假 wav 并返回配置的时长。
+// 让 App.SaveVoiceSample 的时长校验逻辑可脱离真实 ffmpeg 单测。
+type AudioNorm struct {
+	mu       sync.Mutex
+	Calls    int
+	Duration float64
+	Err      error
+	Srcs     []string
+	Dsts     []string
+}
+
+// NormalizeAudio 实现 port.AudioNormalizer。
+func (m *AudioNorm) NormalizeAudio(_ context.Context, src, dst string) (float64, error) {
+	m.mu.Lock()
+	m.Calls++
+	m.Srcs = append(m.Srcs, src)
+	m.Dsts = append(m.Dsts, dst)
+	dur, err := m.Duration, m.Err
+	m.mu.Unlock()
+	if err != nil {
+		return 0, err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return 0, err
+	}
+	if err := os.WriteFile(dst, []byte("fake-normalized-wav"), 0o644); err != nil {
+		return 0, err
+	}
+	return dur, nil
+}
+
+// CallsCount 线程安全地读取调用次数。
+func (m *AudioNorm) CallsCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.Calls
+}
+
+// LastSrc 线程安全地读取最近一次归一化的源文件路径。
+func (m *AudioNorm) LastSrc() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.Srcs) == 0 {
+		return ""
+	}
+	return m.Srcs[len(m.Srcs)-1]
+}

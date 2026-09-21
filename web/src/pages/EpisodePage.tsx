@@ -30,7 +30,15 @@ export default function EpisodePage() {
   const [actionErr, setActionErr] = useState('')
 
   const action = useMutation({
-    mutationFn: (body: { action: ActionName; index?: number; ratio?: string }) => api.action(episodeId, body),
+    mutationFn: (body: { action: ActionName; index?: number; ratio?: string; scenes?: number[] }) =>
+      api.action(episodeId, body),
+    onMutate: () => setActionErr(''),
+    onError: (e) => setActionErr((e as Error).message),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: episodeQueryKey(episodeId) }),
+  })
+
+  const cancelMut = useMutation({
+    mutationFn: () => api.cancelEpisode(episodeId),
     onMutate: () => setActionErr(''),
     onError: (e) => setActionErr((e as Error).message),
     onSettled: () => void queryClient.invalidateQueries({ queryKey: episodeQueryKey(episodeId) }),
@@ -55,8 +63,9 @@ export default function EpisodePage() {
   if (!ep) return null
 
   const st = ep.state
-  const act = (a: ActionName, extra?: { index?: number; ratio?: string }) =>
+  const act = (a: ActionName, extra?: { index?: number; ratio?: string; scenes?: number[] }) =>
     action.mutate({ action: a, ...extra })
+  const missing = missingScenes(ep)
 
   return (
     <div className="space-y-6">
@@ -95,34 +104,123 @@ export default function EpisodePage() {
         </Button>
       </div>
 
-      {running && <JobBanner job={job} />}
+      {running && <JobBanner job={job} stopping={cancelMut.isPending} onStop={() => cancelMut.mutate()} />}
+      {!running && job?.status === 'canceled' && (
+        <div className="rounded-xl border border-ink-600 bg-ink-900/70 px-4 py-3 text-sm text-paper-300/80">
+          已手动停止「{ACTION_LABEL[job.action] ?? job.action}」。已完成的产物全部保留，再次执行会从断点续跑。
+        </div>
+      )}
       {!running && job?.status === 'failed' && <ErrorBox>{ACTION_LABEL[job.action] ?? job.action}失败：{job.error}</ErrorBox>}
       {actionErr && <ErrorBox>{actionErr}</ErrorBox>}
+      {!running && missing.length > 0 && <MissingBanner ep={ep} missing={missing} onRetry={() => act('produce')} pending={action.isPending} />}
 
       <Card title="流水线">
         <div className="flex flex-col gap-5">
           <StepsBar state={st} />
           <StepErrors ep={ep} />
-          <Toolbar ep={ep} busy={running} onAction={act} pending={action.isPending} />
+          <Toolbar ep={ep} missing={missing} busy={running} onAction={act} pending={action.isPending} />
         </div>
       </Card>
 
       <StorySection story={st.story} busy={running} pending={action.isPending} onRegenerate={() => act('candidates')} />
       <EpisodeRefsSection ep={ep} busy={running} />
-      <StoryboardSection ep={ep} />
+      <StoryboardSection ep={ep} busy={running} pending={action.isPending} onRetryScene={(id) => act('produce', { scenes: [id] })} />
       <OutputsSection ep={ep} busy={running} onExport={(ratio) => act('export', { ratio })} pending={action.isPending} />
     </div>
   )
 }
 
-function JobBanner({ job }: { job: JobEvent | null }) {
+/** 未完成镜头：画面或旁白任一缺失（含生成失败）的镜头号列表。 */
+function missingScenes(ep: Episode): number[] {
+  const sb = ep.state.storyboard
+  if (!sb) return []
+  const clipById = new Map(ep.state.clips?.map((m) => [m.scene_id, m]) ?? [])
+  const audioById = new Map(ep.state.audios?.map((m) => [m.scene_id, m]) ?? [])
+  return sb.scenes
+    .filter((sc) => !clipById.get(sc.id)?.path || !audioById.get(sc.id)?.path)
+    .map((sc) => sc.id)
+}
+
+function formatScenes(ids: number[]): string {
+  return ids.map((id) => `#${String(id).padStart(2, '0')}`).join('、')
+}
+
+function JobBanner({
+  job,
+  stopping,
+  onStop,
+}: {
+  job: JobEvent | null
+  stopping: boolean
+  onStop: () => void
+}) {
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-gold-500/40 bg-gold-500/10 px-4 py-3">
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-gold-500/40 bg-gold-500/10 px-4 py-3">
       <Spinner />
       <span className="text-sm text-gold-500">
         正在执行：{job ? ACTION_LABEL[job.action] ?? job.action : '任务'}…
       </span>
       <span className="text-xs text-paper-300/45">状态每秒自动刷新，可离开本页，进度会断点续跑</span>
+      <Button
+        variant="outline"
+        className="ml-auto px-3 py-1.5 text-xs"
+        disabled={stopping}
+        onClick={() => {
+          if (window.confirm('停止后会 kill 正在执行的生成任务；已完成的产物全部保留，之后可续跑。确定停止？')) {
+            onStop()
+          }
+        }}
+      >
+        {stopping ? '停止中…' : '停止'}
+      </Button>
+    </div>
+  )
+}
+
+/** 未完成镜头汇总：一键只重试这些镜头，已成功的镜头不会被重复生成。 */
+function MissingBanner({
+  ep,
+  missing,
+  onRetry,
+  pending,
+}: {
+  ep: Episode
+  missing: number[]
+  onRetry: () => void
+  pending: boolean
+}) {
+  const clipErr = new Map(
+    (ep.state.clips ?? []).filter((m) => m.err).map((m) => [m.scene_id, m.err as string]),
+  )
+  const audioErr = new Map(
+    (ep.state.audios ?? []).filter((m) => m.err).map((m) => [m.scene_id, m.err as string]),
+  )
+  return (
+    <div className="rounded-xl border border-seal-500/40 bg-seal-600/10 px-4 py-3 space-y-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-sm text-seal-500 font-medium">
+          {missing.length} 个镜头未完成：{formatScenes(missing)}
+        </span>
+        <Button variant="seal" className="ml-auto px-3 py-1.5 text-xs" disabled={pending} onClick={onRetry}>
+          仅重试失败镜头（{missing.length} 镜）
+        </Button>
+      </div>
+      <ul className="space-y-1 text-xs text-paper-300/70">
+        {missing.map((id) => (
+          <li key={id}>
+            <span className="text-paper-300/50">镜 {String(id).padStart(2, '0')}：</span>
+            {[
+              clipErr.get(id) && `画面 — ${clipErr.get(id)}`,
+              audioErr.get(id) && `旁白 — ${audioErr.get(id)}`,
+            ]
+              .filter(Boolean)
+              .join('；') || '尚未生成（上次执行未跑到或被中断）'}
+          </li>
+        ))}
+      </ul>
+      <p className="text-xs text-paper-300/35">
+        重试只会触碰上面这些镜头；已成功的镜头与旁白直接复用，不会重复出图/合成。
+      </p>
     </div>
   )
 }
@@ -144,15 +242,19 @@ function StepErrors({ ep }: { ep: Episode }) {
 
 function Toolbar({
   ep,
+  missing,
   busy,
   pending,
   onAction,
 }: {
   ep: Episode
+  missing: number[]
   busy: boolean
   pending: boolean
-  onAction: (a: ActionName, extra?: { index?: number; ratio?: string }) => void
+  onAction: (a: ActionName, extra?: { index?: number; ratio?: string; scenes?: number[] }) => void
 }) {
+  const produceLabel =
+    missing.length > 0 ? `③ 仅重试失败镜头（${missing.length} 镜）` : '③ 生产画面与旁白'
   return (
     <div className="flex flex-wrap gap-2.5 items-center">
       <Button variant="seal" disabled={busy || pending} onClick={() => onAction('candidates')}>
@@ -162,7 +264,7 @@ function Toolbar({
         ② 拆分分镜
       </Button>
       <Button variant="primary" disabled={busy || pending} onClick={() => onAction('produce')}>
-        ③ 生产画面与旁白
+        {produceLabel}
       </Button>
       <Button variant="primary" disabled={busy || pending} onClick={() => onAction('compose')}>
         ④ 合成成片
@@ -171,7 +273,7 @@ function Toolbar({
         ⚡ 一键跑到底
       </Button>
       <span className="self-center text-xs text-paper-300/35">
-        已完成的步骤会自动跳过；故事生成即定稿，不满意可重新生成
+        生产时已完成的镜头（画面/旁白）会自动复用跳过，不会重复出图或合成
       </span>
     </div>
   )
@@ -222,7 +324,17 @@ function StorySection({
   )
 }
 
-function StoryboardSection({ ep }: { ep: Episode }) {
+function StoryboardSection({
+  ep,
+  busy,
+  pending,
+  onRetryScene,
+}: {
+  ep: Episode
+  busy: boolean
+  pending: boolean
+  onRetryScene: (id: number) => void
+}) {
   const sb = ep.state.storyboard
   if (!sb) return null
   const clipById = new Map<number, MediaResult>(ep.state.clips?.map((m) => [m.scene_id, m]) ?? [])
@@ -232,7 +344,16 @@ function StoryboardSection({ ep }: { ep: Episode }) {
     <Card title={`分镜脚本（${sb.scenes.length} 镜）`}>
       <ol className="space-y-4">
         {sb.scenes.map((sc) => (
-          <SceneCard key={sc.id} ep={ep} scene={sc} clip={clipById.get(sc.id)} audio={audioById.get(sc.id)} />
+          <SceneCard
+            key={sc.id}
+            ep={ep}
+            scene={sc}
+            clip={clipById.get(sc.id)}
+            audio={audioById.get(sc.id)}
+            busy={busy}
+            pending={pending}
+            onRetry={() => onRetryScene(sc.id)}
+          />
         ))}
       </ol>
     </Card>
@@ -244,12 +365,20 @@ function SceneCard({
   scene: sc,
   clip,
   audio,
+  busy,
+  pending,
+  onRetry,
 }: {
   ep: Episode
   scene: Scene
   clip?: MediaResult
   audio?: MediaResult
+  busy: boolean
+  pending: boolean
+  onRetry: () => void
 }) {
+  const incomplete = !clip?.path || !audio?.path
+  const reuseAll = clip?.skipped && audio?.skipped
   return (
     <li>
       <Collapsible
@@ -258,8 +387,8 @@ function SceneCard({
             <span className="font-display text-gold-500">镜 {String(sc.id).padStart(2, '0')}</span>
             <span className="text-xs rounded bg-ink-800 px-2 py-0.5 text-paper-300/60">{sc.duration}s</span>
             {sc.camera && <span className="text-xs text-paper-300/50">运镜：{sc.camera}</span>}
-            {clip?.skipped && <span className="text-xs text-emerald-300/70">复用</span>}
-            {clip?.err && <span className="text-xs text-seal-500">失败</span>}
+            {reuseAll && <span className="text-xs text-emerald-300/70">复用</span>}
+            {incomplete && <span className="text-xs text-seal-500">未完成</span>}
           </span>
         }
         defaultOpen
@@ -274,6 +403,21 @@ function SceneCard({
               <div className="text-xs text-paper-300/40 mb-1">旁白</div>
               <p className="text-sm leading-7 text-paper-100/90">{sc.narration}</p>
             </div>
+            {incomplete && (
+              <div className="flex flex-wrap items-center gap-2.5">
+                <Button
+                  variant="seal"
+                  className="px-3 py-1.5 text-xs"
+                  disabled={busy || pending}
+                  onClick={onRetry}
+                >
+                  重试本镜
+                </Button>
+                <span className="text-xs text-paper-300/40">
+                  只重跑这一镜未完成的部分，已生成的那一项直接复用
+                </span>
+              </div>
+            )}
           </div>
           <div className="space-y-3">
             {clip?.path ? (
@@ -289,11 +433,13 @@ function SceneCard({
                 视频片段未生产
               </div>
             )}
+            {clip?.err && <ErrorBox>画面：{clip.err}</ErrorBox>}
             {audio?.path ? (
               <audio controls preload="none" className="w-full h-9" src={mediaUrl(ep.id, audio.path)} />
             ) : (
               <div className="text-xs text-paper-300/30 text-center">旁白未生产</div>
             )}
+            {audio?.err && <ErrorBox>旁白：{audio.err}</ErrorBox>}
           </div>
         </div>
       </Collapsible>

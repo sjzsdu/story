@@ -52,8 +52,8 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
   const [ratio, setRatio] = useState('9:16')
   const [resolution, setResolution] = useState('1080P')
   const [visualMode, setVisualMode] = useState<'comic' | 'video'>('comic')
-  // §16：声音条目 ID 必选（默认内置 wangliqun）；可在「声音」页管理条目。
-  const [voiceID, setVoiceID] = useState('wangliqun')
+  // §16：声音条目 ID 必选（默认内置 longtian 龙天）；可在「声音」页管理条目。
+  const [voiceID, setVoiceID] = useState('longtian')
   const [platforms, setPlatforms] = useState('douyin,kuaishou')
   const [err, setErr] = useState('')
 
@@ -85,7 +85,7 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
       setRatio('9:16')
       setResolution('1080P')
       setVisualMode('comic')
-      setVoiceID('wangliqun')
+      setVoiceID('longtian')
       setPlatforms('douyin,kuaishou')
       setErr('')
       onClose()

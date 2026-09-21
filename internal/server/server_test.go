@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -154,4 +156,84 @@ func TestActionOnMissingEpisode(t *testing.T) {
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("对不存在的集触发动作应 404，得到 %d", res.StatusCode)
 	}
+}
+
+// TestCancelAction 覆盖新端点：空闲的集没有可停止的任务，返回 canceled=false；
+// 集不存在则 404。全程不触发任何模型调用。
+func TestCancelAction(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+
+	res, err := http.Post(ts.URL+"/api/series", "application/json",
+		strings.NewReader(`{"name":"鬼谷子","dynasty":"战国"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	res, err = http.Post(ts.URL+"/api/series/guiguzi/episodes", "application/json",
+		strings.NewReader(`{"title":"入秦"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+
+	res, err = http.Post(ts.URL+"/api/episodes/guiguzi-e01/cancel", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("空闲集停止应 200，得到 %d", res.StatusCode)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got["canceled"] != false {
+		t.Fatalf("空闲集 canceled = %v，期望 false", got["canceled"])
+	}
+
+	res, err = http.Post(ts.URL+"/api/episodes/missing/cancel", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("对不存在的集停止应 404，得到 %d", res.StatusCode)
+	}
+}
+
+// TestUploadVoiceSampleBadRequest 覆盖参考音频上传端点的请求校验分支。
+// 两个用例都在读文件前返回，不触碰 ffmpeg/供应商，无费用。
+func TestUploadVoiceSampleBadRequest(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+
+	t.Run("缺 file 字段", func(t *testing.T) {
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		if err := mw.WriteField("other", "x"); err != nil {
+			t.Fatal(err)
+		}
+		if err := mw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		res, err := http.Post(ts.URL+"/api/voices/audio", mw.FormDataContentType(), &buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("缺 file 字段应 400，得到 %d", res.StatusCode)
+		}
+	})
+
+	t.Run("非 multipart 请求", func(t *testing.T) {
+		res, err := http.Post(ts.URL+"/api/voices/audio", "application/json", strings.NewReader("{}"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("非 multipart 请求应 400，得到 %d", res.StatusCode)
+		}
+	})
 }

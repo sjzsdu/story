@@ -60,7 +60,9 @@ CREATE TABLE IF NOT EXISTS plan_sessions (
 CREATE TABLE IF NOT EXISTS voices (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
+    provider    TEXT NOT NULL DEFAULT 'bailian',
     voice       TEXT NOT NULL,
+    model       TEXT NOT NULL DEFAULT '',
     instruction TEXT NOT NULL DEFAULT '',
     rate        REAL NOT NULL DEFAULT 0,
     pitch       REAL NOT NULL DEFAULT 0,
@@ -94,6 +96,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		{"episodes", "refs_json", "TEXT NOT NULL DEFAULT '[]'"},
 		// §16：series.voice_id 引用顶层 Voice 实体，创建后锁定（UpdateSeries 不写该列）。
 		{"series", "voice_id", "TEXT NOT NULL DEFAULT ''"},
+		// §16：voices.provider 标识 TTS 供应商，旧行默认 bailian。
+		{"voices", "provider", "TEXT NOT NULL DEFAULT 'bailian'"},
+		// §16：voices.model 驱动音色的合成模型（造声音色必填），旧行空表示用全局 tts_model。
+		{"voices", "model", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := ensureColumn(ctx, db, m.table, m.column, m.def); err != nil {
 			_ = db.Close()

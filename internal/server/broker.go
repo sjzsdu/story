@@ -21,9 +21,10 @@ const (
 type jobStatus string
 
 const (
-	jobRunning jobStatus = "running"
-	jobDone    jobStatus = "done"
-	jobFailed  jobStatus = "failed"
+	jobRunning  jobStatus = "running"
+	jobDone     jobStatus = "done"
+	jobFailed   jobStatus = "failed"
+	jobCanceled jobStatus = "canceled" // 用户手动停止
 )
 
 // jobEvent 一个后台动作的状态通知。
@@ -34,6 +35,8 @@ type jobEvent struct {
 	Error   string    `json:"error,omitempty"`
 	Started time.Time `json:"started_at"`
 	Ended   time.Time `json:"ended_at,omitempty"`
+	// canceled 内部标记（不出现在 JSON）：finishJob 据此把状态置为 canceled。
+	canceled bool
 }
 
 type subscriber struct {
@@ -47,12 +50,15 @@ type broker struct {
 	mu      sync.Mutex
 	subs    map[string]map[*subscriber]struct{}
 	running map[string]*jobEvent
+	// cancels 各集在跑动作的取消函数（runAction 启动前登记，finishJob 清理）。
+	cancels map[string]context.CancelFunc
 }
 
 func newBroker() *broker {
 	return &broker{
 		subs:    make(map[string]map[*subscriber]struct{}),
 		running: make(map[string]*jobEvent),
+		cancels: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -118,13 +124,36 @@ func (b *broker) tryStartJob(episodeID, action string) (*jobEvent, bool) {
 	return j, true
 }
 
+// cancelJob 请求停止某集正在执行的动作；返回 false 表示当前没有可停止的任务。
+// 停止只取消上下文（进而 kill 正在跑的 bl/ffmpeg 子进程），已完成的产物全部保留。
+func (b *broker) cancelJob(episodeID string) (*jobEvent, bool) {
+	b.mu.Lock()
+	j := b.running[episodeID]
+	if j == nil || j.Status != jobRunning {
+		b.mu.Unlock()
+		return j, false
+	}
+	j.canceled = true
+	cancel := b.cancels[episodeID]
+	b.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return j, true
+}
+
 func (b *broker) finishJob(episodeID string, j *jobEvent, err error) {
 	b.mu.Lock()
 	j.Ended = time.Now()
-	if err != nil {
+	delete(b.cancels, episodeID)
+	switch {
+	case j.canceled:
+		j.Status = jobCanceled
+		j.Error = "已手动停止；已完成的产物全部保留，可再次执行续跑"
+	case err != nil:
 		j.Status = jobFailed
 		j.Error = err.Error()
-	} else {
+	default:
 		j.Status = jobDone
 	}
 	b.running[episodeID] = j
@@ -136,14 +165,19 @@ func (b *broker) finishJob(episodeID string, j *jobEvent, err error) {
 func (b *broker) runAction(rootCtx context.Context, episodeID, action string,
 	loadSnapshot func() (any, error), fn func(ctx context.Context) error,
 ) (*jobEvent, bool) {
+	// 先建 ctx 并登记取消函数，再抢槽位：保证 cancelJob 一定能停到任务。
+	ctx, cancel := context.WithCancel(rootCtx)
 	j, ok := b.tryStartJob(episodeID, action)
 	if !ok {
+		cancel()
 		return j, false
 	}
+	b.mu.Lock()
+	b.cancels[episodeID] = cancel
+	b.mu.Unlock()
 	b.publish(episodeID, evJob, j)
 
 	go func() {
-		ctx, cancel := context.WithCancel(rootCtx)
 		defer cancel()
 
 		pushSnapshot := func() {

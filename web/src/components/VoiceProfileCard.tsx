@@ -78,9 +78,6 @@ export default function VoiceProfileCard({ seriesId }: { seriesId: string }) {
                   内置
                 </span>
               )}
-              <span className="text-[11px] rounded-full px-2 py-0.5 border border-ink-600 text-paper-300/50">
-                {voice.id}
-              </span>
             </div>
             {voice.style_note && (
               <p className="mt-1 text-xs text-paper-300/55 leading-relaxed">{voice.style_note}</p>

@@ -49,6 +49,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/episodes/{id}", s.getEpisode)
 	s.mux.HandleFunc("DELETE /api/episodes/{id}", s.deleteEpisode)
 	s.mux.HandleFunc("POST /api/episodes/{id}/actions", s.runActionHTTP)
+	// 停止该集正在执行的后台动作（kill 正在跑的 bl/ffmpeg，已完成产物全部保留）。
+	s.mux.HandleFunc("POST /api/episodes/{id}/cancel", s.cancelActionHTTP)
 	s.mux.HandleFunc("POST /api/episodes/{id}/refs", s.generateEpisodeRefs)
 	s.mux.HandleFunc("GET /api/episodes/{id}/events", s.handleSSE)
 	s.mux.HandleFunc("GET /api/episodes/{id}/media", s.serveMedia)
@@ -59,6 +61,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/voices/{id}", s.deleteVoice)
 	s.mux.HandleFunc("POST /api/voices/preview", s.previewVoice)
 	s.mux.HandleFunc("GET /api/voices/preview", s.servePreview)
+	// 造声（§16）：声音设计（文字描述）/ 声音复刻（上传音频），造声成功后自动落成声音条目。
+	s.mux.HandleFunc("POST /api/voices/design", s.designVoice)
+	s.mux.HandleFunc("POST /api/voices/clone", s.cloneVoice)
+	// 复刻参考音频上传（浏览器上传文件 / 现场录音），归一化后返回服务器路径。
+	s.mux.HandleFunc("POST /api/voices/audio", s.uploadVoiceSample)
+	s.mux.HandleFunc("GET /api/voice-providers/{provider}/voices", s.listSystemVoices)
 	// §16：series.voice_id 创建后锁定，不再允许单独更新；旧端点返回 409 提示编辑声音条目本身。
 	s.mux.HandleFunc("PUT /api/series/{id}/voice", s.voiceProfileLocked)
 }
@@ -278,6 +286,9 @@ type actionReq struct {
 	Action string `json:"action"` // candidates|pick|storyboard|produce|compose|run|export
 	Index  int    `json:"index"`
 	Ratio  string `json:"ratio"`
+	// Scenes 指定要生产的镜头序号（仅 produce 动作使用）。留空表示只生产所有
+	// 未完成的镜头——已成功的镜头不会被重复出图/合成。
+	Scenes []int `json:"scenes"`
 }
 
 func (s *Server) runActionHTTP(w http.ResponseWriter, r *http.Request) {
@@ -310,6 +321,21 @@ func (s *Server) runActionHTTP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
 }
 
+// cancelActionHTTP 停止该集正在执行的后台动作。没有在跑的任务时返回 canceled=false。
+func (s *Server) cancelActionHTTP(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok := s.episodeOrError(w, r); !ok {
+		return
+	}
+	j, ok := s.broker.cancelJob(id)
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"canceled": false, "job": j})
+		return
+	}
+	s.broker.publish(id, evJob, j)
+	writeJSON(w, http.StatusOK, map[string]any{"canceled": true, "job": j})
+}
+
 // buildAction 把动作名映射为 engine 调用；run 为多步串联。
 func (s *Server) buildAction(episodeID string, req actionReq) (func(ctx context.Context) error, error) {
 	eng := s.app.Engine
@@ -324,7 +350,14 @@ func (s *Server) buildAction(episodeID string, req actionReq) (func(ctx context.
 	case "storyboard":
 		return func(ctx context.Context) error { _, err := eng.PlanStoryboard(ctx, episodeID); return err }, nil
 	case "produce":
-		return func(ctx context.Context) error { return eng.Produce(ctx, episodeID) }, nil
+		scenes := req.Scenes
+		return func(ctx context.Context) error {
+			// 指定镜头 = 单镜/多镜重试；留空 = 只生产所有未完成的镜头。
+			if len(scenes) > 0 {
+				return eng.ProduceScenes(ctx, episodeID, scenes)
+			}
+			return eng.Produce(ctx, episodeID)
+		}, nil
 	case "compose":
 		return func(ctx context.Context) error { _, err := eng.Compose(ctx, episodeID); return err }, nil
 	case "export":
