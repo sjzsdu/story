@@ -74,6 +74,40 @@ CREATE TABLE IF NOT EXISTS voices (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS publish_jobs (
+    id                TEXT PRIMARY KEY,
+    episode_id        TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+    series_id         TEXT NOT NULL,
+    platform          TEXT NOT NULL,
+    node_id           TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL DEFAULT 'pending',
+    video_path        TEXT NOT NULL DEFAULT '',
+    cover_path        TEXT NOT NULL DEFAULT '',
+    title             TEXT NOT NULL DEFAULT '',
+    description       TEXT NOT NULL DEFAULT '',
+    tags              TEXT NOT NULL DEFAULT '[]',
+    category          TEXT NOT NULL DEFAULT '',
+    platform_video_id TEXT NOT NULL DEFAULT '',
+    platform_url      TEXT NOT NULL DEFAULT '',
+    scheduled_at      TEXT,
+    attempts          INTEGER NOT NULL DEFAULT 0,
+    max_retries       INTEGER NOT NULL DEFAULT 3,
+    error             TEXT NOT NULL DEFAULT '',
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS platform_accounts (
+    id            TEXT PRIMARY KEY,
+    platform      TEXT NOT NULL,
+    account_name  TEXT NOT NULL DEFAULT '',
+    account_id    TEXT NOT NULL DEFAULT '',
+    access_token  TEXT NOT NULL DEFAULT '',
+    refresh_token TEXT NOT NULL DEFAULT '',
+    token_expiry  TEXT NOT NULL DEFAULT '',
+    extra         TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
 `
 
 // Open 打开（必要时创建）数据库并初始化表结构。

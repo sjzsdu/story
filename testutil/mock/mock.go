@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/sjzsdu/story/internal/domain"
 	"github.com/sjzsdu/story/internal/port"
@@ -21,15 +22,20 @@ type Repo struct {
 	Episodes map[string]*domain.Episode
 	Plans    map[string]*domain.PlanSession
 	Voices   map[string]*domain.Voice
+	// §19 发布任务与平台账号
+	PublishJobs      map[string]*domain.PublishJob
+	PlatformAccounts map[string]*domain.PlatformAccount
 }
 
 // NewRepo 创建空内存仓储。
 func NewRepo() *Repo {
 	return &Repo{
-		Series:   map[string]*domain.Series{},
-		Episodes: map[string]*domain.Episode{},
-		Plans:    map[string]*domain.PlanSession{},
-		Voices:   map[string]*domain.Voice{},
+		Series:           map[string]*domain.Series{},
+		Episodes:         map[string]*domain.Episode{},
+		Plans:            map[string]*domain.PlanSession{},
+		Voices:           map[string]*domain.Voice{},
+		PublishJobs:      map[string]*domain.PublishJob{},
+		PlatformAccounts: map[string]*domain.PlatformAccount{},
 	}
 }
 
@@ -564,4 +570,193 @@ func (m *AudioNorm) LastSrc() string {
 		return ""
 	}
 	return m.Srcs[len(m.Srcs)-1]
+}
+
+// ---- 发布任务（§19 mock） ----
+
+func (r *Repo) CreatePublishJob(_ context.Context, job *domain.PublishJob) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.PublishJobs[job.ID]; ok {
+		return fmt.Errorf("发布任务已存在: %s", job.ID)
+	}
+	r.PublishJobs[job.ID] = job
+	return nil
+}
+
+func (r *Repo) GetPublishJob(_ context.Context, id string) (*domain.PublishJob, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	job, ok := r.PublishJobs[id]
+	if !ok {
+		return nil, fmt.Errorf("%w: 发布任务 %s", port.ErrNotFound, id)
+	}
+	return job, nil
+}
+
+func (r *Repo) ListPublishJobsByEpisode(_ context.Context, episodeID string) ([]*domain.PublishJob, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*domain.PublishJob
+	for _, job := range r.PublishJobs {
+		if job.EpisodeID == episodeID {
+			out = append(out, job)
+		}
+	}
+	return out, nil
+}
+
+func (r *Repo) UpdatePublishJob(_ context.Context, job *domain.PublishJob) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.PublishJobs[job.ID]; !ok {
+		return fmt.Errorf("%w: 发布任务 %s", port.ErrNotFound, job.ID)
+	}
+	r.PublishJobs[job.ID] = job
+	return nil
+}
+
+func (r *Repo) DeletePublishJob(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.PublishJobs[id]; !ok {
+		return fmt.Errorf("%w: 发布任务 %s", port.ErrNotFound, id)
+	}
+	delete(r.PublishJobs, id)
+	return nil
+}
+
+func (r *Repo) ListPendingScheduledPublishJobs(_ context.Context) ([]*domain.PublishJob, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*domain.PublishJob
+	now := time.Now()
+	for _, job := range r.PublishJobs {
+		if job.Status == domain.PublishUploaded && job.ScheduledAt != nil && !job.ScheduledAt.After(now) {
+			out = append(out, job)
+		}
+	}
+	return out, nil
+}
+
+// ---- 平台账号（§19 mock） ----
+
+func (r *Repo) CreatePlatformAccount(_ context.Context, a *domain.PlatformAccount) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.PlatformAccounts[a.ID]; ok {
+		return fmt.Errorf("平台账号已存在: %s", a.ID)
+	}
+	r.PlatformAccounts[a.ID] = a
+	return nil
+}
+
+func (r *Repo) GetPlatformAccount(_ context.Context, id string) (*domain.PlatformAccount, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	a, ok := r.PlatformAccounts[id]
+	if !ok {
+		return nil, fmt.Errorf("%w: 平台账号 %s", port.ErrNotFound, id)
+	}
+	return a, nil
+}
+
+func (r *Repo) ListPlatformAccountsByPlatform(_ context.Context, platform domain.Platform) ([]*domain.PlatformAccount, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*domain.PlatformAccount
+	for _, a := range r.PlatformAccounts {
+		if a.Platform == platform {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
+func (r *Repo) UpdatePlatformAccount(_ context.Context, a *domain.PlatformAccount) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.PlatformAccounts[a.ID]; !ok {
+		return fmt.Errorf("%w: 平台账号 %s", port.ErrNotFound, a.ID)
+	}
+	r.PlatformAccounts[a.ID] = a
+	return nil
+}
+
+func (r *Repo) DeletePlatformAccount(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.PlatformAccounts[id]; !ok {
+		return fmt.Errorf("%w: 平台账号 %s", port.ErrNotFound, id)
+	}
+	delete(r.PlatformAccounts, id)
+	return nil
+}
+
+// ---- PlatformPublisher mock ----
+
+// Publisher 平台发布 mock：记录调用并返回预设结果。
+type Publisher struct {
+	mu       sync.Mutex
+	Plat     domain.Platform
+	Calls    int
+	UploadR  *port.PublishResult
+	PublishR *port.PublishResult
+	StatusR  domain.PublishStatus
+	StatusMsg string
+	Err      error
+}
+
+// NewPublisher 创建指定平台的发布 mock。
+func NewPublisher(p domain.Platform) *Publisher {
+	return &Publisher{Plat: p}
+}
+
+// Platform 实现 port.PlatformPublisher。
+func (m *Publisher) Platform() domain.Platform { return m.Plat }
+
+// Upload 实现 port.PlatformPublisher。
+func (m *Publisher) Upload(_ context.Context, req port.PublishRequest) (*port.PublishResult, error) {
+	m.mu.Lock()
+	m.Calls++
+	m.mu.Unlock()
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	if m.UploadR != nil {
+		return m.UploadR, nil
+	}
+	return &port.PublishResult{Status: domain.PublishUploaded}, nil
+}
+
+// Publish 实现 port.PlatformPublisher。
+func (m *Publisher) Publish(_ context.Context, videoID string, _ *domain.PlatformAccount) (*port.PublishResult, error) {
+	m.mu.Lock()
+	m.Calls++
+	m.mu.Unlock()
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	if m.PublishR != nil {
+		return m.PublishR, nil
+	}
+	return &port.PublishResult{VideoID: videoID, Status: domain.PublishPublished}, nil
+}
+
+// Status 实现 port.PlatformPublisher。
+func (m *Publisher) Status(_ context.Context, videoID string, _ *domain.PlatformAccount) (domain.PublishStatus, string, error) {
+	if m.Err != nil {
+		return "", "", m.Err
+	}
+	return m.StatusR, m.StatusMsg, nil
+}
+
+// Delete 实现 port.PlatformPublisher。
+func (m *Publisher) Delete(_ context.Context, videoID string, _ *domain.PlatformAccount) error {
+	return m.Err
+}
+
+// UploadCover 实现 port.PlatformPublisher。
+func (m *Publisher) UploadCover(_ context.Context, videoID, coverPath string, _ *domain.PlatformAccount) error {
+	return m.Err
 }

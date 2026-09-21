@@ -47,6 +47,17 @@ type Config struct {
 
 	// SubtitleFont 字幕字体路径（留空则自动探测系统中文字体）。
 	SubtitleFont string `yaml:"subtitle_font"`
+
+	// ---- 平台发布（§19） ----
+	// SAUBin sau 可执行文件路径（social-auto-upload CLI）；留空用 "sau"。
+	SAUBin string `yaml:"sau_bin"`
+	// PythonBin Python 解释器路径（sau 依赖）；留空用 "python3"。
+	PythonBin string `yaml:"python_bin"`
+	// DefaultPublishAccount 默认发布账号名（PlatformAccount.AccountName）。
+	// 留空时要求 CLI/Web 显式指定 --account。
+	DefaultPublishAccount string `yaml:"default_publish_account"`
+	// BilibiliDefaultTid B站默认分区 ID（留空默认 249 = 知识科普）。
+	BilibiliDefaultTid int `yaml:"bilibili_default_tid"`
 }
 
 // Default 返回带默认值的配置。

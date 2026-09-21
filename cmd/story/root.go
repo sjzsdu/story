@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjzsdu/story/internal/app"
 	"github.com/sjzsdu/story/internal/config"
+	"github.com/sjzsdu/story/internal/doctor"
 )
 
 var (
@@ -67,39 +68,161 @@ func init() {
 
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "初始化数据目录与数据库，并检查 bl/ffmpeg 环境",
+	Short: "初始化数据目录、检查并安装所有依赖",
+	Long: `初始化 story 运行环境：
+  1. 创建数据目录与数据库
+  2. 检查所有 CLI 依赖（bl, ffmpeg, python3, sau, Chrome）
+  3. 尝试自动安装缺失的依赖（pip install sau 等）
+  4. 输出完整的健康状态报告`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("数据目录: %s\n", application.Cfg.DataDir)
-		fmt.Printf("数据库:   %s\n", application.Cfg.DBPath())
-		if err := checkBin("bl", application.Cfg.BLBin, "--version"); err != nil {
-			fmt.Println("bl 检查:   异常 —", err)
-		} else {
-			fmt.Println("bl 检查:   正常")
+		if application == nil {
+			return fmt.Errorf("应用未初始化")
 		}
-		if err := checkBin("ffmpeg", application.Cfg.FFMPEGBin, "-version"); err != nil {
-			fmt.Println("ffmpeg 检查: 异常 —", err)
-		} else {
-			fmt.Println("ffmpeg 检查: 正常")
+		cfg := application.Cfg
+
+		fmt.Println("story 初始化")
+		fmt.Println("═══════════════════════════════════════")
+
+		// 1. 数据目录
+		fmt.Printf("数据目录: %s\n", cfg.DataDir)
+		fmt.Printf("数据库:   %s\n", cfg.DBPath())
+		fmt.Println()
+
+		// 2. 运行健康检查
+		d := doctor.New(cfg.BLBin, cfg.FFMPEGBin, cfg.PythonBin, cfg.SAUBin)
+		results := d.RunAll(cmd.Context())
+
+		fmt.Println("依赖检查:")
+		for _, r := range results {
+			status := r.Status.String()
+			version := r.Version
+			if version == "" {
+				version = "-"
+			}
+			fmt.Printf("  %s %-26s  %s\n", status, r.Name, version)
+			if r.Message != "" {
+				fmt.Printf("     %s\n", r.Message)
+			}
 		}
-		if err := checkBin("ffprobe", application.Cfg.FFProbeBin(), "-version"); err != nil {
-			fmt.Println("ffprobe 检查: 异常 —", err)
-		} else {
-			fmt.Println("ffprobe 检查: 正常")
+
+		ok, warn, fail := doctor.Summary(results)
+		fmt.Println()
+
+		// 3. 尝试自动安装缺失项
+		if fail > 0 {
+			fmt.Println("尝试自动安装缺失依赖...")
+			autoInstalled := 0
+			for _, r := range results {
+				if r.Status == doctor.StatusMissing {
+					if installed := attemptInstall(cmd, r.Name); installed {
+						autoInstalled++
+						fmt.Printf("  ✅ 已安装 %s\n", r.Name)
+					}
+				}
+			}
+			if autoInstalled > 0 {
+				fmt.Println()
+				// 重新检查
+				results = d.RunAll(cmd.Context())
+				ok, warn, fail = doctor.Summary(results)
+			}
 		}
-		fmt.Println("\n初始化完成。使用 `story series create --help` 开始创建系列。")
+
+		// 4. 输出最终状态
+		fmt.Println("═══════════════════════════════════════")
+		fmt.Printf("共 %d 项: ✅ %d 正常  ⚠️ %d 警告  ❌ %d 缺失\n",
+			len(results), ok, warn, fail)
+
+		if fail > 0 {
+			fmt.Println("\n💡 以下依赖需要手动安装:")
+			for _, r := range results {
+				if r.Status == doctor.StatusMissing && r.Fix != "" {
+					fmt.Printf("  • %s: %s\n", r.Name, r.Fix)
+				}
+			}
+			fmt.Println("\n安装后执行 story doctor 验证")
+		} else if warn > 0 {
+			fmt.Println("\n⚠️ 部分依赖版本偏低，功能可用但可能不稳定")
+		} else {
+			fmt.Println("\n🎉 所有依赖就绪！使用 `story series create --help` 开始创建系列")
+		}
 		return nil
 	},
 }
 
-func checkBin(name, bin string, arg ...string) error {
-	if _, err := exec.LookPath(bin); err != nil {
-		return fmt.Errorf("未找到 %s（%s）", name, bin)
+// attemptInstall 尝试自动安装缺失的依赖。
+func attemptInstall(cmd *cobra.Command, name string) bool {
+	switch name {
+	case "sau (social-auto-upload)":
+		return installSAU()
 	}
-	c := exec.Command(bin, arg...)
+	return false
+}
+
+// installSAU 安装 social-auto-upload。
+// 上游项目需要 clone + conf.py 才能正常工作，不能简单 pip install。
+func installSAU() bool {
+	home, _ := os.UserHomeDir()
+	sauDir := home + "/.story/sau"
+
+	// 1. clone（已存在则 pull）
+	if _, err := os.Stat(sauDir + "/.git"); err == nil {
+		fmt.Println("     sau 仓库已存在，执行 git pull...")
+		c := exec.Command("git", "-C", sauDir, "pull", "--ff-only")
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
+		_ = c.Run() // pull 失败不阻断
+	} else {
+		fmt.Printf("     克隆 social-auto-upload 到 %s...\n", sauDir)
+		os.MkdirAll(home+"/.story", 0755)
+		c := exec.Command("git", "clone", "--depth", "1",
+			"https://github.com/dreammis/social-auto-upload.git", sauDir)
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
+		if err := c.Run(); err != nil {
+			fmt.Println("     git clone 失败:", err)
+			return false
+		}
+	}
+
+	// 2. 生成 conf.py（从 conf.example.py）
+	confExample := sauDir + "/conf.example.py"
+	confFile := sauDir + "/conf.py"
+	if _, err := os.Stat(confFile); err != nil {
+		if data, err := os.ReadFile(confExample); err == nil {
+			os.WriteFile(confFile, data, 0644)
+			fmt.Println("     已生成 conf.py")
+		}
+	}
+
+	// 3. uv sync 安装依赖 + playwright（上游漏声明）
+	fmt.Println("     安装 sau 依赖...")
+	c := exec.Command("uv", "sync")
+	c.Dir = sauDir
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
-		return fmt.Errorf("%s 无法运行: %w", name, err)
+		fmt.Println("     uv sync 失败:", err)
+		return false
 	}
-	return nil
+	c = exec.Command("uv", "pip", "install", "--python", sauDir+"/.venv/bin/python", "playwright")
+	c.Dir = sauDir
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	_ = c.Run() // playwright 可能已安装，忽略错误
+
+	// 4. 创建 wrapper 脚本到 ~/.local/bin/sau
+	wrapperDir := home + "/.local/bin"
+	os.MkdirAll(wrapperDir, 0755)
+	wrapper := wrapperDir + "/sau"
+	script := fmt.Sprintf(`#!/bin/sh
+cd %s && exec uv run sau "$@"`, sauDir)
+	if err := os.WriteFile(wrapper, []byte(script), 0755); err != nil {
+		fmt.Println("     创建 wrapper 失败:", err)
+		return false
+	}
+	fmt.Printf("     已创建 %s\n", wrapper)
+	return true
 }
 
 func init() {

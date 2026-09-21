@@ -42,6 +42,9 @@ type App struct {
 	// audioNormalizer 参考音频归一化（§16 声音复刻：浏览器录音/上传件统一转
 	// 16kHz 单声道 wav 再提交）；由 ffmpeg provider 实现。
 	audioNormalizer port.AudioNormalizer
+	// publishProvidersRegistry 平台发布能力注册表，key = domain.Platform（§19）。
+	// 接入新平台时在此加一项，engine/CLI 逻辑零改动。
+	publishProvidersRegistry map[domain.Platform]port.PlatformPublisher
 }
 
 // Bootstrap 装配整个应用（打开数据库、构造 provider 与 engine）。
@@ -94,6 +97,8 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*App, error) {
 		},
 		// 参考音频归一化复用 ffmpeg composer（§16 复刻：录音/上传件统一转码）。
 		audioNormalizer: composer,
+		// §19：平台发布能力注册表。
+		publishProvidersRegistry: initPublishProviders(cfg),
 	}
 	if err := bootstrapApp(ctx, app, store); err != nil {
 		return nil, err

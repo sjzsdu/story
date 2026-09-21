@@ -47,5 +47,21 @@ type Repository interface {
 	// CountSeriesByVoiceID 统计引用某声音的系列数（删除前校验）。
 	CountSeriesByVoiceID(ctx context.Context, voiceID string) (int, error)
 
+	// 发布任务（§19）。
+	CreatePublishJob(ctx context.Context, job *domain.PublishJob) error
+	GetPublishJob(ctx context.Context, id string) (*domain.PublishJob, error)
+	ListPublishJobsByEpisode(ctx context.Context, episodeID string) ([]*domain.PublishJob, error)
+	UpdatePublishJob(ctx context.Context, job *domain.PublishJob) error
+	DeletePublishJob(ctx context.Context, id string) error
+	// ListPendingScheduledPublishJobs 返回已上传且到达定时时间的发布任务（定时发布调度用）。
+	ListPendingScheduledPublishJobs(ctx context.Context) ([]*domain.PublishJob, error)
+
+	// 平台账号（§19）。
+	CreatePlatformAccount(ctx context.Context, a *domain.PlatformAccount) error
+	GetPlatformAccount(ctx context.Context, id string) (*domain.PlatformAccount, error)
+	ListPlatformAccountsByPlatform(ctx context.Context, platform domain.Platform) ([]*domain.PlatformAccount, error)
+	UpdatePlatformAccount(ctx context.Context, a *domain.PlatformAccount) error
+	DeletePlatformAccount(ctx context.Context, id string) error
+
 	Close() error
 }
