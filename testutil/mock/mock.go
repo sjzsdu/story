@@ -273,11 +273,14 @@ type StoryGen struct {
 	Candidates []domain.StoryCandidate
 	Err        error
 	Calls      int
+	// LastRequest 最近一次请求（供断言 Brief 等参数确实透传）。
+	LastRequest port.StoryRequest
 }
 
 // GenerateCandidates 实现 port.StoryGenerator。
-func (m *StoryGen) GenerateCandidates(_ context.Context, _ port.StoryRequest) ([]domain.StoryCandidate, error) {
+func (m *StoryGen) GenerateCandidates(_ context.Context, req port.StoryRequest) ([]domain.StoryCandidate, error) {
 	m.Calls++
+	m.LastRequest = req
 	return m.Candidates, m.Err
 }
 
@@ -286,11 +289,14 @@ type BoardPlanner struct {
 	Storyboard *domain.Storyboard
 	Err        error
 	Calls      int
+	// LastRequest 最近一次请求（供断言 Brief 等参数确实透传）。
+	LastRequest port.StoryboardRequest
 }
 
 // PlanStoryboard 实现 port.StoryboardPlanner。
-func (m *BoardPlanner) PlanStoryboard(_ context.Context, _ port.StoryboardRequest) (*domain.Storyboard, error) {
+func (m *BoardPlanner) PlanStoryboard(_ context.Context, req port.StoryboardRequest) (*domain.Storyboard, error) {
 	m.Calls++
+	m.LastRequest = req
 	return m.Storyboard, m.Err
 }
 

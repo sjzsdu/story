@@ -2,9 +2,10 @@ import { useState, type MouseEvent } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, seriesMediaUrl } from '../api'
-import type { CharacterSetting, Episode } from '../types'
-import { Button, Card, Collapsible, Empty, ErrorBox, Field, Modal, Spinner, TextInput } from '../components/ui'
+import type { CharacterSetting, CreativeCatalog, CreativeKnob, CreativeStyle, Episode, Series } from '../types'
+import { Button, Card, Collapsible, Empty, ErrorBox, Field, Modal, Spinner, TextArea, TextInput } from '../components/ui'
 import { StatusBadge } from '../components/ui'
+import CreativeFields, { knobMap, knobValue } from '../components/CreativeFields'
 import PlanPanel from '../components/PlanPanel'
 import VoiceProfileCard from '../components/VoiceProfileCard'
 import { STAGE_LABEL, activePath } from '../components/VersionTree'
@@ -42,6 +43,12 @@ export default function SeriesDetailPage() {
     queryKey: ['voices'],
     queryFn: api.listVoices,
     staleTime: 60_000,
+  })
+  // 创作参数注册表：翻译参数 key → 中文名、渲染编辑控件都靠它。
+  const { data: catalog } = useQuery({
+    queryKey: ['creative-catalog'],
+    queryFn: api.getCreativeCatalog,
+    staleTime: Infinity,
   })
 
   const deleteSeriesMut = useMutation({
@@ -142,6 +149,11 @@ export default function SeriesDetailPage() {
         <CharactersCard seriesId={s.id} characters={namedChars} busy={seriesBusy} job={seriesJob} />
       </Collapsible>
 
+      {/* 创作控制参数（折叠，默认收起）：不同用户/系列可产出不同风格 */}
+      <Collapsible summary="创作设置" badge={<span className="text-xs text-paper-300/40">叙事 / 受众 / 篇幅 / 画风</span>}>
+        <CreativeCard seriesId={s.id} series={s} catalog={catalog} />
+      </Collapsible>
+
       {/* 集列表（始终展示，主要内容） */}
       <Card title={`集列表（${episodes.length}）`}>
         {episodes.length === 0 ? (
@@ -211,6 +223,132 @@ export default function SeriesDetailPage() {
       <CreateEpisodeModal seriesId={s.id} open={showCreate} onClose={() => setShowCreate(false)} />
     </div>
   )
+}
+
+/**
+ * 创作设置卡片：只读展示当前参数的中文值；进入编辑态内嵌 CreativeFields，整体保存。
+ * 参数的 key/选项一律读自 catalog，不在此硬编码。
+ */
+function CreativeCard({
+  seriesId,
+  series,
+  catalog,
+}: {
+  seriesId: string
+  series: Series
+  catalog?: CreativeCatalog
+}) {
+  const queryClient = useQueryClient()
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState<CreativeStyle>({})
+  const [err, setErr] = useState('')
+
+  // 当前值：config.creative 各参数 + 画风（画风在后端是独立字段 config.video_style）。
+  const current: CreativeStyle = { ...(series.config.creative ?? {}), video_style: series.config.video_style }
+
+  const mutation = useMutation({
+    mutationFn: (values: CreativeStyle) => {
+      if (!catalog) throw new Error('创作参数注册表尚未加载')
+      // 整体覆盖写：把全部 knob 值（含空串＝清除）一次提交，避免只交差异造成回填歧义。
+      // 预设留空时回落到注册表的默认预设，显式清掉旧的溯源 key。
+      return api.updateCreative(seriesId, {
+        preset: values.preset || catalog.default_preset,
+        creative: knobMap(values, catalog),
+      })
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['series', seriesId] })
+      setEditing(false)
+      setErr('')
+    },
+    onError: (e) => setErr((e as Error).message),
+  })
+
+  // 费用相关参数：注册表 help 里点名「费用」的项（靠 help 识别，不在前端硬编码 key，
+  // 后端新增/调整费用参数后此处自动生效）。
+  const costChanged = (catalog?.knobs ?? []).filter(
+    (k) => k.help.includes('费用') && knobValue(draft, k.key) !== knobValue(current, k.key),
+  )
+
+  if (!catalog) return <div className="text-sm text-paper-300/40 py-2">创作设置加载中…</div>
+
+  const startEdit = () => {
+    setDraft(current)
+    setErr('')
+    setEditing(true)
+  }
+
+  const save = () => {
+    if (costChanged.length > 0) {
+      const names = costChanged.map((k) => k.label).join('、')
+      if (!window.confirm(`改动「${names}」会重做分镜 / 重出插画并产生费用，确定保存？`)) return
+    }
+    mutation.mutate(draft)
+  }
+
+  if (editing) {
+    return (
+      <div className="space-y-4">
+        <CreativeFields catalog={catalog} values={draft} onChange={setDraft} disabled={mutation.isPending} />
+        {costChanged.length > 0 && (
+          <div className="rounded-lg border border-gold-500/40 bg-gold-500/10 px-4 py-3 text-sm text-gold-500">
+            改动「{costChanged.map((k) => k.label).join('、')}」会使分镜与画面重做，保存后将产生费用。
+          </div>
+        )}
+        {err && <ErrorBox>{err}</ErrorBox>}
+        <div className="flex gap-3">
+          <Button variant="seal" disabled={mutation.isPending} onClick={save}>
+            {mutation.isPending && <Spinner />} 保存
+          </Button>
+          <Button
+            variant="ghost"
+            disabled={mutation.isPending}
+            onClick={() => {
+              setEditing(false)
+              setErr('')
+            }}
+          >
+            取消
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      {current.preset && (
+        <p className="mb-3 text-xs text-paper-300/50">
+          预设：{catalog.presets.find((p) => p.key === current.preset)?.name ?? current.preset}
+        </p>
+      )}
+      <div className="grid sm:grid-cols-2 gap-4 text-sm">
+        {catalog.knobs.map((k) => (
+          <div key={k.key}>
+            <div className="text-xs text-paper-300/40 mb-1">{k.label}</div>
+            <div className="text-paper-100">{displayKnobValue(k, current)}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-4">
+        <Button variant="outline" onClick={startEdit}>
+          编辑
+        </Button>
+      </div>
+      {err && (
+        <div className="mt-3">
+          <ErrorBox>{err}</ErrorBox>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 把参数值翻译成中文：空值＝跟随默认；枚举回译选项名；文本原样。 */
+function displayKnobValue(knob: CreativeKnob, values: CreativeStyle): string {
+  const v = knobValue(values, knob.key)
+  if (!v) return '跟随默认'
+  return knob.options.find((o) => o.key === v)?.label ?? v
 }
 
 /** 系列视觉参考卡片（人物，跨集复用）：预览 + 生成/重新生成参考图。 */
@@ -349,15 +487,23 @@ function CreateEpisodeModal({
 }) {
   const [title, setTitle] = useState('')
   const [topic, setTopic] = useState('')
+  // 本集附加指令：叠加在系列创作设置之上，可空（空则不提交该字段）。
+  const [instruction, setInstruction] = useState('')
   const [err, setErr] = useState('')
   const queryClient = useQueryClient()
 
   const mutation = useMutation({
-    mutationFn: () => api.createEpisode(seriesId, { title: title.trim(), topic: topic.trim() }),
+    mutationFn: () =>
+      api.createEpisode(seriesId, {
+        title: title.trim(),
+        topic: topic.trim(),
+        ...(instruction.trim() ? { instruction: instruction.trim() } : {}),
+      }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['series', seriesId] })
       setTitle('')
       setTopic('')
+      setInstruction('')
       setErr('')
       onClose()
     },
@@ -379,6 +525,14 @@ function CreateEpisodeModal({
         </Field>
         <Field label="主题 / 切入点（可空，AI 自由命题）">
           <TextInput value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="如：苏秦张仪出山之前" />
+        </Field>
+        <Field label="本集附加指令（可空，叠加在系列创作设置之上）">
+          <TextArea
+            value={instruction}
+            onChange={(e) => setInstruction(e.target.value)}
+            maxLength={500}
+            placeholder="如：这一集只讲一个夜晚的故事"
+          />
         </Field>
         {err && <ErrorBox>{err}</ErrorBox>}
         <div className="flex gap-3">

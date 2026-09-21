@@ -116,7 +116,7 @@ func TestMediaTraversalForbidden(t *testing.T) {
 	if _, err := a.CreateSeries(context.Background(), app.CreateSeriesInput{Name: "鬼谷子"}); err != nil {
 		t.Fatal(err)
 	}
-	ep, err := a.CreateEpisode(context.Background(), "guiguzi", "入秦", "")
+	ep, err := a.CreateEpisode(context.Background(), "guiguzi", "入秦", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestActivateAndDeleteNodeHTTP(t *testing.T) {
 	if _, err := a.CreateSeries(ctx, app.CreateSeriesInput{Name: "鬼谷子"}); err != nil {
 		t.Fatal(err)
 	}
-	ep, err := a.CreateEpisode(ctx, "guiguzi", "入秦", "")
+	ep, err := a.CreateEpisode(ctx, "guiguzi", "入秦", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +317,7 @@ func TestBuildActionWithFromAndReroll(t *testing.T) {
 	if _, err := a.CreateSeries(ctx, app.CreateSeriesInput{Name: "鬼谷子"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.CreateEpisode(ctx, "guiguzi", "入秦", ""); err != nil {
+	if _, err := a.CreateEpisode(ctx, "guiguzi", "入秦", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	s := &Server{app: a}
@@ -372,4 +372,184 @@ func TestUploadVoiceSampleBadRequest(t *testing.T) {
 			t.Fatalf("非 multipart 请求应 400，得到 %d", res.StatusCode)
 		}
 	})
+}
+
+// ---------- 创作控制参数（S6） ----------
+
+// TestCreativeCatalogEndpoint 注册表快照可直接给前端渲染。
+func TestCreativeCatalogEndpoint(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+	res, err := http.Get(ts.URL + "/api/creative-catalog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("catalog 状态码 = %d", res.StatusCode)
+	}
+	var cat struct {
+		Knobs []struct {
+			Key          string `json:"key"`
+			Label        string `json:"label"`
+			DefaultLabel string `json:"default_label"`
+			Type         string `json:"type"`
+			Options      []struct {
+				Key   string `json:"key"`
+				Label string `json:"label"`
+			} `json:"options"`
+		} `json:"knobs"`
+		Presets []struct {
+			Key    string            `json:"key"`
+			Name   string            `json:"name"`
+			Values map[string]string `json:"values"`
+		} `json:"presets"`
+		DefaultPreset string `json:"default_preset"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&cat); err != nil {
+		t.Fatal(err)
+	}
+	if len(cat.Knobs) == 0 || len(cat.Presets) == 0 || cat.DefaultPreset == "" {
+		t.Fatalf("catalog 内容不完整: %+v", cat)
+	}
+	// 前端靠这个 key 渲染「跟随默认」，必须存在且是合法的 knob key。
+	seen := map[string]bool{}
+	for _, k := range cat.Knobs {
+		if k.Key == "" || k.Label == "" || k.DefaultLabel == "" {
+			t.Fatalf("参数描述不完整: %+v", k)
+		}
+		seen[k.Key] = true
+	}
+	if !seen["video_style"] {
+		t.Fatal("catalog 应含画风参数 video_style")
+	}
+	// 默认预设的 values 必须为空，前端才能把「一键套用默认」渲染成不改任何参数。
+	for _, p := range cat.Presets {
+		if p.Key == cat.DefaultPreset && len(p.Values) != 0 {
+			t.Fatalf("默认预设不得带值: %+v", p)
+		}
+	}
+}
+
+// TestUpdateCreativeEndpoint 覆盖 PUT 生效、补丁语义与非法 key 的 400。
+func TestUpdateCreativeEndpoint(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+
+	// 建系列：预设 + 逐项微调。
+	res, err := http.Post(ts.URL+"/api/series", "application/json", strings.NewReader(
+		`{"name":"鬼谷子","preset":"suspense","creative":{"audience":"teen"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("创建系列状态码 = %d", res.StatusCode)
+	}
+	var se domain.Series
+	json.NewDecoder(res.Body).Decode(&se)
+	res.Body.Close()
+	if se.Config.Creative.Preset != "suspense" || se.Config.Creative.Audience != "teen" {
+		t.Fatalf("创建系列的创作设置未生效: %+v", se.Config.Creative)
+	}
+	// 预设列出但被逐项微调覆盖：预设里 narrative=suspense、length=short 仍在。
+	if se.Config.Creative.Narrative != "suspense" || se.Config.Creative.Length != "short" {
+		t.Fatalf("预设值未展开: %+v", se.Config.Creative)
+	}
+
+	put := func(payload string) *http.Response {
+		req, err := http.NewRequest(http.MethodPut, ts.URL+"/api/series/guiguzi/creative", strings.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+
+	// 补丁：只改画风，未提到的参数保持不动。
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/series/guiguzi/creative",
+		strings.NewReader(`{"creative":{"video_style":"ink"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated domain.Series
+	json.NewDecoder(r.Body).Decode(&updated)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("PUT creative 状态码 = %d", r.StatusCode)
+	}
+	if updated.Config.VideoStyle != "ink" {
+		t.Fatalf("画风未生效: %q", updated.Config.VideoStyle)
+	}
+	if updated.Config.Creative.Audience != "teen" || updated.Config.Creative.Narrative != "suspense" {
+		t.Fatalf("未提到的参数不应被改动: %+v", updated.Config.Creative)
+	}
+
+	// 显式空串＝清除该参数（回到内置默认）。注意用新变量解码：
+	// creative 的字段是 omitempty，清空后不会出现在响应里。
+	var cleared domain.Series
+	r = put(`{"creative":{"audience":"","instruction":"本系列只用短句"}}`)
+	json.NewDecoder(r.Body).Decode(&cleared)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("PUT creative 状态码 = %d", r.StatusCode)
+	}
+	if cleared.Config.Creative.Audience != "" {
+		t.Fatalf("空串应清除参数: %q", cleared.Config.Creative.Audience)
+	}
+	if cleared.Config.Creative.Instruction != "本系列只用短句" {
+		t.Fatalf("系列级指令未生效: %q", cleared.Config.Creative.Instruction)
+	}
+
+	// 未知 knob key → 400 并列出支持的 key。
+	r = put(`{"creative":{"nope":"x"}}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("未知创作参数应 400，得到 %d", r.StatusCode)
+	}
+	// 未知预设 → 400。
+	r = put(`{"preset":"nope"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("未知预设应 400，得到 %d", r.StatusCode)
+	}
+	// 不存在的系列 → 404。
+	req, _ = http.NewRequest(http.MethodPut, ts.URL+"/api/series/missing/creative", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	r, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if r.StatusCode != http.StatusNotFound {
+		t.Fatalf("不存在的系列应 404，得到 %d", r.StatusCode)
+	}
+}
+
+// TestCreateEpisodeWithInstruction 集级附加指令随创建写入并回读。
+func TestCreateEpisodeWithInstruction(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+	res, err := http.Post(ts.URL+"/api/series", "application/json", strings.NewReader(`{"name":"鬼谷子"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+
+	res, err = http.Post(ts.URL+"/api/series/guiguzi/episodes", "application/json",
+		strings.NewReader(`{"title":"入秦","topic":"张仪","instruction":"本集只讲一个晚上。"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ep domain.Episode
+	json.NewDecoder(res.Body).Decode(&ep)
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("创建集状态码 = %d", res.StatusCode)
+	}
+	if ep.Instruction != "本集只讲一个晚上。" {
+		t.Fatalf("集级附加指令未写入: %q", ep.Instruction)
+	}
 }

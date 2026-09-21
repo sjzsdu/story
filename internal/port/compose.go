@@ -53,6 +53,12 @@ const (
 	MotionStatic   = "static" // 定格（极轻微缩放或不动）
 )
 
+// 运镜强度（StillRequest.MotionStrength）：留空＝标准档，幅度与历史行为一致。
+const (
+	MotionStrengthStrong = "strong" // 幅度更大
+	MotionStrengthSubtle = "subtle" // 幅度更小
+)
+
 // StillRequest 静帧渲染请求：把一张插画按指定运镜渲染为同规格视频片段
 // （comic 模式用，纯本地 ffmpeg，不产生模型费用）。
 type StillRequest struct {
@@ -62,6 +68,9 @@ type StillRequest struct {
 	Ratio       string // 9:16 / 16:9 / 1:1 / 3:4
 	Resolution  string // 720P / 1080P
 	Motion      string // 见 Motion* 常量，空值由实现兜底
+	// MotionStrength 运镜幅度档：见 MotionStrength* 常量，空值＝标准档（默认）。
+	// 定格（MotionStatic）时无意义，实现忽略。
+	MotionStrength string
 }
 
 // VideoComposer 视频后处理：归一化、混音、拼接、字幕、多比例导出。

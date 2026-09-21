@@ -1,6 +1,7 @@
 import type {
   ActionName,
   CharacterSetting,
+  CreativeCatalog,
   Episode,
   EpisodeDraft,
   PlanSession,
@@ -38,7 +39,24 @@ export const api = {
     visual_mode?: 'comic' | 'video'
     // §16：声音条目 ID（推荐）；未传时服务端按平迁规则建/取一个。
     voice_id?: string
+    // 创作控制参数：preset 为预设 key，creative 为 {knobKey: value}（含画风/指令）。
+    // 全部留空时不要传这两个字段——保持与历史请求逐字一致。
+    preset?: string
+    creative?: Record<string, string>
   }) => request<Series>('/api/series', { method: 'POST', body: JSON.stringify(body) }),
+
+  // getCreativeCatalog 拉取创作参数注册表（knob/preset 声明式快照），前端据此渲染控件。
+  getCreativeCatalog: () => request<CreativeCatalog>('/api/creative-catalog'),
+
+  // updateCreative 覆盖系列的创作设置（补丁语义：未出现的参数保持原值，显式空串＝清除）。
+  updateCreative: (
+    seriesId: string,
+    body: { preset?: string; creative?: Record<string, string> },
+  ) =>
+    request<Series>(`/api/series/${encodeURIComponent(seriesId)}/creative`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
 
   getSeries: (id: string) => request<SeriesDetail>(`/api/series/${encodeURIComponent(id)}`),
 
@@ -47,7 +65,7 @@ export const api = {
       method: 'DELETE',
     }),
 
-  createEpisode: (seriesId: string, body: { title: string; topic?: string }) =>
+  createEpisode: (seriesId: string, body: { title: string; topic?: string; instruction?: string }) =>
     request<Episode>(`/api/series/${encodeURIComponent(seriesId)}/episodes`, {
       method: 'POST',
       body: JSON.stringify(body),

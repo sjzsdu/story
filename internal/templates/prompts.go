@@ -61,7 +61,9 @@ const StorySystemPrompt = `你是一位说书人，站在台上，台下坐的�
 }`
 
 // StoryUserPrompt 构造故事生成的用户消息。
-func StoryUserPrompt(seriesName, dynasty, topic string) string {
+// brief 为创作要求（见 creative.go 的 StoryBrief），空串＝全部默认，
+// 此时输出与不传 brief 时逐字相同（这是派生键稳定的前提）。
+func StoryUserPrompt(seriesName, dynasty, topic, brief string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "栏目系列：%s\n", seriesName)
 	if dynasty != "" {
@@ -71,6 +73,10 @@ func StoryUserPrompt(seriesName, dynasty, topic string) string {
 		fmt.Fprintf(&b, "本集主题/切入点：%s\n", topic)
 	} else {
 		b.WriteString("本集主题：由你在该系列范围内自选最有戏剧张力的一个故事。\n")
+	}
+	if brief != "" {
+		b.WriteString(brief)
+		b.WriteString("\n")
 	}
 	b.WriteString("请直接确定一个最好的故事并写出定稿口播稿（只输出一个，不要给候选）。")
 	return b.String()
@@ -187,7 +193,9 @@ const StoryboardSystemPrompt = `你是历史短视频的分镜导演，服务于
 // videoStyle 为系列配置的视觉风格 key（见 visualstyle.go，空走默认工笔风格）；
 // characters 为系列人物设定集（姓名+外貌），可为空；
 // episodeRefs 为本集已有的视觉参考（人物/场景，重跑分镜时回灌，要求沿用原名原描述），可为空。
-func StoryboardUserPrompt(storyTitle, storyDynasty, storyContent, ratio, resolution, videoStyle string, characters, episodeRefs []string) string {
+// brief 为创作要求（见 creative.go 的 BoardBrief），空串＝全部默认，
+// 此时输出与不传 brief 时逐字相同（这是派生键稳定的前提）。
+func StoryboardUserPrompt(storyTitle, storyDynasty, storyContent, ratio, resolution, videoStyle, brief string, characters, episodeRefs []string) string {
 	pack := MatchDynasty(storyDynasty)
 	style := MatchStyle(videoStyle)
 	var b strings.Builder
@@ -212,6 +220,9 @@ func StoryboardUserPrompt(storyTitle, storyDynasty, storyContent, ratio, resolut
 	}
 	if ratio != "" {
 		fmt.Fprintf(&b, "成片画面比例：%s（%s），由后期统一构图，visual_prompt 无需书写。\n", ratio, resolution)
+	}
+	if brief != "" {
+		fmt.Fprintf(&b, "%s\n", brief)
 	}
 	fmt.Fprintf(&b, "\n讲述稿正文：\n%s\n\n请按口播节奏拆分为分镜 JSON：narration 逐字沿用讲述稿原文（首镜钩子、末镜留白或留钩子），visual_prompt 只写画面内容、不含任何画风词。", storyContent)
 	return b.String()

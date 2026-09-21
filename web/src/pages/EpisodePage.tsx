@@ -115,6 +115,9 @@ export default function EpisodePage() {
             {ep.title}
           </h1>
           {ep.topic && <p className="mt-2 text-sm text-paper-300/55">主题：{ep.topic}</p>}
+          {ep.instruction && (
+            <p className="mt-1 text-sm text-paper-300/55">本集附加指令：{ep.instruction}</p>
+          )}
         </div>
         <Button
           variant="ghost"

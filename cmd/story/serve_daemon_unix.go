@@ -65,6 +65,14 @@ func daemonize(addr string) error {
 	}
 	removePIDFile() // 清理 stale PID 文件
 
+	// 端口预检：前台 `story serve`（或其它进程）占着端口时不写 PID 文件，
+	// 只查 PID 文件发现不了它；不预检则子进程 bind 失败秒退，父进程只能报出
+	// 「2s 内未完成启动」这种指不到病根的错。
+	if conn, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
+		_ = conn.Close()
+		return fmt.Errorf("端口 %s 已被占用（可能有一个非守护进程的 serve 在运行，如前台 `story serve`）；请先停止它再启动守护进程", addr)
+	}
+
 	if err := os.MkdirAll(rootCfg.DataDir, 0o755); err != nil {
 		return fmt.Errorf("创建数据目录: %w", err)
 	}
@@ -106,6 +114,11 @@ func daemonize(addr string) error {
 
 // runDaemonized 是子进程主循环：写 PID 文件、启动 HTTP 服务、监听 SIGTERM 优雅关闭。
 func runDaemonized(addr string) error {
+	// 忽略 SIGHUP：守护进程虽已 Setsid 脱离终端，但父进程所在会话结束时仍可能被
+	// 连带 HUP，默认动作是终止进程——表现为「启动成功、几秒后无声消失」，
+	// 日志里连一行错误都不会留。
+	signal.Ignore(syscall.SIGHUP)
+
 	if err := os.MkdirAll(rootCfg.DataDir, 0o755); err != nil {
 		return err
 	}

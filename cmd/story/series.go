@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjzsdu/story/internal/app"
 	"github.com/sjzsdu/story/internal/domain"
+	"github.com/sjzsdu/story/internal/templates"
 )
 
 var (
@@ -25,6 +26,12 @@ var (
 	seriesConcurrency int
 	seriesRetries     int
 	seriesPlatforms   []string
+	// 创作控制参数：--creative 可重复（key=value，天然插件化，新增参数不必加 flag）；
+	// --preset / --story-instruction / --video-style 是常用项的语法糖。
+	seriesCreative   []string
+	seriesPreset     string
+	seriesStoryInstr string
+	seriesVideoStyle string
 )
 
 var seriesCmd = &cobra.Command{
@@ -38,6 +45,14 @@ var seriesCreateCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(seriesName) == "" {
 			return fmt.Errorf("--name 不能为空")
+		}
+		knobs, err := creativeKnobs(cmd, false)
+		if err != nil {
+			return err
+		}
+		creative, videoStyle, err := app.ExpandCreative(seriesPreset, knobs)
+		if err != nil {
+			return err
 		}
 		se, err := application.CreateSeries(rootCtx, app.CreateSeriesInput{
 			Name:            seriesName,
@@ -53,6 +68,8 @@ var seriesCreateCmd = &cobra.Command{
 			Concurrency:     seriesConcurrency,
 			Retries:         seriesRetries,
 			TargetPlatforms: seriesPlatforms,
+			VideoStyle:      videoStyle,
+			Creative:        creative,
 		})
 		if err != nil {
 			return err
@@ -63,6 +80,32 @@ var seriesCreateCmd = &cobra.Command{
 		fmt.Printf("  画面: %s / %s / %s\n", se.Config.Ratio, se.Config.Resolution, visualModeLabel(se.Config.VisualMode))
 		fmt.Printf("  声音: %s（创建后锁定，不可改）\n", se.VoiceID)
 		fmt.Printf("  并发: %d  重试: %d\n", se.Config.MaxConcurrency, se.Config.MaxRetries)
+		printCreative(se)
+		return nil
+	},
+}
+
+var seriesSetCmd = &cobra.Command{
+	Use:   "set <series-id>",
+	Short: "修改系列的创作设置（预设 / 参数 / 自定义指令；声音与画面模式创建后锁定）",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		knobs, err := creativeKnobs(cmd, true)
+		if err != nil {
+			return err
+		}
+		preset := seriesPreset
+		if !cmd.Flags().Changed("preset") {
+			preset = "" // 未显式指定预设＝不套用（补丁语义）
+		}
+		if len(knobs) == 0 && preset == "" {
+			return fmt.Errorf("没有要修改的项：请用 --preset / --creative key=value / --story-instruction / --video-style")
+		}
+		se, err := application.UpdateSeriesCreative(rootCtx, args[0], preset, knobs)
+		if err != nil {
+			return err
+		}
+		printSeries(se)
 		return nil
 	},
 }
@@ -132,6 +175,104 @@ func printSeries(se *domain.Series) {
 	if len(se.Config.TargetPlatforms) > 0 {
 		fmt.Printf("  目标平台: %s\n", strings.Join(se.Config.TargetPlatforms, ", "))
 	}
+	printCreative(se)
+}
+
+// printCreative 打印系列的创作设置。参数名与可选值来自 templates 注册表，
+// 这里只列出「已显式设置」的项（空值＝跟随内置默认，不必刷屏）。
+func printCreative(se *domain.Series) {
+	cfg := se.Config
+	var lines []string
+	for _, k := range templates.CreativeKnobs() {
+		v := k.Get(cfg)
+		if v == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s：%s", k.Label, knobValueLabel(k, v)))
+	}
+	if len(lines) == 0 {
+		fmt.Println("  创作设置: 全部跟随内置默认")
+		return
+	}
+	if cfg.Creative.Preset != "" {
+		if p, ok := templates.FindPreset(cfg.Creative.Preset); ok {
+			// 预设只是起点，参数还能逐项微调：两者不一致时如实说明。
+			if presetMatches(p, cfg) {
+				fmt.Printf("  创作设置（预设「%s」）:\n", p.Name)
+			} else {
+				fmt.Printf("  创作设置（预设「%s」基础上微调）:\n", p.Name)
+			}
+		}
+	} else {
+		fmt.Println("  创作设置:")
+	}
+	for _, l := range lines {
+		fmt.Printf("    %s\n", l)
+	}
+}
+
+// presetMatches 判断当前设置是否与预设完全一致（没有任何微调）。
+// 默认预设的 values 为空，因此「全部未设置」也会判为一致。
+func presetMatches(p templates.Preset, cfg domain.SeriesConfig) bool {
+	for _, k := range templates.CreativeKnobs() {
+		if k.Get(cfg) != p.Values[k.Key] {
+			return false
+		}
+	}
+	return true
+}
+
+// knobValueLabel 把参数的原始值转成中文名（枚举查选项；文本原样截断）。
+func knobValueLabel(k templates.Knob, value string) string {
+	if k.Type == templates.KnobText {
+		return truncate(value, 40)
+	}
+	for _, o := range k.Options {
+		if o.Key == value {
+			return o.Label
+		}
+	}
+	return value
+}
+
+// creativeKnobs 组装创作参数：--creative key=value（可重复）+ 常用项语法糖。
+// changedOnly 为 true（series set 的补丁语义）时，只有出现在命令行上的语法糖才写入；
+// 为 false（series create）时空值一律跳过，保证「未设置＝零值＝现状」。
+func creativeKnobs(cmd *cobra.Command, changedOnly bool) (map[string]string, error) {
+	knobs, err := parseCreativeFlags(seriesCreative)
+	if err != nil {
+		return nil, err
+	}
+	add := func(flag, key, value string) {
+		if changedOnly {
+			if !cmd.Flags().Changed(flag) {
+				return
+			}
+		} else if strings.TrimSpace(value) == "" {
+			return
+		}
+		knobs[key] = value
+	}
+	add("video-style", "video_style", seriesVideoStyle)
+	add("story-instruction", "instruction", seriesStoryInstr)
+	return knobs, nil
+}
+
+// parseCreativeFlags 解析可重复的 --creative key=value。
+func parseCreativeFlags(pairs []string) (map[string]string, error) {
+	if len(pairs) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(pairs))
+	for _, p := range pairs {
+		key, value, ok := strings.Cut(p, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return nil, fmt.Errorf("--creative 需写成 key=value，收到 %q", p)
+		}
+		out[key] = value
+	}
+	return out, nil
 }
 
 func init() {
@@ -149,9 +290,21 @@ func init() {
 	seriesCreateCmd.Flags().IntVar(&seriesConcurrency, "concurrency", 0, "单集最大并发镜头数（默认 3）")
 	seriesCreateCmd.Flags().IntVar(&seriesRetries, "retries", 0, "失败重试次数（默认 3）")
 	seriesCreateCmd.Flags().StringSliceVar(&seriesPlatforms, "platforms", nil, "目标平台，逗号分隔，如 douyin,kuaishou,bilibili")
+	registerCreativeFlags(seriesCreateCmd)
 
-	seriesCmd.AddCommand(seriesCreateCmd, seriesListCmd, seriesShowCmd)
+	registerCreativeFlags(seriesSetCmd)
+
+	seriesCmd.AddCommand(seriesCreateCmd, seriesSetCmd, seriesListCmd, seriesShowCmd)
 	rootCmd.AddCommand(seriesCmd)
+}
+
+// registerCreativeFlags 注册创作设置相关 flag（create 与 set 共用同一组变量）。
+func registerCreativeFlags(cmd *cobra.Command) {
+	cmd.Flags().StringArrayVar(&seriesCreative, "creative", nil,
+		"创作参数，可重复，格式 key=value（如 --creative narrative=suspense）；可用 key 见 story series show 或 Web 端")
+	cmd.Flags().StringVar(&seriesPreset, "preset", "", "创作预设 key：classic（默认）/ documentary / kids / suspense")
+	cmd.Flags().StringVar(&seriesStoryInstr, "story-instruction", "", "自定义创作指令（自由文本，上限 500 字；与硬性规则冲突时以硬性规则为准）")
+	cmd.Flags().StringVar(&seriesVideoStyle, "video-style", "", "全片画风 key（选项由 templates 的风格包给出，如 gongbi/ink）")
 }
 
 // visualModeLabel 展示用的画面模式中文名（空值按默认 comic 显示）。

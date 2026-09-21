@@ -14,6 +14,7 @@ import (
 	"github.com/sjzsdu/story/internal/app"
 	"github.com/sjzsdu/story/internal/domain"
 	"github.com/sjzsdu/story/internal/engine"
+	"github.com/sjzsdu/story/internal/templates"
 )
 
 // Server HTTP 服务，复用 CLI 同一个 app 容器。
@@ -41,6 +42,8 @@ func New(rootCtx context.Context, application *app.App, assets fs.FS) *Server {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/series", s.listSeries)
 	s.mux.HandleFunc("POST /api/series", s.createSeries)
+	// 创作控制参数注册表（Knob / Preset 声明式快照），前端据此渲染控件。
+	s.mux.HandleFunc("GET /api/creative-catalog", s.creativeCatalog)
 	s.mux.HandleFunc("GET /api/series/{id}", s.getSeries)
 	s.mux.HandleFunc("DELETE /api/series/{id}", s.deleteSeries)
 	s.mux.HandleFunc("POST /api/series/{id}/episodes", s.createEpisode)
@@ -124,6 +127,34 @@ func (s *Server) episodeOrError(w http.ResponseWriter, r *http.Request) (*domain
 	return ep, true
 }
 
+// ---------- 创作控制参数 ----------
+
+// creativeCatalog 返回创作参数与预设的注册表快照（同步、零费用）。
+// 前端按它渲染控件，所以新增参数 / 选项 / 预设不需要改前端。
+func (s *Server) creativeCatalog(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, templates.Catalog())
+}
+
+// validateCreative 校验创作设置请求：未知参数 key / 未知预设一律 400。
+// 参数名与合法值来自 templates 注册表，这里只做存在性校验（值非法则回落默认）。
+func validateCreative(preset string, knobs map[string]string) error {
+	if p := strings.TrimSpace(preset); p != "" {
+		if _, ok := templates.FindPreset(p); !ok {
+			keys := make([]string, 0, len(templates.CreativePresets()))
+			for _, pr := range templates.CreativePresets() {
+				keys = append(keys, pr.Key)
+			}
+			return fmt.Errorf("未知创作预设 %q（支持：%s）", p, strings.Join(keys, ", "))
+		}
+	}
+	for key := range knobs {
+		if _, ok := templates.FindKnob(key); !ok {
+			return fmt.Errorf("未知创作参数 %q（支持：%s）", key, templates.KnobKeys())
+		}
+	}
+	return nil
+}
+
 // ---------- 系列 ----------
 
 func (s *Server) listSeries(w http.ResponseWriter, r *http.Request) {
@@ -154,6 +185,10 @@ type createSeriesReq struct {
 	Concurrency     int      `json:"concurrency"`
 	Retries         int      `json:"retries"`
 	TargetPlatforms []string `json:"target_platforms"`
+	// Preset 创作预设 key（可选）；Creative 为逐项微调，形如 {knobKey: value}，
+	// 含画风（video_style）。合法 key/值见 GET /api/creative-catalog。
+	Preset   string            `json:"preset"`
+	Creative map[string]string `json:"creative"`
 }
 
 func (s *Server) createSeries(w http.ResponseWriter, r *http.Request) {
@@ -164,6 +199,15 @@ func (s *Server) createSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.Name) == "" {
 		writeErr(w, http.StatusBadRequest, "name 不能为空")
+		return
+	}
+	if err := validateCreative(req.Preset, req.Creative); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	creative, videoStyle, err := app.ExpandCreative(req.Preset, req.Creative)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	se, err := s.app.CreateSeries(r.Context(), app.CreateSeriesInput{
@@ -180,6 +224,8 @@ func (s *Server) createSeries(w http.ResponseWriter, r *http.Request) {
 		Concurrency:     req.Concurrency,
 		Retries:         req.Retries,
 		TargetPlatforms: req.TargetPlatforms,
+		VideoStyle:      videoStyle,
+		Creative:        creative,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -227,6 +273,8 @@ func (s *Server) deleteSeries(w http.ResponseWriter, r *http.Request) {
 type createEpisodeReq struct {
 	Title string `json:"title"`
 	Topic string `json:"topic"`
+	// Instruction 本集附加创作指令（叠加在系列创作设置之上，可空）。
+	Instruction string `json:"instruction"`
 }
 
 func (s *Server) createEpisode(w http.ResponseWriter, r *http.Request) {
@@ -239,7 +287,7 @@ func (s *Server) createEpisode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "title 不能为空")
 		return
 	}
-	ep, err := s.app.CreateEpisode(r.Context(), r.PathValue("id"), req.Title, req.Topic)
+	ep, err := s.app.CreateEpisode(r.Context(), r.PathValue("id"), req.Title, req.Topic, req.Instruction)
 	if err != nil {
 		if errors.Is(err, app.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "系列不存在")

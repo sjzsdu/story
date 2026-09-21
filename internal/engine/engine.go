@@ -80,10 +80,14 @@ func (e *Engine) GenerateStory(ctx context.Context, episodeID string, opts Deriv
 		return nil, err
 	}
 
+	// 创作要求（系列创作设置 + 本集附加指令）：进派生键，改口吻/受众/篇幅会开新版本；
+	// 无任何创作设置时为空串，派生键与历史行为逐字一致。
+	storyBrief := templates.StoryBrief(series.Config, ep.Instruction)
 	params := storyParams{
 		SeriesID: series.ID,
 		Topic:    ep.Topic,
 		Dynasty:  series.Config.Dynasty,
+		Brief:    storyBrief,
 	}
 	node := ensureNode(ep, domain.StageStory, nil, params, opts.Reroll)
 	ep.ActiveNodeID = node.ID
@@ -103,6 +107,7 @@ func (e *Engine) GenerateStory(ctx context.Context, episodeID string, opts Deriv
 		SeriesName: series.Name,
 		Dynasty:    series.Config.Dynasty,
 		Topic:      ep.Topic,
+		Brief:      storyBrief,
 	})
 	if err != nil {
 		return nil, e.failNode(ctx, ep, node, err)
@@ -145,6 +150,7 @@ func (e *Engine) PlanStoryboard(ctx context.Context, episodeID string, opts Deri
 	// 集级视觉参考（系列人物 + 本集人物/场景）参与派生键：改参考后重跑分镜
 	// 会得到新版本，而不是复用按旧参考生成的分镜。
 	visualRefs := mergeVisualRefs(series, ep.Refs)
+	boardBrief := templates.BoardBrief(series.Config, ep.Instruction)
 	params := storyboardParams{
 		StoryKey:   parent.ID,
 		Dynasty:    dynasty,
@@ -152,6 +158,7 @@ func (e *Engine) PlanStoryboard(ctx context.Context, episodeID string, opts Deri
 		Resolution: series.Config.Resolution,
 		VideoStyle: series.Config.VideoStyle,
 		RefsDigest: refsDigest(visualRefs),
+		Brief:      boardBrief,
 	}
 	node := ensureNode(ep, domain.StageStoryboard, parent, params, opts.Reroll)
 	ep.ActiveNodeID = node.ID
@@ -175,6 +182,7 @@ func (e *Engine) PlanStoryboard(ctx context.Context, episodeID string, opts Deri
 		VideoStyle:  series.Config.VideoStyle,
 		Characters:  characterLines(series.Characters),
 		EpisodeRefs: visualRefLines(ep.Refs),
+		Brief:       boardBrief,
 	})
 	if err != nil {
 		return nil, e.failNode(ctx, ep, node, err)
@@ -280,6 +288,9 @@ func (e *Engine) Produce(ctx context.Context, episodeID string, opts DeriveOptio
 		Resolution:    series.Config.Resolution,
 		VoiceID:       series.VoiceID,
 		VoiceDigest:   voiceDigest(voice, model, rate, pitch, instr),
+		// 运镜强度参与派生键：改了强度必须换 media 节点目录才会重渲染，
+		// 否则已有片段会被判为可复用、改了不生效。
+		Motion: series.Config.Creative.Motion,
 	}
 	node := ensureNode(ep, domain.StageMedia, parent, params, opts.Reroll)
 	ep.ActiveNodeID = node.ID
@@ -498,12 +509,13 @@ func (e *Engine) produceClip(ctx context.Context, series *domain.Series, mode st
 			}
 		}
 		if err := e.composer.RenderStill(ctx, port.StillRequest{
-			ImagePath:   m.PanelPath,
-			OutPath:     m.ClipPath,
-			DurationSec: sc.DurationSec,
-			Ratio:       series.Config.Ratio,
-			Resolution:  series.Config.Resolution,
-			Motion:      motionForScene(sc, m.Index),
+			ImagePath:      m.PanelPath,
+			OutPath:        m.ClipPath,
+			DurationSec:    sc.DurationSec,
+			Ratio:          series.Config.Ratio,
+			Resolution:     series.Config.Resolution,
+			Motion:         motionForScene(sc, m.Index),
+			MotionStrength: series.Config.Creative.Motion,
 		}); err != nil {
 			return domain.MediaResult{}, fmt.Errorf("静帧运镜渲染: %w", err)
 		}

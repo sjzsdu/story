@@ -8,9 +8,10 @@ import (
 )
 
 var (
-	episodeSeriesID string
-	episodeTitle    string
-	episodeTopic    string
+	episodeSeriesID    string
+	episodeTitle       string
+	episodeTopic       string
+	episodeInstruction string
 )
 
 var episodeCmd = &cobra.Command{
@@ -28,7 +29,7 @@ var episodeCreateCmd = &cobra.Command{
 		if episodeTitle == "" {
 			return fmt.Errorf("--title 不能为空")
 		}
-		ep, err := application.CreateEpisode(rootCtx, episodeSeriesID, episodeTitle, episodeTopic)
+		ep, err := application.CreateEpisode(rootCtx, episodeSeriesID, episodeTitle, episodeTopic, episodeInstruction)
 		if err != nil {
 			return err
 		}
@@ -36,6 +37,9 @@ var episodeCreateCmd = &cobra.Command{
 		fmt.Printf("  标题: %s\n", ep.Title)
 		if ep.Topic != "" {
 			fmt.Printf("  主题: %s\n", ep.Topic)
+		}
+		if ep.Instruction != "" {
+			fmt.Printf("  本集附加指令: %s\n", ep.Instruction)
 		}
 		fmt.Printf("  目录: %s\n", ep.WorkDir)
 		fmt.Printf("\n下一步: story generate %s\n", ep.ID)
@@ -61,6 +65,9 @@ var episodeListCmd = &cobra.Command{
 		for _, ep := range eps {
 			fmt.Printf("%-18s  E%02d  %-28s  [%s]\n",
 				ep.ID, ep.Number, truncate(ep.Title, 26), episodeProgress(ep))
+			if ep.Instruction != "" {
+				fmt.Printf("%-18s        附加指令: %s\n", "", truncate(ep.Instruction, 60))
+			}
 		}
 		return nil
 	},
@@ -91,6 +98,7 @@ func init() {
 	episodeCreateCmd.Flags().StringVar(&episodeSeriesID, "series", "", "所属系列 ID（必填）")
 	episodeCreateCmd.Flags().StringVar(&episodeTitle, "title", "", "本集标题（必填）")
 	episodeCreateCmd.Flags().StringVar(&episodeTopic, "topic", "", "本集主题/切入点（可空，由 AI 自由命题）")
+	episodeCreateCmd.Flags().StringVar(&episodeInstruction, "instruction", "", "本集附加创作指令（可空，叠加在系列创作设置之上）")
 
 	episodeListCmd.Flags().StringVar(&episodeSeriesID, "series", "", "系列 ID（必填）")
 

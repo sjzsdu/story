@@ -89,6 +89,11 @@ export function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return <input {...props} className={`${FIELD_CLS} ${props.className ?? ''}`} />
 }
 
+/** 多行文本输入：与 TextInput 同款式，rows 默认为 3。 */
+export function TextArea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return <textarea rows={props.rows ?? 3} {...props} className={`${FIELD_CLS} ${props.className ?? ''}`} />
+}
+
 export function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
   return <select {...props} className={`${FIELD_CLS} ${props.className ?? ''}`} />
 }

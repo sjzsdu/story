@@ -47,6 +47,11 @@ type SeriesConfig struct {
 	MaxConcurrency int `json:"max_concurrency"`
 	// MaxRetries 单镜头失败最大重试次数。
 	MaxRetries int `json:"max_retries"`
+	// Creative 创作控制参数（叙事风格/受众/篇幅/运镜强度/自定义指令）。
+	// 零值＝内置默认，产出与历史行为一致；见 creative.go 与 templates/creative.go。
+	// 用 omitzero（非 omitempty）——omitempty 对结构体无效，旧系列的 config_json
+	// 会凭空多出 "creative":{}。
+	Creative CreativeStyle `json:"creative,omitzero"`
 }
 
 // 画面生产模式（SeriesConfig.VisualMode）。

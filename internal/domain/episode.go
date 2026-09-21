@@ -14,6 +14,9 @@ type Episode struct {
 	Title    string `json:"title"`
 	// Topic 本集主题/切入点（可空，空则由 AI 在系列范围内自由命题）。
 	Topic string `json:"topic"`
+	// Instruction 本集附加创作指令（自由文本，叠加在系列创作设置之上，
+	// 同样只作为 prompt 里的「创作要求」，冲突时以硬性规则为准）。
+	Instruction string `json:"instruction"`
 	// Refs 本集视觉参考（人物 + 跨镜重复场景），分镜阶段产出、可人工编辑；
 	// 参考图按需手动生成。属集级资源，跨分镜版本共享；与系列级人物设定合并后
 	// 注入分镜/produce（同名集级优先）。

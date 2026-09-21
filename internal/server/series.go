@@ -14,6 +14,8 @@ import (
 func (s *Server) registerSeriesExtraRoutes() {
 	s.mux.HandleFunc("GET /api/series/{id}/events", s.handleSeriesSSE)
 	s.mux.HandleFunc("PUT /api/series/{id}/characters", s.updateCharacters)
+	// 创作控制参数：叙事/受众/篇幅/运镜/画风 + 系列级自定义指令。
+	s.mux.HandleFunc("PUT /api/series/{id}/creative", s.updateCreative)
 	s.mux.HandleFunc("POST /api/series/{id}/keyframes", s.generateKeyframes)
 	s.mux.HandleFunc("GET /api/series/{id}/media", s.serveSeriesMedia)
 }
@@ -120,6 +122,42 @@ func (s *Server) updateCharacters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	se, _ := s.app.GetSeries(r.Context(), r.PathValue("id"))
+	writeJSON(w, http.StatusOK, se)
+}
+
+// updateCreativeRequest 创作设置请求体：预设 + 逐项微调。
+type updateCreativeRequest struct {
+	// Preset 预设 key；留空＝不套用预设，只做逐项微调。
+	Preset string `json:"preset"`
+	// Creative 形如 {knobKey: value}（含画风 video_style、自定义指令 instruction）。
+	// 补丁语义：未出现的参数保持原值，显式空串＝清除该参数（回到内置默认）。
+	Creative map[string]string `json:"creative"`
+}
+
+// updateCreative 覆盖系列的创作控制设置（voice_id / visual_mode 仍锁定，不在此列）。
+// 未知参数 key / 未知预设返回 400。
+func (s *Server) updateCreative(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.seriesOrError(w, r); !ok {
+		return
+	}
+	var req updateCreativeRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		return
+	}
+	if err := validateCreative(req.Preset, req.Creative); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	se, err := s.app.UpdateSeriesCreative(r.Context(), r.PathValue("id"), req.Preset, req.Creative)
+	if err != nil {
+		if errors.Is(err, app.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "系列不存在")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, se)
 }
 

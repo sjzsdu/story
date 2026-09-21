@@ -13,14 +13,28 @@ import (
 // 使 RenderStill 产物与归一化中间件编码参数对齐、可直接 concat 流拷贝。
 const stillFPS = 30
 
-// stillZoom 推近/拉远的缩放倍率。1.30 表示全程放大三成：静帧画面唯一的
+// stillZoom 标准档下推近/拉远的缩放倍率。1.30 表示全程放大三成：静帧画面唯一的
 // 运动来源就是运镜，幅度太小观众几乎看不出变化，故取到既明显、又不至于
 // 把构图裁得面目全非的力度。
 const stillZoom = 1.30
 
-// panZoom 横移/纵移时固定的缩放倍率：平移行程 = iw - iw/zoom，
+// panZoom 标准档下横移/纵移时固定的缩放倍率：平移行程 = iw - iw/zoom，
 // 倍率越大行程越长。1.24 使视窗横移约画面的四分之一宽度，肉眼可辨。
 const panZoom = 1.24
+
+// motionZooms 把运镜强度（SeriesConfig.Creative.Motion）映射为幅度：
+// 空值与未知值一律＝标准档，倍率与历史行为完全一致（这是「默认即现状」的一部分）。
+// 强档再放大一档（推拉 42%、平移约 34% 画宽），弱档回到放大前的力度。
+func motionZooms(strength string) (zoom, pan float64) {
+	switch strength {
+	case port.MotionStrengthStrong:
+		return 1.42, 1.34
+	case port.MotionStrengthSubtle:
+		return 1.16, 1.12
+	default:
+		return stillZoom, panZoom
+	}
+}
 
 // RenderStill 实现 port.VideoComposer：单张插画 + Ken Burns 运镜 → 视频片段。
 //
@@ -45,7 +59,7 @@ func (c *Composer) RenderStill(ctx context.Context, req port.StillRequest) error
 
 	frames := req.DurationSec * stillFPS
 	bufW, bufH := width*2, height*2
-	z, x, y := kenBurnsExpr(req.Motion, frames)
+	z, x, y := kenBurnsExpr(req.Motion, frames, req.MotionStrength)
 
 	// zoompan 工作在缓冲尺寸上，输出 s=目标尺寸；fps/像素格式与 normalize 对齐。
 	filter := fmt.Sprintf(
@@ -72,14 +86,15 @@ func (c *Composer) RenderStill(ctx context.Context, req port.StillRequest) error
 	return nil
 }
 
-// kenBurnsExpr 按运镜 key 生成 zoompan 的 z/x/y 表达式。
+// kenBurnsExpr 按运镜 key 与幅度档生成 zoompan 的 z/x/y 表达式。
 // on/d 为 zoompan 内置的输出帧序号/总帧数；进度 e∈[0,1] 做 smoothstep
-// 缓动（起止自然，不匀速突兀）。未知运镜回退缓推。
-func kenBurnsExpr(motion string, frames int) (z, x, y string) {
+// 缓动（起止自然，不匀速突兀）。未知运镜回退缓推，未知幅度档回退标准档。
+func kenBurnsExpr(motion string, frames int, strength string) (z, x, y string) {
 	d := frames - 1
 	if d < 1 {
 		d = 1
 	}
+	zoom, pan := motionZooms(strength)
 	// smoothstep：e = p*p*(3-2p)，p=on/d。
 	const centerX = "iw/2-(iw/zoom/2)"
 	const centerY = "ih/2-(ih/zoom/2)"
@@ -90,21 +105,21 @@ func kenBurnsExpr(motion string, frames int) (z, x, y string) {
 
 	switch motion {
 	case port.MotionPullOut:
-		return fmt.Sprintf("%.2f-%.2f*%s", stillZoom, stillZoom-1.0, e), centerX, centerY
+		return fmt.Sprintf("%.2f-%.2f*%s", zoom, zoom-1.0, e), centerX, centerY
 	case port.MotionPanRight:
-		return fmt.Sprintf("%.2f", panZoom), maxX + "*" + e, centerY
+		return fmt.Sprintf("%.2f", pan), maxX + "*" + e, centerY
 	case port.MotionPanLeft:
-		return fmt.Sprintf("%.2f", panZoom), maxX + "*(1-" + e + ")", centerY
+		return fmt.Sprintf("%.2f", pan), maxX + "*(1-" + e + ")", centerY
 	case port.MotionPanDown:
-		return fmt.Sprintf("%.2f", panZoom), centerX, maxY + "*" + e
+		return fmt.Sprintf("%.2f", pan), centerX, maxY + "*" + e
 	case port.MotionPanUp:
-		return fmt.Sprintf("%.2f", panZoom), centerX, maxY + "*(1-" + e + ")"
+		return fmt.Sprintf("%.2f", pan), centerX, maxY + "*(1-" + e + ")"
 	case port.MotionStatic:
 		return "1.0", "0", "0"
 	case port.MotionPushIn:
 		fallthrough
 	default:
-		// 缓推：zoom 1.0 → stillZoom，视线居中。
-		return fmt.Sprintf("1.0+%.2f*%s", stillZoom-1.0, e), centerX, centerY
+		// 缓推：zoom 1.0 → zoom，视线居中。
+		return fmt.Sprintf("1.0+%.2f*%s", zoom-1.0, e), centerX, centerY
 	}
 }

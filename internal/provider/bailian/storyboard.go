@@ -36,6 +36,7 @@ func (c *Client) PlanStoryboard(ctx context.Context, req port.StoryboardRequest)
 			req.Ratio,
 			req.Resolution,
 			req.VideoStyle,
+			req.Brief,
 			req.Characters,
 			req.EpisodeRefs,
 		),

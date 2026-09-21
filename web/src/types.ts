@@ -69,6 +69,52 @@ export interface SeriesConfig {
   target_platforms?: string[]
   max_concurrency: number
   max_retries: number
+  creative?: CreativeStyle // 创作控制参数（全部 omitempty，未设置即不出现）
+}
+
+// 创作控制参数：字段名即 GET /api/creative-catalog 里的 knob key。
+// 全部可空：未设置（undefined 或空串）＝跟随内置默认，产出与历史行为一致。
+// 注：video_style 在后端响应里位于 config.video_style（独立字段），但在请求体的
+// creative map 中它与其它参数同列——前端统一按 knob 渲染，故这里一并包含。
+export interface CreativeStyle {
+  preset?: string
+  narrative?: string
+  audience?: string
+  length?: string
+  motion?: string
+  video_style?: string
+  instruction?: string
+}
+
+// ---- 创作参数注册表（后端 templates.Catalog() 的 JSON 快照） ----
+// 前端严禁硬编码任何参数名/选项，渲染完全由这些结构驱动。
+
+export interface CreativeOption {
+  key: string
+  label: string
+}
+
+export interface CreativeKnob {
+  key: string
+  label: string
+  help: string
+  default_label: string // 默认（空值）的中文名，保持后端 snake_case
+  type: 'enum' | 'text'
+  max_length?: number // 文本型参数的最大字符数（后端给出，前端不写死）
+  options: CreativeOption[] // text 时为空数组（后端保证非 null）
+}
+
+export interface CreativePreset {
+  key: string
+  name: string
+  desc: string
+  values: Record<string, string> // {knobKey: value}，未列出的一律回落默认
+}
+
+export interface CreativeCatalog {
+  knobs: CreativeKnob[]
+  presets: CreativePreset[]
+  default_preset: string
 }
 
 // §16：声音顶层实体（与 Series 同级）。series.voice_id 创建后锁定不可改。
@@ -143,6 +189,8 @@ export interface Episode {
   number: number
   title: string
   topic: string
+  // 集级附加创作指令（叠加在系列创作设置之上，可空）。
+  instruction?: string
   // §17：集级视觉参考（事实源，跨分镜版本共享）。
   refs?: VisualRef[]
   nodes: VersionNode[]

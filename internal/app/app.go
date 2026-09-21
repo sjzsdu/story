@@ -132,6 +132,11 @@ type CreateSeriesInput struct {
 	Concurrency     int
 	Retries         int
 	TargetPlatforms []string
+	// VideoStyle 全片画风（templates.VisualStyles 的 key，空＝默认画风）。
+	VideoStyle string
+	// Creative 创作控制参数（叙事/受众/篇幅/运镜/自定义指令）。
+	// 零值＝内置默认，产出与历史行为完全一致。
+	Creative domain.CreativeStyle
 }
 
 // CreateSeries 创建一个新系列（ID 由名称生成拼音 slug，冲突时追加序号）。
@@ -173,6 +178,8 @@ func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.S
 			TargetPlatforms: in.TargetPlatforms,
 			MaxConcurrency:  orDefault(in.Concurrency, a.Cfg.MaxConcurrency),
 			MaxRetries:      orDefault(in.Retries, a.Cfg.MaxRetries),
+			VideoStyle:      in.VideoStyle,
+			Creative:        in.Creative,
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -220,7 +227,8 @@ func (a *App) resolveCreateSeriesVoiceID(ctx context.Context, in CreateSeriesInp
 }
 
 // CreateEpisode 在系列下创建一集，并初始化工作目录（版本产物落在其 versions/ 子目录）。
-func (a *App) CreateEpisode(ctx context.Context, seriesID, title, topic string) (*domain.Episode, error) {
+// instruction 为本集附加创作指令（自由文本，叠加在系列创作设置之上，可空）。
+func (a *App) CreateEpisode(ctx context.Context, seriesID, title, topic, instruction string) (*domain.Episode, error) {
 	series, err := a.Repo.GetSeries(ctx, seriesID)
 	if err != nil {
 		return nil, err
@@ -236,6 +244,7 @@ func (a *App) CreateEpisode(ctx context.Context, seriesID, title, topic string) 
 	}
 
 	ep := domain.NewEpisode(id, series.ID, number, title, topic, workDir)
+	ep.Instruction = instruction
 	if err := a.Repo.CreateEpisode(ctx, ep); err != nil {
 		return nil, err
 	}
@@ -329,6 +338,46 @@ func (a *App) UpdateSeriesCharacters(ctx context.Context, seriesID string, chara
 	s.Characters = characters
 	s.UpdatedAt = time.Now()
 	return translateErr(a.Repo.UpdateSeries(ctx, s))
+}
+
+// ExpandCreative 展开「创作预设 + 逐项微调（{knobKey: value}）」为系列配置字段。
+// 未知参数 key / 未知预设报错（HTTP 入口映射为 400）；空值一律等于内置默认。
+// 参数名与合法值全部由 templates 注册表决定，本层不硬编码任何风格。
+func ExpandCreative(preset string, knobs map[string]string) (domain.CreativeStyle, string, error) {
+	cfg, err := templates.Expand(preset, knobs)
+	if err != nil {
+		return domain.CreativeStyle{}, "", err
+	}
+	return cfg.Creative, cfg.VideoStyle, nil
+}
+
+// UpdateSeriesCreative 更新系列的创作控制设置（不动 voice_id / visual_mode，二者创建后锁定）。
+//   - preset 非空：先套用该预设，并记录溯源 key（默认预设＝清空溯源）。
+//   - knobs 为 {knobKey: value}：逐项覆盖，未知 key 报错；显式空串＝清除该参数。
+//     「自定义创作指令」也是其中一个 key（instruction，文本型），无需单独通道。
+//   - 补丁语义：未出现在 knobs 里的参数保持原值。
+func (a *App) UpdateSeriesCreative(ctx context.Context, seriesID, preset string, knobs map[string]string) (*domain.Series, error) {
+	s, err := a.Repo.GetSeries(ctx, seriesID)
+	if err != nil {
+		return nil, translateErr(err)
+	}
+	if p := strings.TrimSpace(preset); p != "" {
+		if err := templates.ApplyPreset(&s.Config, p); err != nil {
+			return nil, err
+		}
+		// ApplyPreset 不落默认预设 key（保证零值＝现状），此处显式回填/清空溯源。
+		if p == templates.DefaultPresetKey {
+			s.Config.Creative.Preset = ""
+		}
+	}
+	if err := templates.ApplyKnobs(&s.Config, knobs); err != nil {
+		return nil, err
+	}
+	s.UpdatedAt = time.Now()
+	if err := a.Repo.UpdateSeries(ctx, s); err != nil {
+		return nil, translateErr(err)
+	}
+	return s, nil
 }
 
 // GenerateSeriesKeyframes 为系列人物设定集批量生成定妆照（透传 engine）。
@@ -762,7 +811,7 @@ func (a *App) ApplyEpisodePlan(ctx context.Context, seriesID string, drafts []do
 		if title == "" || existTitles[title] {
 			continue
 		}
-		ep, err := a.CreateEpisode(ctx, seriesID, title, strings.TrimSpace(d.Topic))
+		ep, err := a.CreateEpisode(ctx, seriesID, title, strings.TrimSpace(d.Topic), "")
 		if err != nil {
 			return created, err
 		}

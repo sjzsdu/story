@@ -31,7 +31,7 @@ func TestStylePackAnchorAndKeyframe(t *testing.T) {
 }
 
 func TestStoryboardPromptInjectsStyle(t *testing.T) {
-	got := StoryboardUserPrompt("测试集", "战国", "正文", "9:16", "720P", "gongbi", nil, nil)
+	got := StoryboardUserPrompt("测试集", "战国", "正文", "9:16", "720P", "gongbi", "", nil, nil)
 	if !contains(got, "全片统一画风") || !contains(got, "工笔重彩") {
 		t.Fatalf("分镜 prompt 未注入工笔风格:\n%s", got)
 	}
@@ -42,7 +42,7 @@ func TestStoryboardPromptInjectsStyle(t *testing.T) {
 
 func TestStoryboardPromptInjectsEpisodeRefs(t *testing.T) {
 	refs := []string{"[人物] 聂小倩：素白襦裙", "[场景] 兰若寺大殿：破败古寺，冷青月光"}
-	got := StoryboardUserPrompt("聂小倩", "清", "正文", "9:16", "1080P", "gongbi", nil, refs)
+	got := StoryboardUserPrompt("聂小倩", "清", "正文", "9:16", "1080P", "gongbi", "", nil, refs)
 	if !contains(got, "本集已有视觉参考") || !contains(got, "兰若寺大殿") {
 		t.Fatalf("分镜 prompt 未回灌本集视觉参考:\n%s", got)
 	}

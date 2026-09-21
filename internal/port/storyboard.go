@@ -19,6 +19,9 @@ type StoryboardRequest struct {
 	// EpisodeRefs 本集已有视觉参考（人物/场景，每项格式化一行）。重跑分镜时回灌，
 	// 要求模型在 refs 输出中沿用原名原描述，人工编辑不被覆盖。
 	EpisodeRefs []string
+	// Brief 创作要求（templates.BoardBrief 组装：讲述口吻/受众/镜头数/用户自定义指令）。
+	// 空串＝全部默认，provider 不得因此改变 prompt（默认产出与历史行为逐字一致）。
+	Brief string
 }
 
 // StoryboardPlanner 将完整故事拆为可生产的分镜脚本。

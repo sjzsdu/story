@@ -39,6 +39,9 @@ type storyParams struct {
 	SeriesID string `json:"series_id"`
 	Topic    string `json:"topic"`
 	Dynasty  string `json:"dynasty"`
+	// Brief 系列/本集的创作要求文本（templates.StoryBrief）。
+	// 必须 omitempty：默认（无任何创作设置）时为空串，才能保证存量系列的派生键不变。
+	Brief string `json:"brief,omitempty"`
 }
 
 type storyboardParams struct {
@@ -48,16 +51,20 @@ type storyboardParams struct {
 	Resolution string `json:"resolution"`
 	VideoStyle string `json:"video_style"`
 	RefsDigest string `json:"refs_digest"`
+	// Brief 分镜阶段的创作要求文本（templates.BoardBrief）；同上，必须 omitempty。
+	Brief string `json:"brief,omitempty"`
 }
 
 type mediaParams struct {
 	StoryboardKey string `json:"storyboard_key"`
 	VisualMode    string `json:"visual_mode"`
-	VideoStyle     string `json:"video_style"`
-	Ratio          string `json:"ratio"`
-	Resolution     string `json:"resolution"`
-	VoiceID        string `json:"voice_id"`
-	VoiceDigest    string `json:"voice_digest"`
+	VideoStyle    string `json:"video_style"`
+	Ratio         string `json:"ratio"`
+	Resolution    string `json:"resolution"`
+	VoiceID       string `json:"voice_id"`
+	VoiceDigest   string `json:"voice_digest"`
+	// Motion 运镜强度 key（小人书模式生效）；同上，必须 omitempty。
+	Motion string `json:"motion,omitempty"`
 }
 
 type finalParams struct {

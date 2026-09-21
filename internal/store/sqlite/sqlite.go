@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     number         INTEGER NOT NULL,
     title          TEXT NOT NULL,
     topic          TEXT NOT NULL DEFAULT '',
+    instruction    TEXT NOT NULL DEFAULT '',
     state_json     TEXT NOT NULL DEFAULT '{}',
     nodes_json     TEXT NOT NULL DEFAULT '[]',
     active_node_id TEXT NOT NULL DEFAULT '',
@@ -100,6 +101,8 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		// 旧库的 state_json 列保留为迁移前的只读历史快照，新代码不再写入。
 		{"episodes", "nodes_json", "TEXT NOT NULL DEFAULT '[]'"},
 		{"episodes", "active_node_id", "TEXT NOT NULL DEFAULT ''"},
+		// 创作控制参数：集级附加指令（叠加在系列创作设置之上）。
+		{"episodes", "instruction", "TEXT NOT NULL DEFAULT ''"},
 		// §16：series.voice_id 引用顶层 Voice 实体，创建后锁定（UpdateSeries 不写该列）。
 		{"series", "voice_id", "TEXT NOT NULL DEFAULT ''"},
 		// §16：voices.provider 标识 TTS 供应商，旧行默认 bailian。
@@ -260,9 +263,9 @@ func (s *Store) CreateEpisode(ctx context.Context, ep *domain.Episode) error {
 		refs = []byte("[]")
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO episodes (id, series_id, number, title, topic, state_json, nodes_json, active_node_id, refs_json, workdir, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?)`,
-		ep.ID, ep.SeriesID, ep.Number, ep.Title, ep.Topic, string(nodes), ep.ActiveNodeID,
+		`INSERT INTO episodes (id, series_id, number, title, topic, instruction, state_json, nodes_json, active_node_id, refs_json, workdir, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?)`,
+		ep.ID, ep.SeriesID, ep.Number, ep.Title, ep.Topic, ep.Instruction, string(nodes), ep.ActiveNodeID,
 		string(refs), ep.WorkDir, formatTime(ep.CreatedAt), formatTime(ep.UpdatedAt),
 	)
 	if err != nil {
@@ -274,7 +277,7 @@ func (s *Store) CreateEpisode(ctx context.Context, ep *domain.Episode) error {
 // GetEpisode 按 ID 查询集。
 func (s *Store) GetEpisode(ctx context.Context, id string) (*domain.Episode, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, series_id, number, title, topic, nodes_json, active_node_id, refs_json, workdir, created_at, updated_at
+		`SELECT id, series_id, number, title, topic, instruction, nodes_json, active_node_id, refs_json, workdir, created_at, updated_at
 		 FROM episodes WHERE id = ?`, id)
 	ep, err := scanEpisode(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -286,7 +289,7 @@ func (s *Store) GetEpisode(ctx context.Context, id string) (*domain.Episode, err
 // ListEpisodes 列出某系列下的全部集（按序号升序）。
 func (s *Store) ListEpisodes(ctx context.Context, seriesID string) ([]*domain.Episode, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, series_id, number, title, topic, nodes_json, active_node_id, refs_json, workdir, created_at, updated_at
+		`SELECT id, series_id, number, title, topic, instruction, nodes_json, active_node_id, refs_json, workdir, created_at, updated_at
 		 FROM episodes WHERE series_id = ? ORDER BY number ASC`, seriesID)
 	if err != nil {
 		return nil, err
@@ -321,8 +324,8 @@ func (s *Store) SaveEpisode(ctx context.Context, ep *domain.Episode) error {
 	}
 	ep.UpdatedAt = time.Now()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE episodes SET title=?, topic=?, nodes_json=?, active_node_id=?, refs_json=?, workdir=?, updated_at=? WHERE id=?`,
-		ep.Title, ep.Topic, string(nodes), ep.ActiveNodeID, string(refs), ep.WorkDir, formatTime(ep.UpdatedAt), ep.ID,
+		`UPDATE episodes SET title=?, topic=?, instruction=?, nodes_json=?, active_node_id=?, refs_json=?, workdir=?, updated_at=? WHERE id=?`,
+		ep.Title, ep.Topic, ep.Instruction, string(nodes), ep.ActiveNodeID, string(refs), ep.WorkDir, formatTime(ep.UpdatedAt), ep.ID,
 	)
 	if err != nil {
 		return err
@@ -453,7 +456,7 @@ func scanSeries(r rowScanner) (*domain.Series, error) {
 func scanEpisode(r rowScanner) (*domain.Episode, error) {
 	var ep domain.Episode
 	var nodesJSON, refsJSON, created, updated string
-	if err := r.Scan(&ep.ID, &ep.SeriesID, &ep.Number, &ep.Title, &ep.Topic,
+	if err := r.Scan(&ep.ID, &ep.SeriesID, &ep.Number, &ep.Title, &ep.Topic, &ep.Instruction,
 		&nodesJSON, &ep.ActiveNodeID, &refsJSON, &ep.WorkDir, &created, &updated); err != nil {
 		return nil, err
 	}

@@ -24,7 +24,7 @@ func (c *Client) GenerateCandidates(ctx context.Context, req port.StoryRequest) 
 	args := []string{
 		"text", "chat",
 		"--system", templates.StorySystemPrompt,
-		"--message", templates.StoryUserPrompt(req.SeriesName, req.Dynasty, req.Topic),
+		"--message", templates.StoryUserPrompt(req.SeriesName, req.Dynasty, req.Topic, req.Brief),
 		"--temperature", "0.9",
 		// 定稿口播稿数百字，默认 4096 有截断风险。
 		"--max-tokens", "16384",

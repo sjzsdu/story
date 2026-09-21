@@ -2,8 +2,9 @@ import { useState, type MouseEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
-import type { Series } from '../types'
+import type { CreativeStyle, Series } from '../types'
 import { Button, Card, Empty, ErrorBox, Field, Modal, Select, Spinner, TextInput } from '../components/ui'
+import CreativeFields, { knobMap } from '../components/CreativeFields'
 
 export default function SeriesListPage() {
   const { data: series, isLoading, error } = useQuery({ queryKey: ['series'], queryFn: api.listSeries })
@@ -55,6 +56,8 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
   // §16：声音条目 ID 必选（默认内置 longtian 龙天）；可在「声音」页管理条目。
   const [voiceID, setVoiceID] = useState('longtian')
   const [platforms, setPlatforms] = useState('douyin,kuaishou')
+  // 创作控制参数：一个 state 装下预设 + 逐项值（预设 key 存在 values.preset 里）。
+  const [creative, setCreative] = useState<CreativeStyle>({})
   const [err, setErr] = useState('')
 
   // 拉取声音列表供下拉；staleTime=Infinity 避免每次开关都重新拉。
@@ -64,9 +67,29 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
     staleTime: Infinity,
   })
 
+  // 创作参数注册表（含预设）：同样缓存不失效。
+  const { data: catalog } = useQuery({
+    queryKey: ['creative-catalog'],
+    queryFn: api.getCreativeCatalog,
+    staleTime: Infinity,
+  })
+
   const mutation = useMutation({
-    mutationFn: () =>
-      api.createSeries({
+    mutationFn: () => {
+      // 组装创作字段：套用预设时必须提交全部参数（含空串），否则「清空某项」无法覆盖预设值；
+      // 未套预设时只提交非空项——全空则 creative/preset 都不出现，与历史请求逐字一致。
+      const payload: { preset?: string; creative?: Record<string, string> } = {}
+      if (creative.preset) {
+        payload.preset = creative.preset
+        if (catalog) payload.creative = knobMap(creative, catalog)
+      } else {
+        const tuned: Record<string, string> = {}
+        for (const [k, v] of Object.entries(creative)) {
+          if (k !== 'preset' && v) tuned[k] = v
+        }
+        if (Object.keys(tuned).length > 0) payload.creative = tuned
+      }
+      return api.createSeries({
         name: name.trim(),
         dynasty: dynasty.trim(),
         ratio,
@@ -77,7 +100,9 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
           .split(',')
           .map((s) => s.trim())
           .filter(Boolean),
-      }),
+        ...payload,
+      })
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['series'] })
       setName('')
@@ -87,6 +112,7 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
       setVisualMode('comic')
       setVoiceID('longtian')
       setPlatforms('douyin,kuaishou')
+      setCreative({})
       setErr('')
       onClose()
     },
@@ -141,6 +167,9 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
         <Field label="目标平台（逗号分隔，仅记录）">
           <TextInput value={platforms} onChange={(e) => setPlatforms(e.target.value)} />
         </Field>
+        <div className="sm:col-span-2">
+          <CreativeFields catalog={catalog} values={creative} onChange={setCreative} />
+        </div>
         {err && (
           <div className="sm:col-span-2">
             <ErrorBox>{err}</ErrorBox>
