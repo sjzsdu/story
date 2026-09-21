@@ -13,8 +13,14 @@ import (
 // 使 RenderStill 产物与归一化中间件编码参数对齐、可直接 concat 流拷贝。
 const stillFPS = 30
 
-// stillZoom Ken Burns 运镜的最大缩放幅度（12%，温和不炫技）。
-const stillZoom = 1.12
+// stillZoom 推近/拉远的缩放倍率。1.30 表示全程放大三成：静帧画面唯一的
+// 运动来源就是运镜，幅度太小观众几乎看不出变化，故取到既明显、又不至于
+// 把构图裁得面目全非的力度。
+const stillZoom = 1.30
+
+// panZoom 横移/纵移时固定的缩放倍率：平移行程 = iw - iw/zoom，
+// 倍率越大行程越长。1.24 使视窗横移约画面的四分之一宽度，肉眼可辨。
+const panZoom = 1.24
 
 // RenderStill 实现 port.VideoComposer：单张插画 + Ken Burns 运镜 → 视频片段。
 //
@@ -86,13 +92,13 @@ func kenBurnsExpr(motion string, frames int) (z, x, y string) {
 	case port.MotionPullOut:
 		return fmt.Sprintf("%.2f-%.2f*%s", stillZoom, stillZoom-1.0, e), centerX, centerY
 	case port.MotionPanRight:
-		return fmt.Sprintf("%.2f", stillZoom), maxX + "*" + e, centerY
+		return fmt.Sprintf("%.2f", panZoom), maxX + "*" + e, centerY
 	case port.MotionPanLeft:
-		return fmt.Sprintf("%.2f", stillZoom), maxX + "*(1-" + e + ")", centerY
+		return fmt.Sprintf("%.2f", panZoom), maxX + "*(1-" + e + ")", centerY
 	case port.MotionPanDown:
-		return fmt.Sprintf("%.2f", stillZoom), centerX, maxY + "*" + e
+		return fmt.Sprintf("%.2f", panZoom), centerX, maxY + "*" + e
 	case port.MotionPanUp:
-		return fmt.Sprintf("%.2f", stillZoom), centerX, maxY + "*(1-" + e + ")"
+		return fmt.Sprintf("%.2f", panZoom), centerX, maxY + "*(1-" + e + ")"
 	case port.MotionStatic:
 		return "1.0", "0", "0"
 	case port.MotionPushIn:
