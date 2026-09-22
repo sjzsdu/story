@@ -36,7 +36,14 @@ const (
 const (
 	// VoiceProviderBailian 阿里云百炼 CosyVoice（bl speech synthesize）。
 	VoiceProviderBailian = "bailian"
+	// VoiceProviderMinimax MiniMax TTS（HTTP t2a_v2）；可合成，暂未接入造声。
+	VoiceProviderMinimax = "minimax"
 )
+
+// VoiceProviders 系统已接入的 TTS 供应商（顺序即前端下拉展示顺序）。
+// 声音条目可归属其中任意一家；造声/系统音色能力由 app 层注册表另行决定。
+// 新增供应商：在此登记 + 在 app 注册其 VoiceBuilder/VoiceLister，前端零改动。
+var VoiceProviders = []string{VoiceProviderBailian, VoiceProviderMinimax}
 
 // 造声方式（VoiceBuildRequest.Kind，§16 声音设计 / 声音复刻）。
 const (
@@ -50,18 +57,16 @@ const (
 // 与 config.Default().TTSModel 一致：造出的音色必须用同一模型合成，否则必失败。
 const VoiceBuildModelDefault = "cosyvoice-v3-flash"
 
-// NormalizeVoiceProvider 归一供应商 key：去空白、小写；空或未知回退 bailian。
+// NormalizeVoiceProvider 归一供应商 key：去空白、小写。
+// 命中已知供应商原样返回；空或未知回退 bailian（兼容 §16 旧数据）。
 func NormalizeVoiceProvider(p string) string {
 	p = strings.ToLower(strings.TrimSpace(p))
-	switch p {
-	case VoiceProviderBailian:
-		return p
-	case "":
-		return VoiceProviderBailian
-	default:
-		// 未来接入新供应商时在此补 case；当前只认识百炼。
-		return VoiceProviderBailian
+	for _, known := range VoiceProviders {
+		if p == known {
+			return p
+		}
 	}
+	return VoiceProviderBailian
 }
 
 // SystemVoice 供应商的系统音色（浏览音色库时的列表项，值对象）。

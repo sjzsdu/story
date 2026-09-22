@@ -14,7 +14,6 @@ import type {
 import {
   Button,
   Card,
-  Collapsible,
   Drawer,
   Empty,
   ErrorBox,
@@ -113,6 +112,8 @@ export default function SeriesDetailPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [showPlan, setShowPlan] = useState(false)
   const [showDelete, setShowDelete] = useState(false)
+  // 系列设置弹窗：集列表下方的配置内容全部收进这里，避免长列表把它们挤出视线。
+  const [showSettings, setShowSettings] = useState(false)
   const [planNotice, setPlanNotice] = useState('')
   const [editing, setEditing] = useState<Episode | null>(null)
   const [filter, setFilter] = useState<FilterKey>('all')
@@ -221,20 +222,30 @@ export default function SeriesDetailPage() {
         <span className="text-paper-300/80">{s.name}</span>
       </nav>
 
-      {/* 标题行：造集入口统一放在下方集列表的工具栏（两个入口同区并列） */}
-      <div>
-        <h1 className="font-display text-3xl tracking-wider flex items-center gap-3">
-          {s.name}
-          {s.dynasty && (
-            <span className="text-sm rounded border border-seal-500/40 bg-seal-600/10 px-2 py-0.5 text-seal-500 font-body">
-              {s.dynasty}
+      {/* 标题行：设置入口在标题行右侧（集列表下方不再堆配置区）；造集入口统一放在下方集列表的工具栏 */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="font-display text-3xl tracking-wider flex items-center gap-3">
+            {s.name}
+            {s.dynasty && (
+              <span className="text-sm rounded border border-seal-500/40 bg-seal-600/10 px-2 py-0.5 text-seal-500 font-body">
+                {s.dynasty}
+              </span>
+            )}
+            <span className="text-xs rounded border border-ink-700 bg-ink-900 px-2 py-0.5 text-paper-300/60 font-body">
+              {visualModeLabel(s.config.visual_mode)}
+            </span>
+          </h1>
+          {s.description && <p className="mt-2 text-sm text-paper-300/60 max-w-2xl">{s.description}</p>}
+        </div>
+        <Button variant="outline" className="shrink-0" onClick={() => setShowSettings(true)}>
+          ⚙ 系列设置
+          {namedChars.length > 0 && (
+            <span className="text-xs text-paper-300/45">
+              {charsDone}/{namedChars.length} 参考图
             </span>
           )}
-          <span className="text-xs rounded border border-ink-700 bg-ink-900 px-2 py-0.5 text-paper-300/60 font-body">
-            {visualModeLabel(s.config.visual_mode)}
-          </span>
-        </h1>
-        {s.description && <p className="mt-2 text-sm text-paper-300/60 max-w-2xl">{s.description}</p>}
+        </Button>
       </div>
 
       {/* 生产概览：一眼看清这个系列做到哪了 */}
@@ -245,7 +256,7 @@ export default function SeriesDetailPage() {
         <InfoTile label="已发布" value={publishedEpisodes > 0 ? `${publishedEpisodes} 集` : '无'} />
       </div>
 
-      {/* 集列表：页面主内容，放在配置区之前；两个造集入口（单个 / 批量规划）并列在工具栏 */}
+      {/* 集列表：页面主内容（配置类内容已收进标题行的设置弹窗）；两个造集入口（单个 / 批量规划）并列在工具栏 */}
       <Card
         title={`集列表（${episodes.length}）`}
         extra={
@@ -398,46 +409,6 @@ export default function SeriesDetailPage() {
         )}
       </Card>
 
-      {/* 系列设置（基础信息 + 规格 + Provider + 创作参数，集中在一处可编辑） */}
-      <Collapsible summary="系列设置" badge={<span className="text-xs text-paper-300/40">基础信息 / 规格 / 创作</span>}>
-        <SeriesSettingsCard
-          series={s}
-          catalog={catalog}
-          voiceName={voiceName}
-          voiceLoading={!voicesData}
-        />
-      </Collapsible>
-
-      {/* 声音（§16：顶层实体，创建后锁定） */}
-      <Collapsible summary="声音" badge={<span className="text-xs text-paper-300/40">{voiceName || '未关联'}</span>}>
-        <VoiceProfileCard series={s} />
-      </Collapsible>
-
-      {/* 系列视觉参考（人物，跨集复用；折叠，默认收起，标题显示进度） */}
-      <Collapsible
-        summary="系列视觉参考 · 人物"
-        badge={
-          namedChars.length > 0 ? (
-            <span className="text-xs text-paper-300/45">
-              {charsDone}/{namedChars.length} 已生成
-            </span>
-          ) : undefined
-        }
-      >
-        <CharactersCard seriesId={s.id} characters={namedChars} busy={seriesBusy} job={seriesJob} />
-      </Collapsible>
-
-      {/* 删除系列（下沉到页脚，低调处理，需输入系列名确认） */}
-      <div className="flex justify-end pt-2">
-        <button
-          type="button"
-          onClick={() => setShowDelete(true)}
-          className="text-xs text-seal-500/50 hover:text-seal-500 hover:underline"
-        >
-          删除系列
-        </button>
-      </div>
-
       <CreateEpisodeModal seriesId={s.id} open={showCreate} onClose={() => setShowCreate(false)} />
       {/* AI 分集策划：批量造集入口，与集列表同一工具栏；满高抽屉承载对话 + 草案，不占详情页纵向空间 */}
       <Drawer
@@ -464,6 +435,56 @@ export default function SeriesDetailPage() {
         onClose={() => setEditing(null)}
         onSaved={() => void queryClient.invalidateQueries({ queryKey: ['series', seriesId] })}
       />
+      {/* 系列设置弹窗（标题行入口）：基础信息/规格/创作 + 声音 + 视觉参考 + 删除，集中一处 */}
+      <Modal
+        open={showSettings}
+        onClose={() => setShowSettings(false)}
+        title="系列设置"
+        maxWidth="max-w-4xl"
+      >
+        <div className="space-y-6">
+          <section>
+            <div className="text-xs text-paper-300/40 mb-3">基础信息 / 规格 / 创作</div>
+            <SeriesSettingsCard
+              series={s}
+              catalog={catalog}
+              voiceName={voiceName}
+              voiceLoading={!voicesData}
+            />
+          </section>
+
+          <section className="border-t border-ink-800 pt-5">
+            <div className="text-xs text-paper-300/40 mb-3">
+              声音（创建后锁定）
+              <span className="ml-2 text-paper-300/30">{voiceName || '未关联'}</span>
+            </div>
+            <VoiceProfileCard series={s} />
+          </section>
+
+          <section className="border-t border-ink-800 pt-5">
+            <div className="text-xs text-paper-300/40 mb-3">
+              系列视觉参考 · 人物
+              {namedChars.length > 0 && (
+                <span className="ml-2 text-paper-300/30">
+                  {charsDone}/{namedChars.length} 已生成
+                </span>
+              )}
+            </div>
+            <CharactersCard seriesId={s.id} characters={namedChars} busy={seriesBusy} job={seriesJob} />
+          </section>
+
+          {/* 删除系列（需输入系列名确认）：放在弹窗末尾，低调处理 */}
+          <section className="border-t border-ink-800 pt-5 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setShowDelete(true)}
+              className="text-xs text-seal-500/50 hover:text-seal-500 hover:underline"
+            >
+              删除系列
+            </button>
+          </section>
+        </div>
+      </Modal>
       <DeleteSeriesModal
         series={s}
         open={showDelete}

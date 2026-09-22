@@ -149,6 +149,13 @@ export interface SystemVoice {
   language: string
 }
 
+// VoiceProviderInfo 已接入的 TTS 供应商及其能力（后端下发，前端不硬编码）。
+export interface VoiceProviderInfo {
+  id: string
+  can_build: boolean // 是否支持造声（声音设计/复刻）
+  can_list: boolean // 是否支持系统音色列表（浏览音色库）
+}
+
 // VoiceProfile 旧值对象类型（兼容期保留，server preview/试音仍接收）。
 export interface VoiceProfile {
   key?: string
@@ -325,6 +332,8 @@ export interface AppSettings {
   kling_base_url: string
   bailian_api_key?: string
   bailian_base_url: string
+  // ready_providers 已具备可用凭据的供应商标识；AI 设置页据此禁用未配置的选项。
+  ready_providers?: string[]
   default_ratio: string
   default_resolution: string
   max_concurrency: number

@@ -14,6 +14,7 @@ import type {
   JobEvent,
   SystemVoice,
   Voice,
+  VoiceProviderInfo,
 } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -279,6 +280,9 @@ export const api = {
       headers: {},
     })
   },
+
+  // listVoiceProviders 列出已接入的 TTS 供应商及其造声/列音色能力（后端下发）。
+  listVoiceProviders: () => request<VoiceProviderInfo[]>('/api/voice-providers'),
 
   // listSystemVoices 浏览某 TTS 供应商的系统音色（只取元数据，不合成、不产生费用）。
   listSystemVoices: (provider: string, model?: string) => {

@@ -5,6 +5,19 @@ export function visualModeLabel(mode: string | undefined): string {
   return mode === 'video' ? 'AI 视频' : '小人书插画'
 }
 
+// TTS 供应商（Voice.Provider）的中文名。选项由后端 /api/voice-providers 下发，
+// 这里只负责展示名；接入新供应商时补一条即可，未登记则回退显示原始 id。
+const VOICE_PROVIDER_LABELS: Record<string, string> = {
+  bailian: '阿里云百炼 CosyVoice',
+  minimax: 'MiniMax',
+}
+
+export function voiceProviderLabel(id: string | undefined): string {
+  const key = (id ?? '').trim()
+  if (!key) return '阿里云百炼 CosyVoice'
+  return VOICE_PROVIDER_LABELS[key] ?? key
+}
+
 // 画幅与分辨率档位：新建系列与系列设置共用。
 export const RATIO_OPTIONS = ['9:16', '16:9', '1:1', '3:4']
 export const RESOLUTION_OPTIONS = ['1080P', '720P']

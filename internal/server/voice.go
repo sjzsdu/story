@@ -338,6 +338,12 @@ func (s *Server) servePreview(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, abs)
 }
 
+// listVoiceProviders 列出已接入的 TTS 供应商及其造声/列音色能力。
+// 前端据此动态渲染供应商下拉（声音表单/造声弹窗），新增供应商无需改前端。
+func (s *Server) listVoiceProviders(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.app.VoiceProviderInfos())
+}
+
 // listSystemVoices 列出某 TTS 供应商给定模型的系统音色（浏览音色库挑选）。
 // 只取元数据、不合成语音，不产生费用。
 func (s *Server) listSystemVoices(w http.ResponseWriter, r *http.Request) {

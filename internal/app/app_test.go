@@ -66,6 +66,51 @@ func TestResolveVoiceBuilder(t *testing.T) {
 	}
 }
 
+// TestVoiceProviders 覆盖供应商能力分发（2026-09-22 配置/默认解耦）：
+// 已知供应商原样保留（不再被归一成 bailian）、能力清单如实反映注册表、
+// 系统音色按供应商分发且未登记时明确报错。
+func TestVoiceProviders(t *testing.T) {
+	// 已知供应商（minimax）必须保留，不得静默归一成 bailian。
+	if got := domain.NormalizeVoiceProvider("  MiniMax "); got != domain.VoiceProviderMinimax {
+		t.Fatalf("已知供应商应原样保留，得到 %q", got)
+	}
+	if got := domain.NormalizeVoiceProvider(""); got != domain.VoiceProviderBailian {
+		t.Fatalf("空值应回退 bailian，得到 %q", got)
+	}
+	if got := domain.NormalizeVoiceProvider("iflytek"); got != domain.VoiceProviderBailian {
+		t.Fatalf("未知供应商应回退 bailian（兼容旧数据），得到 %q", got)
+	}
+
+	lister := &mock.VoiceList{Voices: []domain.SystemVoice{{ID: "longtian_v3"}}}
+	a := &App{
+		voiceListers:  map[string]port.VoiceLister{domain.VoiceProviderBailian: lister},
+		voiceBuilders: map[string]port.VoiceBuilder{domain.VoiceProviderBailian: &mock.VoiceBuild{}},
+	}
+
+	// 能力清单：bailian 既能造声也能列音色；minimax 暂无。
+	infos := a.VoiceProviderInfos()
+	byID := make(map[string]VoiceProviderInfo, len(infos))
+	for _, in := range infos {
+		byID[in.ID] = in
+	}
+	if got := byID[domain.VoiceProviderBailian]; !got.CanBuild || !got.CanList {
+		t.Errorf("bailian 能力 = %+v，期望 build/list 均为 true", got)
+	}
+	if got := byID[domain.VoiceProviderMinimax]; got.CanBuild || got.CanList {
+		t.Errorf("minimax 能力 = %+v，期望 build/list 均为 false", got)
+	}
+
+	// 已登记 → 分发到该供应商的 lister。
+	vs, err := a.ListSystemVoices(context.Background(), "bailian", "")
+	if err != nil || len(vs) != 1 {
+		t.Fatalf("bailian 系统音色应分发成功，得到 (%v, %v)", vs, err)
+	}
+	// 未登记 → 明确报错（不得静默回退 bailian 去列音色）。
+	if _, err := a.ListSystemVoices(context.Background(), "minimax", ""); err == nil {
+		t.Fatal("未登记系统音色能力的供应商应报错")
+	}
+}
+
 // TestSaveVoiceSample 覆盖参考音频保存与归一化（§16 复刻）：
 // 时长下限拦截、归一化失败传播、未装配报错、恶意文件名不逃出目标目录。
 func TestSaveVoiceSample(t *testing.T) {

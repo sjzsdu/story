@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/sjzsdu/story/internal/config"
 )
@@ -12,41 +13,65 @@ import (
 // configResponse 配置快照（前端渲染 Settings 页用）。
 // 敏感字段（API Key）掩码返回。
 type configResponse struct {
-	DataDir              string `json:"data_dir"`
-	BLBin                string `json:"bl_bin"`
-	FFMPEGBin            string `json:"ffmpeg_bin"`
-	TextModel            string `json:"text_model"`
-	VideoModel           string `json:"video_model"`
-	TTSModel             string `json:"tts_model"`
-	TTSVoice             string `json:"tts_voice"`
-	ImageModel           string `json:"image_model"`
-	TTSInstruction       string `json:"tts_instruction"`
-	TextProvider         string `json:"text_provider"`
-	TTSProvider          string `json:"tts_provider"`
-	ImageProvider        string `json:"image_provider"`
-	VideoProvider        string `json:"video_provider"`
-	DeepSeekAPIKey       string `json:"deepseek_api_key,omitempty"`
-	DeepSeekBaseURL      string `json:"deepseek_base_url"`
-	DeepSeekModel        string `json:"deepseek_model"`
-	MinimaxAPIKey        string `json:"minimax_api_key,omitempty"`
-	MinimaxBaseURL       string `json:"minimax_base_url"`
-	MinimaxModel         string `json:"minimax_model"`
-	ZhipuAPIKey          string `json:"zhipu_api_key,omitempty"`
-	ZhipuBaseURL         string `json:"zhipu_base_url"`
-	KlingAccessKey       string `json:"kling_access_key,omitempty"`
-	KlingSecretKey       string `json:"kling_secret_key,omitempty"`
-	KlingBaseURL         string `json:"kling_base_url"`
-	BailianAPIKey        string `json:"bailian_api_key,omitempty"`
-	BailianBaseURL       string `json:"bailian_base_url"`
-	DefaultRatio         string `json:"default_ratio"`
-	DefaultResolution    string `json:"default_resolution"`
-	MaxConcurrency       int    `json:"max_concurrency"`
-	MaxRetries           int    `json:"max_retries"`
-	SubtitleFont         string `json:"subtitle_font"`
-	SAUBin               string `json:"sau_bin"`
-	PythonBin            string `json:"python_bin"`
+	DataDir               string `json:"data_dir"`
+	BLBin                 string `json:"bl_bin"`
+	FFMPEGBin             string `json:"ffmpeg_bin"`
+	TextModel             string `json:"text_model"`
+	VideoModel            string `json:"video_model"`
+	TTSModel              string `json:"tts_model"`
+	TTSVoice              string `json:"tts_voice"`
+	ImageModel            string `json:"image_model"`
+	TTSInstruction        string `json:"tts_instruction"`
+	TextProvider          string `json:"text_provider"`
+	TTSProvider           string `json:"tts_provider"`
+	ImageProvider         string `json:"image_provider"`
+	VideoProvider         string `json:"video_provider"`
+	DeepSeekAPIKey        string `json:"deepseek_api_key,omitempty"`
+	DeepSeekBaseURL       string `json:"deepseek_base_url"`
+	DeepSeekModel         string `json:"deepseek_model"`
+	MinimaxAPIKey         string `json:"minimax_api_key,omitempty"`
+	MinimaxBaseURL        string `json:"minimax_base_url"`
+	MinimaxModel          string `json:"minimax_model"`
+	ZhipuAPIKey           string `json:"zhipu_api_key,omitempty"`
+	ZhipuBaseURL          string `json:"zhipu_base_url"`
+	KlingAccessKey        string `json:"kling_access_key,omitempty"`
+	KlingSecretKey        string `json:"kling_secret_key,omitempty"`
+	KlingBaseURL          string `json:"kling_base_url"`
+	BailianAPIKey         string `json:"bailian_api_key,omitempty"`
+	BailianBaseURL        string `json:"bailian_base_url"`
+	DefaultRatio          string `json:"default_ratio"`
+	DefaultResolution     string `json:"default_resolution"`
+	MaxConcurrency        int    `json:"max_concurrency"`
+	MaxRetries            int    `json:"max_retries"`
+	SubtitleFont          string `json:"subtitle_font"`
+	SAUBin                string `json:"sau_bin"`
+	PythonBin             string `json:"python_bin"`
 	DefaultPublishAccount string `json:"default_publish_account"`
-	BilibiliDefaultTid   int    `json:"bilibili_default_tid"`
+	BilibiliDefaultTid    int    `json:"bilibili_default_tid"`
+	// ReadyProviders 已具备可用凭据的供应商标识（AI 设置页据此禁用未配置的选项）。
+	ReadyProviders []string `json:"ready_providers"`
+}
+
+// readyProviders 返回已具备可用凭据的供应商标识（前端据此禁用未配置项）。
+// 判定依据是合并环境变量后的生效配置：写进 story.yaml 的 Key 与注入的环境变量都算已配置。
+// 百炼恒为可用：它是系统内置默认，走 bl CLI 自带认证（凭据也可来自 ~/.bailian/config.json），
+// 不强制要求在配置里写 Key。
+func readyProviders(cfg config.Config) []string {
+	out := []string{"bailian"}
+	if strings.TrimSpace(cfg.DeepSeekAPIKey) != "" {
+		out = append(out, "deepseek")
+	}
+	if strings.TrimSpace(cfg.MinimaxAPIKey) != "" {
+		out = append(out, "minimax")
+	}
+	if strings.TrimSpace(cfg.ZhipuAPIKey) != "" {
+		out = append(out, "zhipu")
+	}
+	// 可灵需要 Access Key + Secret Key 成对齐全才算可用。
+	if strings.TrimSpace(cfg.KlingAccessKey) != "" && strings.TrimSpace(cfg.KlingSecretKey) != "" {
+		out = append(out, "kling")
+	}
+	return out
 }
 
 func configFromInternal(cfg config.Config) configResponse {
@@ -100,6 +125,8 @@ func configFromInternal(cfg config.Config) configResponse {
 	if cfg.KlingSecretKey != "" {
 		r.KlingSecretKey = maskKey(cfg.KlingSecretKey)
 	}
+	// 已配置的供应商（供前端禁用未配置选项）。
+	r.ReadyProviders = readyProviders(cfg)
 	return r
 }
 

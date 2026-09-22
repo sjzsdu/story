@@ -74,6 +74,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/voices/clone", s.cloneVoice)
 	// 复刻参考音频上传（浏览器上传文件 / 现场录音），归一化后返回服务器路径。
 	s.mux.HandleFunc("POST /api/voices/audio", s.uploadVoiceSample)
+	// 已接入的 TTS 供应商及其造声/列音色能力（前端据此动态渲染下拉，不硬编码）。
+	s.mux.HandleFunc("GET /api/voice-providers", s.listVoiceProviders)
 	s.mux.HandleFunc("GET /api/voice-providers/{provider}/voices", s.listSystemVoices)
 	// §16：series.voice_id 创建后锁定，不再允许单独更新；旧端点返回 409 提示编辑声音条目本身。
 	s.mux.HandleFunc("PUT /api/series/{id}/voice", s.voiceProfileLocked)

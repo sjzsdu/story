@@ -37,8 +37,9 @@ type App struct {
 	Repo   port.Repository
 	Engine *engine.Engine
 
-	// voiceLister 系统音色列表查询（浏览音色库）；由装配的 TTS provider 提供。
-	voiceLister port.VoiceLister
+	// voiceListers 系统音色列表查询（浏览音色库）注册表，key = 供应商标识
+	// （domain.VoiceProviderXxx）；与 voiceBuilders 同构，按供应商分发。
+	voiceListers map[string]port.VoiceLister
 	// voiceBuilders 造声能力（声音设计/声音复刻）注册表，key = 供应商标识
 	// （domain.VoiceProviderXxx）。造声与供应商强绑定（模型/音色体系各异），
 	// 故按供应商分发而非持有单一实例；接第二家 TTS 时在此加一项即可。
@@ -156,8 +157,10 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*App, error) {
 		Cfg:    cfg,
 		Repo:   store,
 		Engine: eng,
-		// 造声能力注册表：当前只有百炼；新增供应商时在此登记其 VoiceBuilder。
-		voiceLister: bl,
+		// 造声/系统音色能力注册表：当前只有百炼；新增供应商时在此各登记一项。
+		voiceListers: map[string]port.VoiceLister{
+			domain.VoiceProviderBailian: bl,
+		},
 		voiceBuilders: map[string]port.VoiceBuilder{
 			domain.VoiceProviderBailian: bl,
 		},
@@ -763,24 +766,56 @@ func (a *App) DeleteVoice(ctx context.Context, id string) error {
 }
 
 // ListSystemVoices 列出某 TTS 供应商给定模型的系统音色（浏览音色库创建声音用）。
-// 只取元数据、不合成语音，不产生费用。provider 目前只支持 bailian；
+// 只取元数据、不合成语音，不产生费用。按供应商分发到已登记的 VoiceLister；
+// 未登记该能力时明确报错（不与 NormalizeVoiceProvider 的「未知回退」同语义）。
 // model 为空时用配置的 TTS 模型，再空由 provider 用其默认模型。
 func (a *App) ListSystemVoices(ctx context.Context, provider, model string) ([]domain.SystemVoice, error) {
-	pv := domain.NormalizeVoiceProvider(provider)
-	if pv != domain.VoiceProviderBailian {
-		return nil, fmt.Errorf("暂不支持 TTS 供应商 %q", provider)
-	}
-	if a.voiceLister == nil {
-		return nil, fmt.Errorf("未配置系统音色列表查询能力（VoiceLister）")
+	p := domain.NormalizeVoiceProvider(provider)
+	lister := a.voiceListers[p]
+	if lister == nil {
+		return nil, fmt.Errorf("暂不支持 TTS 供应商 %q 的系统音色列表（当前支持：%s）",
+			provider, strings.Join(a.voiceListerProviders(), "/"))
 	}
 	if strings.TrimSpace(model) == "" {
 		model = a.Cfg.TTSModel
 	}
-	vs, err := a.voiceLister.ListSystemVoices(ctx, model)
-	if err != nil {
-		return nil, err
+	return lister.ListSystemVoices(ctx, model)
+}
+
+// voiceListerProviders 已登记系统音色列表能力的供应商标识（排序后，用于错误提示）。
+func (a *App) voiceListerProviders() []string {
+	out := make([]string, 0, len(a.voiceListers))
+	for p, l := range a.voiceListers {
+		if l != nil {
+			out = append(out, p)
+		}
 	}
-	return vs, nil
+	sort.Strings(out)
+	return out
+}
+
+// VoiceProviderInfo TTS 供应商能力快照（声音库表单/造声下拉渲染用）。
+// 前端据此动态渲染供应商选项，新增供应商时无需改前端。
+type VoiceProviderInfo struct {
+	// ID 供应商标识（domain.VoiceProviderXxx）。
+	ID string `json:"id"`
+	// CanBuild 是否具备造声能力（声音设计/声音复刻）。
+	CanBuild bool `json:"can_build"`
+	// CanList 是否具备系统音色列表能力（浏览音色库）。
+	CanList bool `json:"can_list"`
+}
+
+// VoiceProviderInfos 返回系统已接入的 TTS 供应商及其能力（按注册顺序）。
+func (a *App) VoiceProviderInfos() []VoiceProviderInfo {
+	out := make([]VoiceProviderInfo, 0, len(domain.VoiceProviders))
+	for _, id := range domain.VoiceProviders {
+		out = append(out, VoiceProviderInfo{
+			ID:       id,
+			CanBuild: a.voiceBuilders[id] != nil,
+			CanList:  a.voiceListers[id] != nil,
+		})
+	}
+	return out
 }
 
 // GetSeriesVoice 取某系列引用的声音条目；找不到时回退默认预设（engine fallback 用）。

@@ -8,6 +8,7 @@ import { Card, ErrorBox } from '../components/ui'
 const TABS = [
   { path: '/settings', label: '通用', exact: true },
   { path: '/settings/ai', label: 'AI 模型' },
+  { path: '/settings/providers', label: '供应商配置' },
   { path: '/settings/platforms', label: '平台账号' },
   { path: '/settings/publish', label: '发布' },
 ]
@@ -46,6 +47,7 @@ export default function SettingsPage() {
       {/* Tab 内容 */}
       {activeTab.path === '/settings' && <GeneralTab />}
       {activeTab.path === '/settings/ai' && <AITab />}
+      {activeTab.path === '/settings/providers' && <ProvidersTab />}
       {activeTab.path === '/settings/platforms' && <PlatformsTab />}
       {activeTab.path === '/settings/publish' && <PublishTab />}
     </div>
@@ -92,118 +94,81 @@ function GeneralTab() {
 }
 
 // ---- AI 模型设置 ----
-
+//
+// 与「供应商配置」Tab 分离（2026-09-22）：
+//  本 Tab = 默认实现——每个能力选一个默认供应商 + 全局默认旁白兜底，只管「用谁」。
+//  凭据/模型在「供应商配置」Tab 填；未配置凭据的供应商在此不可选（禁用态）。
 function AITab() {
   return (
     <div className="space-y-4">
-      {/* 文本生成 */}
-      <Card title="文本生成">
+      <Card title="默认实现">
+        <p className="text-xs text-paper-300/45 leading-relaxed mb-4">
+          选择各能力默认使用的供应商。灰色的尚未配置凭据，请先到
+          <Link to="/settings/providers" className="text-gold-500 hover:underline mx-1">供应商配置</Link>
+          填写后即可选。
+        </p>
         <SettingFields
           fields={[
-            { key: 'text_provider', label: 'Provider', type: 'provider-select', options: ['bailian', 'deepseek'] },
+            { key: 'text_provider', label: '文本生成', type: 'provider-select', options: ['bailian', 'deepseek'] },
+            { key: 'tts_provider', label: '语音合成', type: 'provider-select', options: ['bailian', 'minimax'] },
+            { key: 'image_provider', label: '图片生成', type: 'provider-select', options: ['bailian', 'zhipu'] },
+            { key: 'video_provider', label: '视频生成', type: 'provider-select', options: ['bailian', 'kling'] },
           ]}
         />
-        <ProviderConfig group="text" />
-      </Card>
-
-      {/* 语音合成 */}
-      <Card title="语音合成 (TTS)">
-        <SettingFields
-          fields={[
-            { key: 'tts_provider', label: 'Provider', type: 'provider-select', options: ['bailian', 'minimax'] },
-          ]}
-        />
-        <ProviderConfig group="tts" />
-      </Card>
-
-      {/* 图片生成 */}
-      <Card title="图片生成">
-        <SettingFields
-          fields={[
-            { key: 'image_provider', label: 'Provider', type: 'provider-select', options: ['bailian', 'zhipu'] },
-          ]}
-        />
-        <ProviderConfig group="image" />
-      </Card>
-
-      {/* 视频生成 */}
-      <Card title="视频生成">
-        <SettingFields
-          fields={[
-            { key: 'video_provider', label: 'Provider', type: 'provider-select', options: ['bailian', 'kling'] },
-          ]}
-        />
-        <ProviderConfig group="video" />
-      </Card>
-    </div>
-  )
-}
-
-// 根据选中的 provider 动态显示对应配置
-function ProviderConfig({ group }: { group: 'text' | 'tts' | 'image' | 'video' }) {
-  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings })
-  if (!settings) return null
-
-  const provider = group === 'text' ? (settings.text_provider || 'bailian')
-    : group === 'tts' ? (settings.tts_provider || 'bailian')
-    : group === 'image' ? (settings.image_provider || 'bailian')
-    : (settings.video_provider || 'bailian')
-
-  // Bailian 配置（所有 group 共用）
-  if (provider === 'bailian') {
-    if (group === 'text') {
-      return (
-        <div className="mt-4 pt-4 border-t border-ink-800">
+        <div className="mt-4 pt-4 border-t border-ink-800 space-y-3">
+          <div>
+            <div className="text-sm text-paper-100">默认旁白</div>
+            <div className="text-[11px] text-paper-300/30 mt-0.5">
+              系列未指定声音条目时的全局兜底音色与指令
+            </div>
+          </div>
           <SettingFields
             fields={[
-              { key: 'text_model', label: '文本模型', type: 'select', options: ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen-max-latest'], help: '留空用 bl 默认', allowEmpty: true },
-              { key: 'bailian_api_key', label: 'API Key', type: 'password', placeholder: '留空回退环境变量', help: '或设置 STORY_BAILIAN_API_KEY' },
-              { key: 'bailian_base_url', label: 'Base URL', type: 'text', placeholder: 'https://dashscope.aliyuncs.com', help: '留空用默认地址' },
-            ]}
-          />
-        </div>
-      )
-    }
-    if (group === 'tts') {
-      return (
-        <div className="mt-4 pt-4 border-t border-ink-800">
-          <SettingFields
-            fields={[
-              { key: 'tts_model', label: 'TTS 模型', type: 'select', options: ['cosyvoice-v3-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash'] },
               { key: 'tts_voice', label: '默认音色', type: 'voice-select' },
               { key: 'tts_instruction', label: '默认旁白指令', type: 'textarea', placeholder: '请用沉稳厚重、富有历史讲述感的语调…' },
             ]}
           />
         </div>
-      )
-    }
-    if (group === 'image') {
-      return (
-        <div className="mt-4 pt-4 border-t border-ink-800">
-          <SettingFields
-            fields={[
-              { key: 'image_model', label: '图片模型', type: 'select', options: ['wanx2.1-t2i-turbo', 'wanx2.1-t2i-plus', 'wanx2.1-t2i-max'], help: '小人书模式 / 定妆照' },
-            ]}
-          />
-        </div>
-      )
-    }
-    // video
-    return (
-      <div className="mt-4 pt-4 border-t border-ink-800">
+      </Card>
+    </div>
+  )
+}
+
+// ---- 供应商配置 ----
+//
+// 只管凭据与模型，与「谁是默认」无关；各供应商可同时配置、并存。
+function ProvidersTab() {
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="font-display text-lg tracking-wider text-paper-100">供应商配置</h2>
+        <p className="mt-1 text-xs text-paper-300/45">
+          按供应商填写凭据与模型；可全部配好备用，配置完即可在「AI 模型」里选为默认。
+        </p>
+      </div>
+      <ProviderConfigCards />
+    </div>
+  )
+}
+
+// ProviderConfigCards 各供应商的凭据与模型配置（与「谁是默认」无关）。
+function ProviderConfigCards() {
+  return (
+    <>
+      <Card title="阿里云百炼 (bl)">
         <SettingFields
           fields={[
+            { key: 'bailian_api_key', label: 'API Key', type: 'password', placeholder: '留空回退环境变量', help: '或设置 STORY_BAILIAN_API_KEY' },
+            { key: 'bailian_base_url', label: 'Base URL', type: 'text', placeholder: 'https://dashscope.aliyuncs.com', help: '留空用默认地址' },
+            { key: 'text_model', label: '文本模型', type: 'select', options: ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen-max-latest'], help: '留空用 bl 默认', allowEmpty: true },
+            { key: 'tts_model', label: 'TTS 模型', type: 'select', options: ['cosyvoice-v3-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash'] },
+            { key: 'image_model', label: '图片模型', type: 'select', options: ['wanx2.1-t2i-turbo', 'wanx2.1-t2i-plus', 'wanx2.1-t2i-max'], help: '小人书模式 / 定妆照' },
             { key: 'video_model', label: '视频模型', type: 'select', options: ['wan3.0-video', 'wanx-video'], help: '视频模式时使用' },
           ]}
         />
-      </div>
-    )
-  }
+      </Card>
 
-  // DeepSeek
-  if (provider === 'deepseek' && group === 'text') {
-    return (
-      <div className="mt-4 pt-4 border-t border-ink-800">
+      <Card title="DeepSeek">
         <SettingFields
           fields={[
             { key: 'deepseek_api_key', label: 'API Key', type: 'password', placeholder: 'sk-…', help: '或设置 DEEPSEEK_API_KEY' },
@@ -211,14 +176,9 @@ function ProviderConfig({ group }: { group: 'text' | 'tts' | 'image' | 'video' }
             { key: 'deepseek_model', label: '模型', type: 'select', options: ['deepseek-chat', 'deepseek-reasoner'], help: 'deepseek-chat 通用，deepseek-reasoner 推理更强' },
           ]}
         />
-      </div>
-    )
-  }
+      </Card>
 
-  // MiniMax TTS
-  if (provider === 'minimax' && group === 'tts') {
-    return (
-      <div className="mt-4 pt-4 border-t border-ink-800">
+      <Card title="MiniMax">
         <SettingFields
           fields={[
             { key: 'minimax_api_key', label: 'API Key', type: 'password', placeholder: 'eyJ…', help: '或设置 MINIMAX_API_KEY' },
@@ -226,28 +186,18 @@ function ProviderConfig({ group }: { group: 'text' | 'tts' | 'image' | 'video' }
             { key: 'minimax_model', label: '模型', type: 'select', options: ['speech-02-hd', 'speech-01-hd', 'speech-01'], help: 'speech-02-hd 最新最自然' },
           ]}
         />
-      </div>
-    )
-  }
+      </Card>
 
-  // 智谱 CogView
-  if (provider === 'zhipu' && group === 'image') {
-    return (
-      <div className="mt-4 pt-4 border-t border-ink-800">
+      <Card title="智谱 CogView">
         <SettingFields
           fields={[
             { key: 'zhipu_api_key', label: 'API Key', type: 'password', placeholder: '…', help: '或设置 ZHIPU_API_KEY' },
             { key: 'zhipu_base_url', label: 'API 地址', type: 'text', placeholder: 'https://open.bigmodel.cn/api/paas/v4', help: '留空用默认地址' },
           ]}
         />
-      </div>
-    )
-  }
+      </Card>
 
-  // 可灵 Kling
-  if (provider === 'kling' && group === 'video') {
-    return (
-      <div className="mt-4 pt-4 border-t border-ink-800">
+      <Card title="可灵 Kling">
         <SettingFields
           fields={[
             { key: 'kling_access_key', label: 'Access Key', type: 'password', placeholder: '…', help: '或设置 KLING_ACCESS_KEY' },
@@ -255,11 +205,9 @@ function ProviderConfig({ group }: { group: 'text' | 'tts' | 'image' | 'video' }
             { key: 'kling_base_url', label: 'API 地址', type: 'text', placeholder: 'https://api.klingai.com', help: '留空用默认地址' },
           ]}
         />
-      </div>
-    )
-  }
-
-  return null
+      </Card>
+    </>
+  )
 }
 
 // ---- 平台账号 ----
@@ -355,6 +303,10 @@ function SettingFields({ fields }: { fields: FieldDef[] }) {
 
   if (!settings) return null
 
+  // 已配置凭据的供应商（后端下发）；为空表示后端未提供该信息，此时一律不禁用。
+  const readyProviders = settings.ready_providers ?? []
+  const readySet = new Set(readyProviders)
+
   return (
     <div className="space-y-3 text-sm">
       {errMsg && <ErrorBox>{errMsg}</ErrorBox>}
@@ -369,17 +321,26 @@ function SettingFields({ fields }: { fields: FieldDef[] }) {
             kling: { label: '可灵 Kling', desc: '快手 API，中文视频最强' },
           }
           return (
-            <div key={f.key} className="grid grid-cols-[140px_1fr] gap-3 items-center">
-              <label className="text-paper-300/70">{f.label}</label>
-              <RadioGroup
-                value={val || 'bailian'}
-                options={(f.options || []).map((opt) => ({
-                  value: opt,
-                  label: providerDescs[opt]?.label ?? opt,
-                  desc: providerDescs[opt]?.desc,
-                }))}
-                onChange={(v) => mut.mutate({ [f.key]: v })}
-              />
+            <div key={f.key} className="grid grid-cols-[140px_1fr] gap-3 items-start">
+              <label className="text-paper-300/70 pt-2">{f.label}</label>
+              <div>
+                <RadioGroup
+                  value={val || 'bailian'}
+                  options={(f.options || []).map((opt) => ({
+                    value: opt,
+                    label: providerDescs[opt]?.label ?? opt,
+                    desc: providerDescs[opt]?.desc,
+                    // 未配置凭据的供应商禁用，引导去「供应商配置」填写。
+                    disabled: readyProviders.length > 0 && !readySet.has(opt),
+                  }))}
+                  onChange={(v) => mut.mutate({ [f.key]: v })}
+                />
+                {readyProviders.length > 0 && val && !readySet.has(val) && (
+                  <div className="mt-1.5 text-[11px] text-amber-400/80">
+                    当前默认「{providerDescs[val]?.label ?? val}」尚未配置凭据，调用会失败；请到「供应商配置」补齐。
+                  </div>
+                )}
+              </div>
             </div>
           )
         }
@@ -446,36 +407,48 @@ function SettingFields({ fields }: { fields: FieldDef[] }) {
 
 function RadioGroup({ value, options, onChange }: {
   value: string
-  options: { value: string; label: string; desc?: string }[]
+  options: { value: string; label: string; desc?: string; disabled?: boolean }[]
   onChange: (v: string) => void
 }) {
   return (
     <div className="flex gap-3">
-      {options.map((opt) => (
-        <label
-          key={opt.value}
-          className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${
-            value === opt.value
-              ? 'border-gold-500/50 bg-gold-500/10 text-gold-500'
-              : 'border-ink-700 bg-ink-900/30 text-paper-300/60 hover:border-ink-600'
-          }`}
-        >
-          <input
-            type="radio"
-            checked={value === opt.value}
-            onChange={() => onChange(opt.value)}
-            className="sr-only"
-          />
-          <div className="w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0"
-            style={{ borderColor: value === opt.value ? '#d4a853' : '#3a3a3a' }}>
-            {value === opt.value && <div className="w-2 h-2 rounded-full bg-gold-500" />}
-          </div>
-          <div>
-            <div className="text-sm">{opt.label}</div>
-            {opt.desc && <div className="text-[11px] text-paper-300/40">{opt.desc}</div>}
-          </div>
-        </label>
-      ))}
+      {options.map((opt) => {
+        const selected = value === opt.value
+        return (
+          <label
+            key={opt.value}
+            title={opt.disabled ? '尚未配置该供应商的凭据，请先到「供应商配置」填写' : undefined}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors ${
+              opt.disabled
+                ? selected
+                  ? 'border-gold-500/30 bg-gold-500/5 text-gold-500/60 cursor-not-allowed'
+                  : 'border-ink-800 bg-ink-900/20 text-paper-300/25 cursor-not-allowed'
+                : selected
+                  ? 'border-gold-500/50 bg-gold-500/10 text-gold-500 cursor-pointer'
+                  : 'border-ink-700 bg-ink-900/30 text-paper-300/60 hover:border-ink-600 cursor-pointer'
+            }`}
+          >
+            <input
+              type="radio"
+              checked={selected}
+              disabled={opt.disabled}
+              onChange={() => onChange(opt.value)}
+              className="sr-only"
+            />
+            <div className="w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0"
+              style={{ borderColor: selected ? '#d4a853' : opt.disabled ? '#2a2a2a' : '#3a3a3a' }}>
+              {selected && <div className="w-2 h-2 rounded-full bg-gold-500" />}
+            </div>
+            <div>
+              <div className="text-sm">
+                {opt.label}
+                {opt.disabled && <span className="ml-1 text-[11px]">未配置</span>}
+              </div>
+              {opt.desc && <div className="text-[11px] text-paper-300/40">{opt.desc}</div>}
+            </div>
+          </label>
+        )
+      })}
     </div>
   )
 }

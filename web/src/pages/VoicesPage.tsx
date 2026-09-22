@@ -2,14 +2,18 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
 import type { Voice } from '../types'
+import { voiceProviderLabel } from '../labels'
 import { Button, Card, Empty, ErrorBox, Field, Modal, Select, Spinner, TextInput } from '../components/ui'
 
-// TTS 供应商选项。一条声音条目只属于一个供应商（§16，2026-09-20）；
-// 当前系统只接入百炼，未来接入新供应商时在此追加，VoiceFormModal 与
-// 浏览音色库自动按所选供应商取数。
-const PROVIDER_OPTIONS = [
-	{ id: 'bailian', label: '阿里云百炼 CosyVoice' },
-]
+// TTS 供应商选项由后端下发（/api/voice-providers，含造声/列音色能力），
+// 前端不硬编码；接入新供应商只需后端登记，这里零改动。
+function useVoiceProviders() {
+	return useQuery({
+		queryKey: ['voice-providers'],
+		queryFn: api.listVoiceProviders,
+		staleTime: 5 * 60_000,
+	})
+}
 
 export default function VoicesPage() {
 	const { data: voices, isLoading, error } = useQuery({ queryKey: ['voices'], queryFn: api.listVoices })
@@ -143,7 +147,7 @@ function VoiceCard({
 			<dl className="text-xs text-paper-300/50 space-y-1 mb-3">
 				<div className="flex gap-2">
 					<dt className="w-14 shrink-0 text-paper-300/35">供应商</dt>
-					<dd>{v.provider || 'bailian'}</dd>
+					<dd>{voiceProviderLabel(v.provider)}</dd>
 				</div>
 				<div className="flex gap-2">
 					<dt className="w-14 shrink-0 text-paper-300/35">音色</dt>
@@ -286,13 +290,21 @@ function VoiceFormModal({
 	const [styleNote, setStyleNote] = useState(initial?.styleNote ?? '')
 	const [err, setErr] = useState('')
 
+	// 供应商选项与能力（是否可浏览音色库）由后端下发；加载完成前先只保留当前值。
+	const { data: providerInfos } = useVoiceProviders()
+	const providers = providerInfos ?? []
+	const providerOpts = providers.length > 0
+		? providers
+		: [{ id: provider, can_build: false, can_list: false }]
+	const canList = providers.find((p) => p.id === provider)?.can_list ?? provider === 'bailian'
+
 	// 浏览音色库（内嵌展开，不嵌套 Modal）。
 	const [browseOpen, setBrowseOpen] = useState(false)
 	const [keyword, setKeyword] = useState('')
 	const sysQuery = useQuery({
 		queryKey: ['system-voices', provider],
 		queryFn: () => api.listSystemVoices(provider),
-		enabled: browseOpen,
+		enabled: browseOpen && canList,
 		staleTime: 5 * 60_000,
 	})
 	const filtered = (sysQuery.data ?? []).filter((sv) => {
@@ -364,9 +376,17 @@ function VoiceFormModal({
 					<TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="如：磁性理智男" autoFocus />
 				</Field>
 				<Field label="TTS 供应商">
-					<Select value={provider} onChange={(e) => setProvider(e.target.value)}>
-						{PROVIDER_OPTIONS.map((p) => (
-							<option key={p.id} value={p.id}>{p.label}</option>
+					<Select
+						value={provider}
+						onChange={(e) => {
+							setProvider(e.target.value)
+							// 切供应商后旧音色库列表不再适用，收起并清空搜索。
+							setBrowseOpen(false)
+							setKeyword('')
+						}}
+					>
+						{providerOpts.map((p) => (
+							<option key={p.id} value={p.id}>{voiceProviderLabel(p.id)}</option>
 						))}
 					</Select>
 				</Field>
@@ -374,13 +394,15 @@ function VoiceFormModal({
 				<Field label="音色 ID（必填）">
 					<div className="flex gap-2">
 						<TextInput value={voice} onChange={(e) => setVoice(e.target.value)} placeholder="如 longtian_v3" />
-						<Button
-							type="button"
-							variant="outline"
-							onClick={() => setBrowseOpen((v) => !v)}
-						>
-							{browseOpen ? '收起' : '浏览音色库'}
-						</Button>
+						{canList && (
+							<Button
+								type="button"
+								variant="outline"
+								onClick={() => setBrowseOpen((v) => !v)}
+							>
+								{browseOpen ? '收起' : '浏览音色库'}
+							</Button>
+						)}
 					</div>
 
 					{browseOpen && (
@@ -584,6 +606,12 @@ function BuildVoiceModal({
 	const qc = useQueryClient()
 	const isDesign = kind === 'design'
 	const [provider, setProvider] = useState('bailian')
+	// 造声能力按供应商分发：只列出后端登记了 VoiceBuilder 的供应商。
+	const { data: providerInfos } = useVoiceProviders()
+	const buildProviderOpts = (providerInfos ?? []).filter((p) => p.can_build)
+	const providerOpts = buildProviderOpts.length > 0
+		? buildProviderOpts
+		: [{ id: provider, can_build: true, can_list: false }]
 	const [name, setName] = useState('')
 	const [prompt, setPrompt] = useState('')
 	const [previewText, setPreviewText] = useState('')
@@ -764,12 +792,12 @@ function BuildVoiceModal({
 					<TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="如：说书人·沉稳男声" autoFocus />
 				</Field>
 				<Field label="TTS 供应商（造声能力按供应商分发）">
-					<Select value={provider} onChange={(e) => setProvider(e.target.value)}>
-						{PROVIDER_OPTIONS.map((p) => (
-							<option key={p.id} value={p.id}>{p.label}</option>
-						))}
-					</Select>
-				</Field>
+						<Select value={provider} onChange={(e) => setProvider(e.target.value)}>
+							{providerOpts.map((p) => (
+								<option key={p.id} value={p.id}>{voiceProviderLabel(p.id)}</option>
+							))}
+						</Select>
+					</Field>
 				<Field label="驱动模型（留空默认 cosyvoice-v3-flash）">
 					<TextInput value={model} onChange={(e) => setModel(e.target.value)} placeholder={BUILD_MODEL_DEFAULT} />
 				</Field>
