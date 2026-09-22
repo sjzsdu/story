@@ -252,7 +252,7 @@ internal/store/sqlite      （Repository 的 SQLite 实现）
   - `KnobType` 两类：`KnobEnum`（值必须在 `Options` 里，未知值回落「未设置」）与 `KnobText`（自由文本，`ClipInstruction` 统一截断到 `MaxInstructionLen`）。
   - `Option.Story`/`Option.Board` 是**注入 prompt 的片段**（分阶段：故事 / 分镜各自一份，可空＝该阶段不受影响）。画风选项由 `styleOptions()` 从 `VisualStyles` 生成，避免两处维护。
   - 预设 `Preset{Key,Name,Desc,Values map[string]string}`：一键套用一组值，套完仍可逐项微调。**默认预设 `classic` 的 Values 必须为空**，且 `ApplyPreset` 对默认预设不落 `Creative.Preset` key——保证「一键套用默认 == 与历史行为逐字一致」。
-- **当前 6 个参数**：`narrative`（纪录客观 / 当事人自述 / 悬疑倒叙）、`audience`（青少年 / 儿童）、`length`（短篇 800-1200 字·16-20 镜 / 长篇 1800-2400 字·24-28 镜）、`motion`（强 / 弱，小人书运镜幅度）、`video_style`（画风，选项由风格包生成）、`instruction`（自定义创作指令，文本）。4 个预设：`classic`（默认，空）、`documentary`、`kids`、`suspense`。
+- **当前 6 个参数**：`narrative`（纪录客观 / 当事人自述 / 悬疑倒叙）、`audience`（青少年 / 儿童）、`length`（短篇 800-1200 字·16-20 镜 / 长篇 1800-2400 字·24-28 镜）、`motion`（强 / 弱，小人书运镜幅度）、`video_style`（画风，选项由风格包生成）、`instruction`（自定义创作指令，文本）。4 个预设：`classic`（默认，空）、`documentary`、`kids`、`suspense`；后补 `teen`（青少年通识）、`first_person`（第一人称亲历）、`long_form`（长卷慢叙）。
   - **`instruction` 也是 Knob**（而非 knob 外的独立字段）：文本输入走同一条插件通道，API/CLI/前端的语义与校验完全一致，且天然获得补丁语义。**集级「本集附加指令」不占 Knob**——它是 `Episode.Instruction`（每集一个值，非系列配置），在 `buildBrief` 中单独成行叠加在系列级之上。
 - **brief 组装**：`StoryBrief(cfg, epInstruction)` / `BoardBrief(cfg, epInstruction)` 把「非空」的参数片段 + 系列级指令 + 本集附加指令拼成【创作要求】段，末尾固定附【冲突声明】——明确「只调整口味与体量，不得违反系统提示中的硬性规则（文言比例、不得编造史实、narration 逐字沿用、visual_prompt 禁画风词等），冲突时以硬性规则为准」。**全零值时返回空串**，调用方据此跳过注入。
 - **三条硬约束（写在文件头注释里，改动前必读）**：
@@ -444,11 +444,8 @@ type PublishResult struct {
 #### CLI
 
 ```bash
-# 发布到指定平台（单个或逗号分隔）
+# 发布到指定平台（单个或逗号分隔，必填）
 story publish <episode-id> --platform douyin,kuaishou,bilibili
-
-# 发布到系列配置的所有目标平台
-story publish <episode-id> --all
 
 # 自定义标题/描述/标签
 story publish <episode-id> --platform douyin \
@@ -496,10 +493,9 @@ story publish delete <job-id>
 
 #### 自动触发
 
-`Engine.Compose`（final 阶段）成功后，若 `SeriesConfig.TargetPlatforms` 非空：
-- 自动创建 `PublishDraft`（`status=pending`），素材自动填充
-- **不自动上传**，需用户在 Web/CLI 确认后才真正发布（human-in-the-loop）
-- Web 通过 SSE 推送 `publish_ready` 事件，前端自动刷新发布面板
+无。系列不再持有目标平台（`SeriesConfig.TargetPlatforms` 已移除），
+`Engine.Compose` 成功后不创建任何发布草稿；发布一律由用户在
+Web 集详情页发布面板或 CLI `--platform` 显式发起（human-in-the-loop）。
 
 #### 定时发布实现
 
@@ -579,7 +575,6 @@ data/projects/<series-id>/<episode-id>/
 // SeriesConfig 新增
 type SeriesConfig struct {
     // ... 现有字段 ...
-    // TargetPlatforms 保留作为默认发布目标（§19）
     // 发布默认配置
     PublishDefaults PublishConfig `json:"publish_defaults,omitempty"`
 }
@@ -674,3 +669,4 @@ type PublishConfig struct {
 - 2026-09-21（集级版本树改造，见 §17）：一集从「一条流水线」改为**版本树容器**，根治「重跑上游不做失效」隐患（新分镜旁白配旧画面/旧旁白被静默复用）。domain：新增 `version.go`（`Stage`/`NodeStatus`/`VersionNode` + `NodeByID`/`Children`/`ActivePath`/`ActiveNodeOfStage`/`MaxAttempt`/`AddNode`/`RemoveSubtree`），重写 `episode.go`（`Nodes`+`ActiveNodeID`），**删除 `state.go`**；store：episodes 表加 `nodes_json`/`active_node_id`（ensureColumn 幂等），`state_json` 转为只读历史快照；engine：新增 `derive.go`（内容寻址派生键 `nodeKey`、`derivationSchemaVersion=1`、`ensureNode`/`resolveParent`/`nodeDir`/`refsDigest`/`voiceDigest`）与 `legacy.go`（`DeriveLegacyChain`），各步骤方法统一收 `DeriveOptions{From,Reroll,Scenes}`（`GenerateCandidates`→`GenerateStory`、`ProduceScenes` 并入 `Produce`、**`Pick` 删除**），新增 `ActivateNode`/`DeleteNode`；app：新增 `migrate_versions.go` 一次性迁移旧集（先落库再 rename、失败回退 Dir、最终统一 rebase 并二次落库）；server：`actionReq` 加 `from`/`reroll` 删 `index`，新增 activate/delete 两个同步端点；CLI：`step.go` 改新签名 + 通用 `--from`/`--reroll`，新增 `story nodes`/`activate`/`node-rm`，删 `story pick`；Web：`types.ts` 换 `Stage`/`NodeStatus`/`VersionNode`，新增纯 SVG `VersionTree.tsx`（活跃路径金色高亮 + 选中展开「从此处继续/换一版/设为活跃/删除」），`EpisodePage` 改三段式，删 `StepsBar.tsx`，`SeriesDetailPage` 进度改活跃路径。核心回归 `TestRerollStoryboardIsolatesOldClips`（换分镜后旧片段绝不复用、旧目录保留）等 9 个新用例，全程 mock，`go build/vet/test` 与 `npm run build` 全绿。
 - 2026-09-21（创作控制参数：插件化旋钮 + 预设，见新增 §18）：用户提出「定位从历史故事转为通用后，系列/剧集界面应能给不同用户产出不同风格的故事与视频，且要有默认值、灵活、插件化」。落地为**声明式注册表**：`internal/templates/creative.go` 声明 6 个 `Knob`（`narrative` 纪录客观/当事人自述/悬疑倒叙、`audience` 青少年/儿童、`length` 短篇/长篇、`motion` 强/弱、`video_style` 画风、`instruction` 自由指令）与 4 个 `Preset`（`classic` 默认 values 空、`documentary`、`kids`、`suspense`），**Knob 的 `Get`/`Set func(domain.SeriesConfig)` 使 app/engine/CLI/server 全程不知参数名**——新增一个风格维度只改本文件，其余各层零改动，前端由 `GET /api/creative-catalog`（`templates.Catalog()`）驱动渲染控件。三条硬约束：默认值一律空串、全零值时 `StoryBrief`/`BoardBrief` 返回 `""`、brief 只覆盖口味（末尾固定【冲突声明】点名硬性规则优先）。domain：新增 `CreativeStyle`（`IsZero()`）+ `SeriesConfig.Creative` 用 **`omitzero`**（Go 1.24 的 `omitempty` 对结构体无效）、`Episode.Instruction`（episodes.instruction 列）；engine：`storyParams.Brief`/`storyboardParams.Brief`/`mediaParams.Motion` 全部 `omitempty` 进派生键，**默认空串时派生键与旧版逐字节相同**（`engine/creative_test.go` 与 `legacyNodeKey` 比对）；取值链 `templates.StoryBrief`/`BoardBrief` → `port.StoryRequest/StoryboardRequest.Brief` → bailian `UserPrompt`，运镜 `port.StillRequest.MotionStrength` → ffmpeg `motionZooms`（标准 1.30/1.24、strong 1.42/1.34、subtle 1.16/1.12）；app：`ExpandCreative`（创建时展开预设+微调）与 `UpdateSeriesCreative`（**补丁语义**，未提到的参数保持原值、显式空串清除）；server：新增 `GET /api/creative-catalog` 与 `PUT /api/series/{id}/creative`，`POST /api/series` body 加 `preset`+`creative`（画风也是一个 knob，不做顶层双通道），`POST /api/series/{id}/episodes` body 加 `instruction`，未知 knob/预设 400 并列出支持项；CLI：`story series create`/`series set` 共用 `--preset`/可重复 `--creative key=value`/`--story-instruction`/`--video-style`，`story episode create --instruction`，`printCreative` 如实渲染预设溯源（「预设「悬疑倒叙」基础上微调」），全空打印「创作设置: 全部跟随内置默认」；Web：新建 `CreativeFields`（catalog 驱动）+ 系列详情「创作设置」折叠区 + 新建一集弹窗附加指令 + 集页只读展示。回归测试覆盖注册表不变式、派生键字节级兼容、catalog/补丁语义/未知 key 400/集级指令落库，全程 mock，未真实调用 `bl`。
 - 2026-09-21（多平台发布系统，见新增 §19）：成片（final）合成完毕后的第 5 阶段——将视频与配套素材发布到各平台。全部平台（抖音/快手/B站/小红书/视频号）一次性并行接入。架构 Ports & Adapters：新增 `port.PlatformPublisher` 接口 + 各平台 provider（`internal/provider/publish/<platform>/`），engine/app 不知道具体平台；新增 `PublishJob`（发布任务）与 `PlatformAccount`（平台账号凭证）两个顶层持久化实体（SQLite `publish_jobs` + `platform_accounts` 表）。封面双模式：自动截帧（默认零成本，ffmpeg 截第一帧+高潮帧）+ AI 生成封面（可选按张计费，复用 ImageGenerator）。标题/描述/标签基于 Story 节点自动生成并按平台规则裁剪。触发：CLI `story publish` + Web 集详情页「发布」面板 + Compose 成功后自动创建 pending 草稿（human-in-the-loop 确认后发布）。定时发布：立即上传到草稿箱，`ScheduledAt` 时间到自动确认发布（后台 goroutine 每分钟扫描）。失败处理：网络错误/平台 500 指数退避重试 3 次、认证过期自动 refresh、审核拒绝标记 rejected 不重试、频率限制按窗口延迟。断点续发：按磁盘产物判断从失败点继续。小红书无官方 API 采用半自动模式（系统备素材 + 跳转上传页）。回归测试全程 mock。
+- 2026-09-22（移除系列级目标平台 + 补预设，见 §18/§19）：用户指出新建系列表单里「目标平台（仅记录）」名不副实——该字段实际被 §19 用作发布默认目标，且 Web 集详情页发布面板本就能手选平台，故全链路删除：`domain.SeriesConfig.TargetPlatforms`、`app.CreateSeriesInput.TargetPlatforms`、`server.createSeriesReq.target_platforms`、CLI `series create --platforms` 与 `series show` 的目标平台行、Web `api.ts`/`types.ts` 字段与系列卡片「平台」行、`Engine.CreatePublishDrafts`（本就无调用点）与 `App.CreatePublishDrafts`、CLI `publish run --all` 及 `Engine.Publish` 的系列回退（现在必须显式 `--platform`）；Compose 成功后不再自动建草稿。同期 §18 预设由 4 个增至 7 个：`teen`（受众=青少年）、`first_person`（叙事=当事人自述）、`long_form`（长篇+弱运镜），纯注册表数据，`--preset` flag help 同步。`go build/vet/test` 与 `npm run build` 全绿（前端改动需 `make install` 后重启 serve 生效）。

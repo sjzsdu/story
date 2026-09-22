@@ -68,7 +68,6 @@ export interface SeriesConfig {
   tts_rate?: number
   tts_pitch?: number
   voice_profile?: string // 内置声音 key：longtian/longze/longcheng/longfei/longhao/longxiaoxia
-  target_platforms?: string[]
   max_concurrency: number
   max_retries: number
   creative?: CreativeStyle // 创作控制参数（全部 omitempty，未设置即不出现）

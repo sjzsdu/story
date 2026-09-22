@@ -39,7 +39,6 @@ export const api = {
     description?: string
     ratio?: string
     resolution?: string
-    target_platforms?: string[]
     visual_mode?: 'comic' | 'video'
     // §16：声音条目 ID（推荐）；未传时服务端按平迁规则建/取一个。
     voice_id?: string

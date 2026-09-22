@@ -56,15 +56,6 @@ func (a *App) Publish(ctx context.Context, episodeID string, in PublishInput) ([
 	}, providers)
 }
 
-// CreatePublishDrafts 为 final 节点自动创建发布草稿。
-func (a *App) CreatePublishDrafts(ctx context.Context, episodeID string) ([]*domain.PublishJob, error) {
-	providers := a.publishProviders()
-	if providers == nil {
-		return nil, nil
-	}
-	return a.Engine.CreatePublishDrafts(ctx, episodeID, providers)
-}
-
 // CancelPublish 取消发布任务。
 func (a *App) CancelPublish(ctx context.Context, jobID string) error {
 	return a.Engine.CancelPublish(ctx, jobID)

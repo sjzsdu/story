@@ -32,7 +32,6 @@ var (
 	publishCover     string
 	publishCategory  string
 	publishSchedule  string
-	publishAll       bool
 )
 
 var publishRunCmd = &cobra.Command{
@@ -46,24 +45,8 @@ var publishRunCmd = &cobra.Command{
 
 		epID := args[0]
 		platforms := publishPlatforms
-
-		// --all 时读取系列配置的 TargetPlatforms
-		if publishAll && len(platforms) == 0 {
-			ep, err := application.GetEpisode(cmd.Context(), epID)
-			if err != nil {
-				return err
-			}
-			series, err := application.GetSeries(cmd.Context(), ep.SeriesID)
-			if err != nil {
-				return err
-			}
-			platforms = series.Config.TargetPlatforms
-			if len(platforms) == 0 {
-				return fmt.Errorf("系列未配置目标平台，请用 --platform 指定")
-			}
-		}
 		if len(platforms) == 0 {
-			return fmt.Errorf("请用 --platform 指定发布平台，或用 --all 发布到系列配置的所有平台")
+			return fmt.Errorf("请用 --platform 指定发布平台")
 		}
 
 		// 确定账号
@@ -263,7 +246,6 @@ func init() {
 	publishRunCmd.Flags().StringVar(&publishCover, "cover", "", "封面图片路径")
 	publishRunCmd.Flags().StringVar(&publishCategory, "category", "", "分类")
 	publishRunCmd.Flags().StringVar(&publishSchedule, "schedule", "", "定时发布时间（RFC3339 或 2006-01-02T15:04:05）")
-	publishRunCmd.Flags().BoolVar(&publishAll, "all", false, "发布到系列配置的所有目标平台")
 
 	// platform login/check flags
 	platformLoginCmd.Flags().StringVar(&publishAccount, "account", "", "账号名（自定义标识，如 company_douyin）")

@@ -58,6 +58,15 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
   // 创作控制参数：一个 state 装下预设 + 逐项值（预设 key 存在 values.preset 里）。
   const [creative, setCreative] = useState<CreativeStyle>({})
   const [err, setErr] = useState('')
+  const [step, setStep] = useState(1)
+
+  // 分步填写：名称是唯一必填项，因此只有它决定能否往下走。
+  const canAdvance = name.trim().length > 0
+  const closeModal = () => {
+    setStep(1)
+    setErr('')
+    onClose()
+  }
 
   // 拉取声音列表供下拉；staleTime=Infinity 避免每次开关都重新拉。
   const { data: voices } = useQuery({
@@ -108,76 +117,162 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
       setVoiceID('longtian')
       setCreative({})
       setErr('')
+      setStep(1)
       onClose()
     },
     onError: (e) => setErr((e as Error).message),
   })
 
   return (
-    <Modal open={open} onClose={onClose} title="新建系列" wide>
+    <Modal open={open} onClose={closeModal} title="新建系列" wide>
       <form
         className="grid sm:grid-cols-2 gap-4"
         onSubmit={(e) => {
           e.preventDefault()
           setErr('')
+          // 回车＝下一步（最后一步才真正提交）。
+          if (step < STEPS.length) {
+            if (canAdvance) setStep(step + 1)
+            return
+          }
           mutation.mutate()
         }}
       >
-        <Field label="系列名称（必填）">
-          <TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="如：鬼谷子" autoFocus />
-        </Field>
-        <Field label="朝代锚定">
-          <TextInput value={dynasty} onChange={(e) => setDynasty(e.target.value)} placeholder="如：战国" />
-        </Field>
-        <Field label="画面比例">
-          <Select value={ratio} onChange={(e) => setRatio(e.target.value)}>
-            <option>9:16</option>
-            <option>16:9</option>
-            <option>1:1</option>
-            <option>3:4</option>
-          </Select>
-        </Field>
-        <Field label="分辨率（档位为长边）">
-          <Select value={resolution} onChange={(e) => setResolution(e.target.value)}>
-            <option>1080P</option>
-            <option>720P</option>
-          </Select>
-        </Field>
-        <Field label="画面模式（创建后不可更改）">
-          <Select value={visualMode} onChange={(e) => setVisualMode(e.target.value === 'video' ? 'video' : 'comic')}>
-            <option value="comic">小人书插画（默认 · 省钱）</option>
-            <option value="video">AI 生成视频（动态 · 较贵）</option>
-          </Select>
-        </Field>
-        <Field label="声音（创建后不可更改）">
-          <Select value={voiceID} onChange={(e) => setVoiceID(e.target.value)}>
-            {voices?.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.name} {v.is_builtin ? '（内置）' : ''} · {v.voice}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <div className="sm:col-span-2">
-          <CreativeFields catalog={catalog} values={creative} onChange={setCreative} />
+        <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
+          {STEPS.map((s) => {
+            const active = step === s.key
+            return (
+              <button
+                key={s.key}
+                type="button"
+                disabled={s.key > step && !canAdvance}
+                onClick={() => setStep(s.key)}
+                className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs transition-colors disabled:cursor-not-allowed ${
+                  active
+                    ? 'border-seal-600 bg-seal-600/15 text-paper-100'
+                    : step > s.key
+                      ? 'border-ink-700 text-paper-300/70 hover:text-paper-100'
+                      : 'border-ink-800 text-paper-300/35 hover:text-paper-300/60 disabled:hover:text-paper-300/35'
+                }`}
+              >
+                <span
+                  className={`grid h-4 w-4 place-items-center rounded-full font-display text-[10px] ${
+                    active ? 'bg-seal-600 text-paper-100' : 'bg-ink-800 text-paper-300/60'
+                  }`}
+                >
+                  {s.key}
+                </span>
+                {s.label}
+              </button>
+            )
+          })}
         </div>
+
+        {step === 1 && (
+          <>
+            <Field label="系列名称（必填）">
+              <TextInput
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="如：鬼谷子"
+                autoFocus
+              />
+            </Field>
+            <Field label="朝代锚定">
+              <TextInput value={dynasty} onChange={(e) => setDynasty(e.target.value)} placeholder="如：战国" />
+            </Field>
+          </>
+        )}
+
+        {step === 2 && (
+          <>
+            <Field label="画面比例">
+              <Select value={ratio} onChange={(e) => setRatio(e.target.value)}>
+                <option>9:16</option>
+                <option>16:9</option>
+                <option>1:1</option>
+                <option>3:4</option>
+              </Select>
+            </Field>
+            <Field label="分辨率（档位为长边）">
+              <Select value={resolution} onChange={(e) => setResolution(e.target.value)}>
+                <option>1080P</option>
+                <option>720P</option>
+              </Select>
+            </Field>
+            <Field label="画面模式（创建后不可更改）">
+              <Select
+                value={visualMode}
+                onChange={(e) => setVisualMode(e.target.value === 'video' ? 'video' : 'comic')}
+              >
+                <option value="comic">小人书插画（默认 · 省钱）</option>
+                <option value="video">AI 生成视频（动态 · 较贵）</option>
+              </Select>
+            </Field>
+            <Field label="声音（创建后不可更改）">
+              <Select value={voiceID} onChange={(e) => setVoiceID(e.target.value)}>
+                {voices?.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name} {v.is_builtin ? '（内置）' : ''} · {v.voice}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </>
+        )}
+
+        {step === 3 && (
+          <>
+            <div className="sm:col-span-2">
+              <CreativeFields catalog={catalog} values={creative} onChange={setCreative} />
+            </div>
+            <p className="sm:col-span-2 text-xs text-paper-300/40">
+              将创建：{name.trim()}
+              {dynasty.trim() && ` · ${dynasty.trim()}`} · {ratio} · {resolution} ·{' '}
+              {visualMode === 'comic' ? '小人书插画' : 'AI 生成视频'} ·{' '}
+              {voices?.find((v) => v.id === voiceID)?.name ?? voiceID}
+            </p>
+          </>
+        )}
+
         {err && (
           <div className="sm:col-span-2">
             <ErrorBox>{err}</ErrorBox>
           </div>
         )}
-        <div className="sm:col-span-2 flex gap-3">
-          <Button type="submit" variant="seal" disabled={mutation.isPending || !name.trim()}>
-            {mutation.isPending && <Spinner />} 创建
-          </Button>
-          <Button type="button" variant="ghost" onClick={onClose}>
+
+        <div className="sm:col-span-2 flex items-center gap-3">
+          {step > 1 && (
+            <Button type="button" variant="ghost" onClick={() => setStep(step - 1)}>
+              上一步
+            </Button>
+          )}
+          {step < STEPS.length ? (
+            <Button type="submit" variant="seal" disabled={!canAdvance}>
+              下一步
+            </Button>
+          ) : (
+            <Button type="submit" variant="seal" disabled={mutation.isPending || !canAdvance}>
+              {mutation.isPending && <Spinner />} 创建
+            </Button>
+          )}
+          <Button type="button" variant="ghost" onClick={closeModal}>
             取消
           </Button>
+          <span className="ml-auto text-xs text-paper-300/35">
+            第 {step} / {STEPS.length} 步
+          </span>
         </div>
       </form>
     </Modal>
   )
 }
+
+const STEPS = [
+  { key: 1, label: '基本信息' },
+  { key: 2, label: '规格与声音' },
+  { key: 3, label: '创作预设' },
+]
 
 function SeriesCard({ series: s }: { series: Series }) {
   const queryClient = useQueryClient()
@@ -235,12 +330,6 @@ function SeriesCard({ series: s }: { series: Series }) {
             并发 {s.config.max_concurrency} · 重试 {s.config.max_retries}
           </dd>
         </div>
-        {(s.config.target_platforms?.length ?? 0) > 0 && (
-          <div className="flex gap-2">
-            <dt className="w-14 shrink-0 text-paper-300/35">平台</dt>
-            <dd>{s.config.target_platforms!.join(' / ')}</dd>
-          </div>
-        )}
       </dl>
     </Link>
   )

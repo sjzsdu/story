@@ -93,8 +93,7 @@ subtitle_font: ""          # 留空自动探测系统中文字体
 ```bash
 # 1. 创建系列（题材参数在此选定；画面模式与声音创建后锁定，不可更改）
 ./story series create --name 鬼谷子 --dynasty 战国 \
-  --ratio 9:16 --resolution 1080P --visual-mode comic \
-  --platforms douyin,kuaishou,bilibili
+  --ratio 9:16 --resolution 1080P --visual-mode comic
 ./story series list
 ./story series show <series-id>
 
@@ -229,7 +228,6 @@ cd ~/.story/sau && cp conf.example.py conf.py && uv sync
 
 # 4. 发布
 ./story publish run <episode-id> --platform douyin,kuaishou --account my_douyin
-./story publish run <episode-id> --all                                    # 发到系列配置的所有平台
 ./story publish run <episode-id> --platform douyin --schedule "2026-09-22T10:00:00+08:00"  # 定时
 
 # 5. 查看发布状态
