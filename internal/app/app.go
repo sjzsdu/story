@@ -23,6 +23,9 @@ import (
 	bailianprov "github.com/sjzsdu/story/internal/provider/bailian"
 	deepseekprov "github.com/sjzsdu/story/internal/provider/deepseek"
 	ffmpegprov "github.com/sjzsdu/story/internal/provider/ffmpeg"
+	klingprov "github.com/sjzsdu/story/internal/provider/kling"
+	minimaxprov "github.com/sjzsdu/story/internal/provider/minimax"
+	zhipuprov "github.com/sjzsdu/story/internal/provider/zhipu"
 	sqlitestore "github.com/sjzsdu/story/internal/store/sqlite"
 	"github.com/sjzsdu/story/internal/subtitle"
 	"github.com/sjzsdu/story/internal/templates"
@@ -81,8 +84,9 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*App, error) {
 		composer.WithSubtitles(r)
 	}
 
-	// 按配置选择文本生成 provider：deepseek 或 bailian（默认）。
-	// 视频/图片/TTS/造声仍走 bailian（DeepSeek 暂不支持这些能力）。
+	// ---- 按配置选择各能力 provider ----
+
+	// 文本生成：deepseek 或 bailian（默认）
 	var textGen port.StoryGenerator
 	var boardGen port.StoryboardPlanner
 	var planner port.SeriesPlanner
@@ -92,15 +96,41 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*App, error) {
 		textGen = ds
 		boardGen = ds
 		planner = bl // 策划会话暂仍用 bl（多轮对话 + 复杂 JSON 结构）
-		_ = bl
 	default:
 		textGen = bl
 		boardGen = bl
 		planner = bl
 	}
 
+	// TTS：minimax 或 bailian（默认）
+	var speech port.SpeechSynthesizer
+	switch strings.ToLower(cfg.TTSProvider) {
+	case "minimax":
+		speech = minimaxprov.NewClient(cfg.MinimaxAPIKey, cfg.MinimaxBaseURL, cfg.MinimaxModel)
+	default:
+		speech = bl
+	}
+
+	// 图片：zhipu 或 bailian（默认）
+	var images port.ImageGenerator
+	switch strings.ToLower(cfg.ImageProvider) {
+	case "zhipu":
+		images = zhipuprov.NewClient(cfg.ZhipuAPIKey, cfg.ZhipuBaseURL, "")
+	default:
+		images = bl
+	}
+
+	// 视频：kling 或 bailian（默认）
+	var videos port.VideoGenerator
+	switch strings.ToLower(cfg.VideoProvider) {
+	case "kling":
+		videos = klingprov.NewClient(cfg.KlingAccessKey, cfg.KlingSecretKey, cfg.KlingBaseURL, "")
+	default:
+		videos = bl
+	}
+
 	eng := engine.New(
-		store, textGen, boardGen, bl, bl, composer, planner, bl,
+		store, textGen, boardGen, videos, speech, composer, planner, images,
 		cfg.ProjectsDir(),
 		cfg.MaxConcurrency, cfg.MaxRetries,
 		cfg.TTSVoice, cfg.TTSInstruction,

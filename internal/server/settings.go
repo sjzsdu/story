@@ -22,10 +22,21 @@ type configResponse struct {
 	ImageModel           string `json:"image_model"`
 	TTSInstruction       string `json:"tts_instruction"`
 	TextProvider         string `json:"text_provider"`
-	DeepSeekAPIKey       string `json:"deepseek_api_key,omitempty"` // 掩码
+	TTSProvider          string `json:"tts_provider"`
+	ImageProvider        string `json:"image_provider"`
+	VideoProvider        string `json:"video_provider"`
+	DeepSeekAPIKey       string `json:"deepseek_api_key,omitempty"`
 	DeepSeekBaseURL      string `json:"deepseek_base_url"`
 	DeepSeekModel        string `json:"deepseek_model"`
-	BailianAPIKey        string `json:"bailian_api_key,omitempty"` // 掩码
+	MinimaxAPIKey        string `json:"minimax_api_key,omitempty"`
+	MinimaxBaseURL       string `json:"minimax_base_url"`
+	MinimaxModel         string `json:"minimax_model"`
+	ZhipuAPIKey          string `json:"zhipu_api_key,omitempty"`
+	ZhipuBaseURL         string `json:"zhipu_base_url"`
+	KlingAccessKey       string `json:"kling_access_key,omitempty"`
+	KlingSecretKey       string `json:"kling_secret_key,omitempty"`
+	KlingBaseURL         string `json:"kling_base_url"`
+	BailianAPIKey        string `json:"bailian_api_key,omitempty"`
 	BailianBaseURL       string `json:"bailian_base_url"`
 	DefaultRatio         string `json:"default_ratio"`
 	DefaultResolution    string `json:"default_resolution"`
@@ -50,8 +61,15 @@ func configFromInternal(cfg config.Config) configResponse {
 		ImageModel:            cfg.ImageModel,
 		TTSInstruction:        cfg.TTSInstruction,
 		TextProvider:          cfg.TextProvider,
+		TTSProvider:           cfg.TTSProvider,
+		ImageProvider:         cfg.ImageProvider,
+		VideoProvider:         cfg.VideoProvider,
 		DeepSeekBaseURL:       cfg.DeepSeekBaseURL,
 		DeepSeekModel:         cfg.DeepSeekModel,
+		MinimaxBaseURL:        cfg.MinimaxBaseURL,
+		MinimaxModel:          cfg.MinimaxModel,
+		ZhipuBaseURL:          cfg.ZhipuBaseURL,
+		KlingBaseURL:          cfg.KlingBaseURL,
 		BailianBaseURL:        cfg.BailianBaseURL,
 		DefaultRatio:          cfg.DefaultRatio,
 		DefaultResolution:     cfg.DefaultResolution,
@@ -69,6 +87,18 @@ func configFromInternal(cfg config.Config) configResponse {
 	}
 	if cfg.DeepSeekAPIKey != "" {
 		r.DeepSeekAPIKey = maskKey(cfg.DeepSeekAPIKey)
+	}
+	if cfg.MinimaxAPIKey != "" {
+		r.MinimaxAPIKey = maskKey(cfg.MinimaxAPIKey)
+	}
+	if cfg.ZhipuAPIKey != "" {
+		r.ZhipuAPIKey = maskKey(cfg.ZhipuAPIKey)
+	}
+	if cfg.KlingAccessKey != "" {
+		r.KlingAccessKey = maskKey(cfg.KlingAccessKey)
+	}
+	if cfg.KlingSecretKey != "" {
+		r.KlingSecretKey = maskKey(cfg.KlingSecretKey)
 	}
 	return r
 }
@@ -93,9 +123,20 @@ type updateConfigReq struct {
 	ImageModel            *string `json:"image_model"`
 	TTSInstruction        *string `json:"tts_instruction"`
 	TextProvider          *string `json:"text_provider"`
+	TTSProvider           *string `json:"tts_provider"`
+	ImageProvider         *string `json:"image_provider"`
+	VideoProvider         *string `json:"video_provider"`
 	DeepSeekAPIKey        *string `json:"deepseek_api_key"`
 	DeepSeekBaseURL       *string `json:"deepseek_base_url"`
 	DeepSeekModel         *string `json:"deepseek_model"`
+	MinimaxAPIKey         *string `json:"minimax_api_key"`
+	MinimaxBaseURL        *string `json:"minimax_base_url"`
+	MinimaxModel          *string `json:"minimax_model"`
+	ZhipuAPIKey           *string `json:"zhipu_api_key"`
+	ZhipuBaseURL          *string `json:"zhipu_base_url"`
+	KlingAccessKey        *string `json:"kling_access_key"`
+	KlingSecretKey        *string `json:"kling_secret_key"`
+	KlingBaseURL          *string `json:"kling_base_url"`
 	BailianAPIKey         *string `json:"bailian_api_key"`
 	BailianBaseURL        *string `json:"bailian_base_url"`
 	DefaultRatio          *string `json:"default_ratio"`
@@ -137,6 +178,15 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	if in.TextProvider != nil {
 		cfg.TextProvider = *in.TextProvider
 	}
+	if in.TTSProvider != nil {
+		cfg.TTSProvider = *in.TTSProvider
+	}
+	if in.ImageProvider != nil {
+		cfg.ImageProvider = *in.ImageProvider
+	}
+	if in.VideoProvider != nil {
+		cfg.VideoProvider = *in.VideoProvider
+	}
 	if in.DeepSeekAPIKey != nil && *in.DeepSeekAPIKey != "" && *in.DeepSeekAPIKey != "****" {
 		cfg.DeepSeekAPIKey = *in.DeepSeekAPIKey
 	}
@@ -145,6 +195,30 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.DeepSeekModel != nil {
 		cfg.DeepSeekModel = *in.DeepSeekModel
+	}
+	if in.MinimaxAPIKey != nil && *in.MinimaxAPIKey != "" && *in.MinimaxAPIKey != "****" {
+		cfg.MinimaxAPIKey = *in.MinimaxAPIKey
+	}
+	if in.MinimaxBaseURL != nil {
+		cfg.MinimaxBaseURL = *in.MinimaxBaseURL
+	}
+	if in.MinimaxModel != nil {
+		cfg.MinimaxModel = *in.MinimaxModel
+	}
+	if in.ZhipuAPIKey != nil && *in.ZhipuAPIKey != "" && *in.ZhipuAPIKey != "****" {
+		cfg.ZhipuAPIKey = *in.ZhipuAPIKey
+	}
+	if in.ZhipuBaseURL != nil {
+		cfg.ZhipuBaseURL = *in.ZhipuBaseURL
+	}
+	if in.KlingAccessKey != nil && *in.KlingAccessKey != "" && *in.KlingAccessKey != "****" {
+		cfg.KlingAccessKey = *in.KlingAccessKey
+	}
+	if in.KlingSecretKey != nil && *in.KlingSecretKey != "" && *in.KlingSecretKey != "****" {
+		cfg.KlingSecretKey = *in.KlingSecretKey
+	}
+	if in.KlingBaseURL != nil {
+		cfg.KlingBaseURL = *in.KlingBaseURL
 	}
 	if in.BailianAPIKey != nil && *in.BailianAPIKey != "" && *in.BailianAPIKey != "****" {
 		cfg.BailianAPIKey = *in.BailianAPIKey

@@ -302,9 +302,20 @@ export interface AppSettings {
   image_model: string
   tts_instruction: string
   text_provider: string
+  tts_provider: string
+  image_provider: string
+  video_provider: string
   deepseek_api_key?: string
   deepseek_base_url: string
   deepseek_model: string
+  minimax_api_key?: string
+  minimax_base_url: string
+  minimax_model: string
+  zhipu_api_key?: string
+  zhipu_base_url: string
+  kling_access_key?: string
+  kling_secret_key?: string
+  kling_base_url: string
   bailian_api_key?: string
   bailian_base_url: string
   default_ratio: string

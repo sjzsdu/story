@@ -29,20 +29,37 @@ type Config struct {
 	// TTSInstruction 默认旁白风格指令。
 	TTSInstruction string `yaml:"tts_instruction"`
 
-	// ---- 文本生成 provider ----
+	// ---- 多 Provider 选择 ----
 	// TextProvider 文本生成供应商（"bailian" 或 "deepseek"），空则用 bailian。
 	TextProvider string `yaml:"text_provider"`
-	// DeepSeek API Key；留空回退 DEEPSEEK_API_KEY 环境变量。
-	DeepSeekAPIKey string `yaml:"deepseek_api_key"`
-	// DeepSeekBaseURL API 地址；留空用 https://api.deepseek.com。
-	DeepSeekBaseURL string `yaml:"deepseek_base_url"`
-	// DeepSeekModel 模型名；留空用 deepseek-chat。
-	DeepSeekModel string `yaml:"deepseek_model"`
+	// TTSProvider 语音合成供应商（"bailian" 或 "minimax"），空则用 bailian。
+	TTSProvider string `yaml:"tts_provider"`
+	// ImageProvider 图片生成供应商（"bailian" 或 "zhipu"），空则用 bailian。
+	ImageProvider string `yaml:"image_provider"`
+	// VideoProvider 视频生成供应商（"bailian" 或 "kling"），空则用 bailian。
+	VideoProvider string `yaml:"video_provider"`
 
-	// BailianAPIKey 百炼 API Key（造声 HTTP 直连用）；留空回退
-	// DASHSCOPE_API_KEY 环境变量与 ~/.bailian/config.json。
-	BailianAPIKey string `yaml:"bailian_api_key"`
-	// BailianBaseURL 百炼 HTTP 服务地址（造声用）；留空用中国内地默认地址。
+	// ---- DeepSeek ----
+	DeepSeekAPIKey  string `yaml:"deepseek_api_key"`
+	DeepSeekBaseURL string `yaml:"deepseek_base_url"`
+	DeepSeekModel   string `yaml:"deepseek_model"`
+
+	// ---- MiniMax TTS ----
+	MinimaxAPIKey  string `yaml:"minimax_api_key"`
+	MinimaxBaseURL string `yaml:"minimax_base_url"`
+	MinimaxModel   string `yaml:"minimax_model"`
+
+	// ---- 智谱 (Zhipu) 图片 ----
+	ZhipuAPIKey  string `yaml:"zhipu_api_key"`
+	ZhipuBaseURL string `yaml:"zhipu_base_url"`
+
+	// ---- 可灵 (Kling) 视频 ----
+	KlingAccessKey  string `yaml:"kling_access_key"`
+	KlingSecretKey  string `yaml:"kling_secret_key"`
+	KlingBaseURL    string `yaml:"kling_base_url"`
+
+	// ---- 百炼（保留作为默认/兼容） ----
+	BailianAPIKey  string `yaml:"bailian_api_key"`
 	BailianBaseURL string `yaml:"bailian_base_url"`
 
 	// DefaultRatio 新系列默认画面比例。
@@ -129,6 +146,27 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("STORY_TEXT_PROVIDER"); v != "" {
 		cfg.TextProvider = v
+	}
+	if v := os.Getenv("STORY_TTS_PROVIDER"); v != "" {
+		cfg.TTSProvider = v
+	}
+	if v := os.Getenv("STORY_IMAGE_PROVIDER"); v != "" {
+		cfg.ImageProvider = v
+	}
+	if v := os.Getenv("STORY_VIDEO_PROVIDER"); v != "" {
+		cfg.VideoProvider = v
+	}
+	if v := os.Getenv("MINIMAX_API_KEY"); v != "" {
+		cfg.MinimaxAPIKey = v
+	}
+	if v := os.Getenv("ZHIPU_API_KEY"); v != "" {
+		cfg.ZhipuAPIKey = v
+	}
+	if v := os.Getenv("KLING_ACCESS_KEY"); v != "" {
+		cfg.KlingAccessKey = v
+	}
+	if v := os.Getenv("KLING_SECRET_KEY"); v != "" {
+		cfg.KlingSecretKey = v
 	}
 	if v := os.Getenv("STORY_MAX_CONCURRENCY"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

@@ -96,73 +96,170 @@ function GeneralTab() {
 function AITab() {
   return (
     <div className="space-y-4">
-      {/* 文本生成 Provider 选择 */}
+      {/* 文本生成 */}
       <Card title="文本生成">
         <SettingFields
           fields={[
-            { key: 'text_provider', label: '文本生成 Provider', type: 'provider-select' },
+            { key: 'text_provider', label: 'Provider', type: 'provider-select', options: ['bailian', 'deepseek'] },
           ]}
         />
-        <ProviderConfig />
+        <ProviderConfig group="text" />
       </Card>
 
-      {/* 其他模型 */}
-      <Card title="其他模型">
-        <SettingFields
-          fields={[
-            { key: 'video_model', label: '视频生成模型', type: 'select', options: ['wan3.0-video', 'wanx-video'], help: '视频模式时使用' },
-            { key: 'image_model', label: '图片生成模型', type: 'select', options: ['wanx2.1-t2i-turbo', 'wanx2.1-t2i-plus', 'wanx2.1-t2i-max'], help: '小人书模式 / 定妆照' },
-          ]}
-        />
-      </Card>
-
-      {/* TTS */}
+      {/* 语音合成 */}
       <Card title="语音合成 (TTS)">
         <SettingFields
           fields={[
-            { key: 'tts_model', label: 'TTS 模型', type: 'select', options: ['cosyvoice-v3-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash'] },
-            { key: 'tts_voice', label: '默认音色', type: 'text', placeholder: 'longtian_v3' },
-            { key: 'tts_instruction', label: '默认旁白指令', type: 'textarea', placeholder: '请用沉稳厚重、富有历史讲述感的语调…' },
+            { key: 'tts_provider', label: 'Provider', type: 'provider-select', options: ['bailian', 'minimax'] },
           ]}
         />
+        <ProviderConfig group="tts" />
+      </Card>
+
+      {/* 图片生成 */}
+      <Card title="图片生成">
+        <SettingFields
+          fields={[
+            { key: 'image_provider', label: 'Provider', type: 'provider-select', options: ['bailian', 'zhipu'] },
+          ]}
+        />
+        <ProviderConfig group="image" />
+      </Card>
+
+      {/* 视频生成 */}
+      <Card title="视频生成">
+        <SettingFields
+          fields={[
+            { key: 'video_provider', label: 'Provider', type: 'provider-select', options: ['bailian', 'kling'] },
+          ]}
+        />
+        <ProviderConfig group="video" />
       </Card>
     </div>
   )
 }
 
 // 根据选中的 provider 动态显示对应配置
-function ProviderConfig() {
+function ProviderConfig({ group }: { group: 'text' | 'tts' | 'image' | 'video' }) {
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings })
   if (!settings) return null
 
-  const provider = settings.text_provider || 'bailian'
+  const provider = group === 'text' ? (settings.text_provider || 'bailian')
+    : group === 'tts' ? (settings.tts_provider || 'bailian')
+    : group === 'image' ? (settings.image_provider || 'bailian')
+    : (settings.video_provider || 'bailian')
 
-  if (provider === 'deepseek') {
+  // Bailian 配置（所有 group 共用）
+  if (provider === 'bailian') {
+    if (group === 'text') {
+      return (
+        <div className="mt-4 pt-4 border-t border-ink-800">
+          <SettingFields
+            fields={[
+              { key: 'text_model', label: '文本模型', type: 'select', options: ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen-max-latest'], help: '留空用 bl 默认', allowEmpty: true },
+              { key: 'bailian_api_key', label: 'API Key', type: 'password', placeholder: '留空回退环境变量', help: '或设置 STORY_BAILIAN_API_KEY' },
+              { key: 'bailian_base_url', label: 'Base URL', type: 'text', placeholder: 'https://dashscope.aliyuncs.com', help: '留空用默认地址' },
+            ]}
+          />
+        </div>
+      )
+    }
+    if (group === 'tts') {
+      return (
+        <div className="mt-4 pt-4 border-t border-ink-800">
+          <SettingFields
+            fields={[
+              { key: 'tts_model', label: 'TTS 模型', type: 'select', options: ['cosyvoice-v3-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash'] },
+              { key: 'tts_voice', label: '默认音色', type: 'text', placeholder: 'longtian_v3' },
+              { key: 'tts_instruction', label: '默认旁白指令', type: 'textarea', placeholder: '请用沉稳厚重、富有历史讲述感的语调…' },
+            ]}
+          />
+        </div>
+      )
+    }
+    if (group === 'image') {
+      return (
+        <div className="mt-4 pt-4 border-t border-ink-800">
+          <SettingFields
+            fields={[
+              { key: 'image_model', label: '图片模型', type: 'select', options: ['wanx2.1-t2i-turbo', 'wanx2.1-t2i-plus', 'wanx2.1-t2i-max'], help: '小人书模式 / 定妆照' },
+            ]}
+          />
+        </div>
+      )
+    }
+    // video
     return (
       <div className="mt-4 pt-4 border-t border-ink-800">
         <SettingFields
           fields={[
-            { key: 'deepseek_api_key', label: 'API Key', type: 'password', placeholder: 'sk-…', help: '或设置 DEEPSEEK_API_KEY 环境变量' },
-            { key: 'deepseek_base_url', label: 'API 地址', type: 'text', placeholder: 'https://api.deepseek.com', help: '留空用默认地址' },
-            { key: 'deepseek_model', label: '模型', type: 'select', options: ['deepseek-chat', 'deepseek-reasoner'], help: 'deepseek-chat 为通用，deepseek-reasoner 推理更强' },
+            { key: 'video_model', label: '视频模型', type: 'select', options: ['wan3.0-video', 'wanx-video'], help: '视频模式时使用' },
           ]}
         />
       </div>
     )
   }
 
-  // bailian (default)
-  return (
-    <div className="mt-4 pt-4 border-t border-ink-800">
-      <SettingFields
-        fields={[
-          { key: 'text_model', label: '文本模型', type: 'select', options: ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen-max-latest'], help: '留空用 bl 默认', allowEmpty: true },
-          { key: 'bailian_api_key', label: 'API Key', type: 'password', placeholder: '留空回退环境变量', help: '或设置 STORY_BAILIAN_API_KEY 环境变量' },
-          { key: 'bailian_base_url', label: 'Base URL', type: 'text', placeholder: 'https://dashscope.aliyuncs.com', help: '留空用默认地址' },
-        ]}
-      />
-    </div>
-  )
+  // DeepSeek
+  if (provider === 'deepseek' && group === 'text') {
+    return (
+      <div className="mt-4 pt-4 border-t border-ink-800">
+        <SettingFields
+          fields={[
+            { key: 'deepseek_api_key', label: 'API Key', type: 'password', placeholder: 'sk-…', help: '或设置 DEEPSEEK_API_KEY' },
+            { key: 'deepseek_base_url', label: 'API 地址', type: 'text', placeholder: 'https://api.deepseek.com', help: '留空用默认地址' },
+            { key: 'deepseek_model', label: '模型', type: 'select', options: ['deepseek-chat', 'deepseek-reasoner'], help: 'deepseek-chat 通用，deepseek-reasoner 推理更强' },
+          ]}
+        />
+      </div>
+    )
+  }
+
+  // MiniMax TTS
+  if (provider === 'minimax' && group === 'tts') {
+    return (
+      <div className="mt-4 pt-4 border-t border-ink-800">
+        <SettingFields
+          fields={[
+            { key: 'minimax_api_key', label: 'API Key', type: 'password', placeholder: 'eyJ…', help: '或设置 MINIMAX_API_KEY' },
+            { key: 'minimax_base_url', label: 'API 地址', type: 'text', placeholder: 'https://api.minimax.chat', help: '留空用默认地址' },
+            { key: 'minimax_model', label: '模型', type: 'select', options: ['speech-02-hd', 'speech-01-hd', 'speech-01'], help: 'speech-02-hd 最新最自然' },
+          ]}
+        />
+      </div>
+    )
+  }
+
+  // 智谱 CogView
+  if (provider === 'zhipu' && group === 'image') {
+    return (
+      <div className="mt-4 pt-4 border-t border-ink-800">
+        <SettingFields
+          fields={[
+            { key: 'zhipu_api_key', label: 'API Key', type: 'password', placeholder: '…', help: '或设置 ZHIPU_API_KEY' },
+            { key: 'zhipu_base_url', label: 'API 地址', type: 'text', placeholder: 'https://open.bigmodel.cn/api/paas/v4', help: '留空用默认地址' },
+          ]}
+        />
+      </div>
+    )
+  }
+
+  // 可灵 Kling
+  if (provider === 'kling' && group === 'video') {
+    return (
+      <div className="mt-4 pt-4 border-t border-ink-800">
+        <SettingFields
+          fields={[
+            { key: 'kling_access_key', label: 'Access Key', type: 'password', placeholder: '…', help: '或设置 KLING_ACCESS_KEY' },
+            { key: 'kling_secret_key', label: 'Secret Key', type: 'password', placeholder: '…', help: '或设置 KLING_SECRET_KEY' },
+            { key: 'kling_base_url', label: 'API 地址', type: 'text', placeholder: 'https://api.klingai.com', help: '留空用默认地址' },
+          ]}
+        />
+      </div>
+    )
+  }
+
+  return null
 }
 
 // ---- 平台账号 ----
@@ -204,7 +301,7 @@ type FieldDef = {
 } & (
   | { type: 'text' | 'password' | 'textarea'; options?: never; parse?: never; allowEmpty?: never }
   | { type: 'select'; options: string[]; parse?: (v: string) => any; allowEmpty?: boolean }
-  | { type: 'provider-select'; options?: never; parse?: never; allowEmpty?: never }
+  | { type: 'provider-select'; options: string[]; parse?: never; allowEmpty?: never }
 )
 
 function SettingFields({ fields }: { fields: FieldDef[] }) {
@@ -233,16 +330,24 @@ function SettingFields({ fields }: { fields: FieldDef[] }) {
       {fields.map((f) => {
         const val = (settings as any)[f.key] ?? ''
         if (f.type === 'provider-select') {
+          const providerDescs: Record<string, { label: string; desc: string }> = {
+            bailian: { label: '百炼 (bl)', desc: '阿里云百炼平台，CLI 驱动' },
+            deepseek: { label: 'DeepSeek', desc: 'DeepSeek API，HTTP 直连' },
+            minimax: { label: 'MiniMax', desc: 'MiniMax API，中文语音最自然' },
+            zhipu: { label: '智谱 CogView', desc: '智谱 API，中文 prompt 友好' },
+            kling: { label: '可灵 Kling', desc: '快手 API，中文视频最强' },
+          }
           return (
             <div key={f.key} className="grid grid-cols-[140px_1fr] gap-3 items-center">
               <label className="text-paper-300/70">{f.label}</label>
               <RadioGroup
                 value={val || 'bailian'}
-                options={[
-                  { value: 'bailian', label: '百炼 (bl)', desc: '阿里云百炼平台，CLI 驱动' },
-                  { value: 'deepseek', label: 'DeepSeek', desc: 'DeepSeek API，HTTP 直连' },
-                ]}
-                onChange={(v) => mut.mutate({ text_provider: v })}
+                options={(f.options || []).map((opt) => ({
+                  value: opt,
+                  label: providerDescs[opt]?.label ?? opt,
+                  desc: providerDescs[opt]?.desc,
+                }))}
+                onChange={(v) => mut.mutate({ [f.key]: v })}
               />
             </div>
           )
