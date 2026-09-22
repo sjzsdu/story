@@ -16,6 +16,7 @@ import type {
 import { episodeQueryKey, useEpisodeEvents } from '../useEpisodeEvents'
 import { Button, Card, Collapsible, Empty, ErrorBox, Spinner, StatusBadge } from '../components/ui'
 import VersionTree, { STAGE_LABEL, activePath } from '../components/VersionTree'
+import PublishPanel from '../components/PublishPanel'
 
 const ACTION_LABEL: Record<string, string> = {
   story: '生成故事',
@@ -187,8 +188,6 @@ export default function EpisodePage() {
           onAction={act}
         />
       )}
-
-      <EpisodeRefsSection ep={ep} busy={running} />
     </div>
   )
 }
@@ -350,6 +349,10 @@ function NodeDetail({
           onExport={(ratio) => onAction('export', { ratio, from: node.id })}
         />
       </Card>
+      {/* 视觉参考是「拆分分镜」这一步抽出来的产物，同时又是它自己和画面步骤的输入。
+          挂在这一步下面，而不是在页尾悬浮成一块看不出归属的东西；
+          它在数据上是集级的（跨分镜版本共享），所以不放进节点卡片里。 */}
+      {node.stage === 'storyboard' && <EpisodeRefsSection ep={ep} busy={busy} />}
     </div>
   )
 }
@@ -733,6 +736,8 @@ function FinalBody({
           ))}
         </div>
       )}
+      {/* 发布面板 */}
+      <PublishPanel ep={ep} />
     </div>
   )
 }

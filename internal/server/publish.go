@@ -15,6 +15,7 @@ type publishReq struct {
 	Platforms   []string `json:"platforms"`
 	Title       string   `json:"title"`
 	Description string   `json:"description"`
+	Tags        []string `json:"tags,omitempty"`
 	CoverPath   string   `json:"cover_path"`
 	Category    string   `json:"category"`
 	ScheduledAt string   `json:"scheduled_at,omitempty"` // RFC3339
@@ -44,6 +45,7 @@ func (s *Server) publishEpisode(w http.ResponseWriter, r *http.Request) {
 		Platforms:   in.Platforms,
 		Title:       in.Title,
 		Description: in.Description,
+		Tags:        in.Tags,
 		CoverPath:   in.CoverPath,
 		Category:    in.Category,
 		ScheduledAt: scheduledAt,

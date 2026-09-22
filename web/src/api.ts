@@ -307,6 +307,7 @@ export const api = {
     platforms: string[]
     title?: string
     description?: string
+    tags?: string[]
     cover_path?: string
     category?: string
     scheduled_at?: string

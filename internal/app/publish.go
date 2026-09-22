@@ -49,6 +49,7 @@ func (a *App) Publish(ctx context.Context, episodeID string, in PublishInput) ([
 		Platforms:   in.Platforms,
 		Title:       in.Title,
 		Description: in.Description,
+		Tags:        in.Tags,
 		CoverPath:   in.CoverPath,
 		Category:    in.Category,
 		ScheduledAt: in.ScheduledAt,
@@ -140,6 +141,7 @@ type PublishInput struct {
 	Platforms   []string
 	Title       string
 	Description string
+	Tags        []string
 	CoverPath   string
 	Category    string
 	ScheduledAt *time.Time

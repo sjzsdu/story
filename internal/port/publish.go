@@ -54,6 +54,7 @@ type PublishOptions struct {
 	Platforms   []string
 	Title       string
 	Description string
+	Tags        []string
 	CoverPath   string
 	Category    string
 	ScheduledAt *time.Time

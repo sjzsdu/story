@@ -126,6 +126,15 @@ export default function VersionTree({
     return m
   }, [ep.nodes])
 
+  // 已经派生过的「父节点|下一阶段」组合。这些节点上的「继续」是多余的：
+  // 「继续」不带 reroll，只会复用右侧那个已存在的版本、把指针挪过去，
+  // 效果等同于在那个子节点上点「设为当前使用」——所以直接不显示。
+  const derived = useMemo(() => {
+    const s = new Set<string>()
+    for (const n of ep.nodes) if (n.parent_id) s.add(`${n.parent_id}|${n.stage}`)
+    return s
+  }, [ep.nodes])
+
   // 用 DOM 实测位置画父→子连线：不引入图库，纯 SVG 手绘。
   const measure = useCallback(() => {
     const box = containerRef.current
@@ -199,23 +208,27 @@ export default function VersionTree({
                   尚未产生版本
                 </div>
               ) : (
-                list.map((n) => (
-                  <NodeCard
-                    key={n.id}
-                    node={n}
-                    active={n.id === ep.active_node_id}
-                    onActivePath={activeIds.has(n.id)}
-                    selected={n.id === selectedId}
-                    busy={busy}
-                    pending={pending}
-                    registerRef={registerRef}
-                    onSelect={() => onSelect(n.id)}
-                    onAction={onAction}
-                    onActivate={() => onActivate(n.id)}
-                    onDelete={() => onDelete(n.id)}
-                    onReroll={() => setRerolling(n)}
-                  />
-                ))
+                list.map((n) => {
+                  const nx = NEXT_STAGE[n.stage]
+                  return (
+                    <NodeCard
+                      key={n.id}
+                      node={n}
+                      nextExists={nx !== '' && derived.has(`${n.id}|${nx}`)}
+                      active={n.id === ep.active_node_id}
+                      onActivePath={activeIds.has(n.id)}
+                      selected={n.id === selectedId}
+                      busy={busy}
+                      pending={pending}
+                      registerRef={registerRef}
+                      onSelect={() => onSelect(n.id)}
+                      onAction={onAction}
+                      onActivate={() => onActivate(n.id)}
+                      onDelete={() => onDelete(n.id)}
+                      onReroll={() => setRerolling(n)}
+                    />
+                  )
+                })
               )}
             </div>
           )
@@ -241,6 +254,7 @@ export default function VersionTree({
 
 function NodeCard({
   node,
+  nextExists,
   active,
   onActivePath,
   selected,
@@ -254,6 +268,7 @@ function NodeCard({
   onReroll,
 }: {
   node: VersionNode
+  nextExists: boolean
   active: boolean
   onActivePath: boolean
   selected: boolean
@@ -306,14 +321,17 @@ function NodeCard({
             ) : done ? (
               next && (
                 <>
-                  <Button
-                    variant="primary"
-                    className="px-2 py-1 text-[11px]"
-                    disabled={disabled}
-                    onClick={() => onAction(STAGE_ACTION[next], { from: node.id })}
-                  >
-                    ▶ 继续：{STAGE_LABEL[next]}
-                  </Button>
+                  {/* 下一步已经存在时不显示「继续」：它只会复用右边那个版本。 */}
+                  {!nextExists && (
+                    <Button
+                      variant="primary"
+                      className="px-2 py-1 text-[11px]"
+                      disabled={disabled}
+                      onClick={() => onAction(STAGE_ACTION[next], { from: node.id })}
+                    >
+                      ▶ 继续：{STAGE_LABEL[next]}
+                    </Button>
+                  )}
                   <Button
                     variant="outline"
                     className="px-2 py-1 text-[11px]"
