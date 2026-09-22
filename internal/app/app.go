@@ -21,6 +21,7 @@ import (
 	"github.com/sjzsdu/story/internal/engine"
 	"github.com/sjzsdu/story/internal/port"
 	bailianprov "github.com/sjzsdu/story/internal/provider/bailian"
+	deepseekprov "github.com/sjzsdu/story/internal/provider/deepseek"
 	ffmpegprov "github.com/sjzsdu/story/internal/provider/ffmpeg"
 	sqlitestore "github.com/sjzsdu/story/internal/store/sqlite"
 	"github.com/sjzsdu/story/internal/subtitle"
@@ -80,8 +81,26 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*App, error) {
 		composer.WithSubtitles(r)
 	}
 
+	// 按配置选择文本生成 provider：deepseek 或 bailian（默认）。
+	// 视频/图片/TTS/造声仍走 bailian（DeepSeek 暂不支持这些能力）。
+	var textGen port.StoryGenerator
+	var boardGen port.StoryboardPlanner
+	var planner port.SeriesPlanner
+	switch strings.ToLower(cfg.TextProvider) {
+	case "deepseek":
+		ds := deepseekprov.NewClient(cfg.DeepSeekAPIKey, cfg.DeepSeekBaseURL, cfg.DeepSeekModel)
+		textGen = ds
+		boardGen = ds
+		planner = bl // 策划会话暂仍用 bl（多轮对话 + 复杂 JSON 结构）
+		_ = bl
+	default:
+		textGen = bl
+		boardGen = bl
+		planner = bl
+	}
+
 	eng := engine.New(
-		store, bl, bl, bl, bl, composer, bl, bl,
+		store, textGen, boardGen, bl, bl, composer, planner, bl,
 		cfg.ProjectsDir(),
 		cfg.MaxConcurrency, cfg.MaxRetries,
 		cfg.TTSVoice, cfg.TTSInstruction,
@@ -131,12 +150,11 @@ type CreateSeriesInput struct {
 	// 创建后锁定不可改（store.UpdateSeries SQL 不含 voice_id 列）。
 	VoiceID string
 	// VoiceProfile/TTSInstruction 兼容旧请求体：未传 VoiceID 时按平迁规则现场建/取一个。
-	VoiceProfile    string
-	Voice           string
-	TTSInstruction  string
-	Concurrency     int
-	Retries         int
-	TargetPlatforms []string
+	VoiceProfile   string
+	Voice          string
+	TTSInstruction string
+	Concurrency    int
+	Retries        int
 	// VideoStyle 全片画风（templates.VisualStyles 的 key，空＝默认画风）。
 	VideoStyle string
 	// Creative 创作控制参数（叙事/受众/篇幅/运镜/自定义指令）。
@@ -173,18 +191,17 @@ func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.S
 		Description: in.Description,
 		VoiceID:     voiceID,
 		Config: domain.SeriesConfig{
-			Dynasty:         in.Dynasty,
-			Ratio:           firstNonEmpty(in.Ratio, a.Cfg.DefaultRatio),
-			Resolution:      firstNonEmpty(in.Resolution, a.Cfg.DefaultResolution),
-			VisualMode:      domain.NormalizeVisualMode(in.VisualMode),
-			VoiceProfile:    in.VoiceProfile,
-			TTSVoice:        firstNonEmpty(in.Voice, a.Cfg.TTSVoice),
-			TTSInstruction:  firstNonEmpty(in.TTSInstruction, a.Cfg.TTSInstruction),
-			TargetPlatforms: in.TargetPlatforms,
-			MaxConcurrency:  orDefault(in.Concurrency, a.Cfg.MaxConcurrency),
-			MaxRetries:      orDefault(in.Retries, a.Cfg.MaxRetries),
-			VideoStyle:      in.VideoStyle,
-			Creative:        in.Creative,
+			Dynasty:        in.Dynasty,
+			Ratio:          firstNonEmpty(in.Ratio, a.Cfg.DefaultRatio),
+			Resolution:     firstNonEmpty(in.Resolution, a.Cfg.DefaultResolution),
+			VisualMode:     domain.NormalizeVisualMode(in.VisualMode),
+			VoiceProfile:   in.VoiceProfile,
+			TTSVoice:       firstNonEmpty(in.Voice, a.Cfg.TTSVoice),
+			TTSInstruction: firstNonEmpty(in.TTSInstruction, a.Cfg.TTSInstruction),
+			MaxConcurrency: orDefault(in.Concurrency, a.Cfg.MaxConcurrency),
+			MaxRetries:     orDefault(in.Retries, a.Cfg.MaxRetries),
+			VideoStyle:     in.VideoStyle,
+			Creative:       in.Creative,
 		},
 		CreatedAt: now,
 		UpdatedAt: now,

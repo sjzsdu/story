@@ -14,61 +14,6 @@ import (
 // 由 App.Bootstrap 注入，engine 不知道具体平台实现。
 type publishProviders map[domain.Platform]port.PlatformPublisher
 
-// CreatePublishDrafts 为 final 节点的成片创建发布草稿（§19）。
-// 在 Compose 成功后自动调用；status=pending，需用户确认后才真正发布。
-// 如果 series 没有配置 TargetPlatforms，不创建任何草稿。
-func (e *Engine) CreatePublishDrafts(ctx context.Context, episodeID string, providers publishProviders) ([]*domain.PublishJob, error) {
-	ep, series, err := e.load(ctx, episodeID)
-	if err != nil {
-		return nil, err
-	}
-	if len(series.Config.TargetPlatforms) == 0 {
-		return nil, nil
-	}
-	finalNode := ep.ActiveNodeOfStage(domain.StageFinal)
-	if finalNode == nil || !finalNode.Done() || len(finalNode.Outputs) == 0 {
-		return nil, nil
-	}
-	videoPath := finalNode.Outputs[0]
-
-	// 读取故事内容生成标题/描述
-	title := ep.Title
-	description := ""
-	if finalNode.Story != nil {
-		title = finalNode.Story.Title
-		description = finalNode.Story.Summary
-	}
-
-	var jobs []*domain.PublishJob
-	for _, p := range series.Config.TargetPlatforms {
-		platform := domain.NormalizePlatform(p)
-		if _, ok := providers[platform]; !ok {
-			continue // 未注册的平台跳过
-		}
-		jobID := fmt.Sprintf("%s-%s-%d", ep.ID, platform, time.Now().UnixMilli())
-		job := &domain.PublishJob{
-			ID:          jobID,
-			EpisodeID:   ep.ID,
-			SeriesID:    series.ID,
-			Platform:    platform,
-			NodeID:      finalNode.ID,
-			Status:      domain.PublishPending,
-			VideoPath:   videoPath,
-			Title:       truncateTitle(title, platform),
-			Description: buildDescription(description, series, platform),
-			Tags:        buildTags(series, title),
-			MaxRetries:  3,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
-		}
-		if err := e.repo.CreatePublishJob(ctx, job); err != nil {
-			return nil, fmt.Errorf("创建 %s 发布草稿: %w", domain.PlatformLabel(platform), err)
-		}
-		jobs = append(jobs, job)
-	}
-	return jobs, nil
-}
-
 // Publish 发布一集成片到指定平台（§19）。
 func (e *Engine) Publish(ctx context.Context, episodeID string, opts port.PublishOptions, providers publishProviders) ([]*domain.PublishJob, error) {
 	ep, series, err := e.load(ctx, episodeID)
@@ -84,10 +29,7 @@ func (e *Engine) Publish(ctx context.Context, episodeID string, opts port.Publis
 	// 确定要发布的平台列表
 	platforms := opts.Platforms
 	if len(platforms) == 0 {
-		platforms = series.Config.TargetPlatforms
-	}
-	if len(platforms) == 0 {
-		return nil, fmt.Errorf("未指定发布平台，请用 --platform 指定或在系列设置中配置目标平台")
+		return nil, fmt.Errorf("未指定发布平台，请用 --platform 指定")
 	}
 
 	// 读取故事内容

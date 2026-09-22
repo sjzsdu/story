@@ -349,6 +349,31 @@ func CreativePresets() []Preset {
 				"motion":    "strong",
 			},
 		},
+		{
+			Key:  "teen",
+			Name: "青少年通识",
+			Desc: "面向青少年：交代清背景与人物关系，不用文言原话，阴暗处点到为止。",
+			Values: map[string]string{
+				"audience": "teen",
+			},
+		},
+		{
+			Key:  "first_person",
+			Name: "第一人称亲历",
+			Desc: "用「我」来讲，写他当时看见什么、做了什么、后来才明白什么。",
+			Values: map[string]string{
+				"narrative": "first_person",
+			},
+		},
+		{
+			Key:  "long_form",
+			Name: "长卷慢叙",
+			Desc: "长篇铺开因果，镜头动得更轻，适合慢慢讲的长故事。",
+			Values: map[string]string{
+				"length": "long",
+				"motion": "subtle",
+			},
+		},
 	}
 }
 

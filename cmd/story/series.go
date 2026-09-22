@@ -25,7 +25,6 @@ var (
 	seriesInstruction string
 	seriesConcurrency int
 	seriesRetries     int
-	seriesPlatforms   []string
 	// 创作控制参数：--creative 可重复（key=value，天然插件化，新增参数不必加 flag）；
 	// --preset / --story-instruction / --video-style 是常用项的语法糖。
 	seriesCreative   []string
@@ -55,21 +54,20 @@ var seriesCreateCmd = &cobra.Command{
 			return err
 		}
 		se, err := application.CreateSeries(rootCtx, app.CreateSeriesInput{
-			Name:            seriesName,
-			Dynasty:         seriesDynasty,
-			Description:     seriesDesc,
-			Ratio:           seriesRatio,
-			Resolution:      seriesResolution,
-			VisualMode:      seriesVisualMode,
-			VoiceID:         seriesVoiceID,
-			VoiceProfile:    seriesVoiceProf,
-			Voice:           seriesVoice,
-			TTSInstruction:  seriesInstruction,
-			Concurrency:     seriesConcurrency,
-			Retries:         seriesRetries,
-			TargetPlatforms: seriesPlatforms,
-			VideoStyle:      videoStyle,
-			Creative:        creative,
+			Name:           seriesName,
+			Dynasty:        seriesDynasty,
+			Description:    seriesDesc,
+			Ratio:          seriesRatio,
+			Resolution:     seriesResolution,
+			VisualMode:     seriesVisualMode,
+			VoiceID:        seriesVoiceID,
+			VoiceProfile:   seriesVoiceProf,
+			Voice:          seriesVoice,
+			TTSInstruction: seriesInstruction,
+			Concurrency:    seriesConcurrency,
+			Retries:        seriesRetries,
+			VideoStyle:     videoStyle,
+			Creative:       creative,
 		})
 		if err != nil {
 			return err
@@ -171,9 +169,6 @@ func printSeries(se *domain.Series) {
 	} else {
 		// 兼容旧 series（迁移前）：显示旧字段
 		fmt.Printf("  音色: %s（旧字段，重启后会迁移到 voice_id）\n", se.Config.TTSVoice)
-	}
-	if len(se.Config.TargetPlatforms) > 0 {
-		fmt.Printf("  目标平台: %s\n", strings.Join(se.Config.TargetPlatforms, ", "))
 	}
 	printCreative(se)
 }
@@ -289,7 +284,6 @@ func init() {
 	seriesCreateCmd.Flags().StringVar(&seriesInstruction, "instruction", "", "（旧）TTS 风格指令，配合 --voice-raw 用")
 	seriesCreateCmd.Flags().IntVar(&seriesConcurrency, "concurrency", 0, "单集最大并发镜头数（默认 3）")
 	seriesCreateCmd.Flags().IntVar(&seriesRetries, "retries", 0, "失败重试次数（默认 3）")
-	seriesCreateCmd.Flags().StringSliceVar(&seriesPlatforms, "platforms", nil, "目标平台，逗号分隔，如 douyin,kuaishou,bilibili")
 	registerCreativeFlags(seriesCreateCmd)
 
 	registerCreativeFlags(seriesSetCmd)
@@ -302,7 +296,7 @@ func init() {
 func registerCreativeFlags(cmd *cobra.Command) {
 	cmd.Flags().StringArrayVar(&seriesCreative, "creative", nil,
 		"创作参数，可重复，格式 key=value（如 --creative narrative=suspense）；可用 key 见 story series show 或 Web 端")
-	cmd.Flags().StringVar(&seriesPreset, "preset", "", "创作预设 key：classic（默认）/ documentary / kids / suspense")
+	cmd.Flags().StringVar(&seriesPreset, "preset", "", "创作预设 key：classic（默认）/ documentary / kids / suspense / teen / first_person / long_form")
 	cmd.Flags().StringVar(&seriesStoryInstr, "story-instruction", "", "自定义创作指令（自由文本，上限 500 字；与硬性规则冲突时以硬性规则为准）")
 	cmd.Flags().StringVar(&seriesVideoStyle, "video-style", "", "全片画风 key（选项由 templates 的风格包给出，如 gongbi/ink）")
 }

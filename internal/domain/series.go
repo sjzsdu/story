@@ -41,8 +41,6 @@ type SeriesConfig struct {
 	// VoiceProfile 旁白语音画像 key（旧字段；内置 key 如 longtian/longze/longcheng）。
 	// 空值时使用 TTSVoice（兼容旧数据）；非空时由 voicelibrary.go 解析覆盖 TTSVoice/Rate/Pitch。
 	VoiceProfile string `json:"voice_profile,omitempty"`
-	// TargetPlatforms 目标发布平台（仅记录，供导出参考）。
-	TargetPlatforms []string `json:"target_platforms"`
 	// MaxConcurrency 单集生产的最大并发镜头数。
 	MaxConcurrency int `json:"max_concurrency"`
 	// MaxRetries 单镜头失败最大重试次数。

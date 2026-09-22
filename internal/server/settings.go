@@ -21,6 +21,10 @@ type configResponse struct {
 	TTSVoice             string `json:"tts_voice"`
 	ImageModel           string `json:"image_model"`
 	TTSInstruction       string `json:"tts_instruction"`
+	TextProvider         string `json:"text_provider"`
+	DeepSeekAPIKey       string `json:"deepseek_api_key,omitempty"` // 掩码
+	DeepSeekBaseURL      string `json:"deepseek_base_url"`
+	DeepSeekModel        string `json:"deepseek_model"`
 	BailianAPIKey        string `json:"bailian_api_key,omitempty"` // 掩码
 	BailianBaseURL       string `json:"bailian_base_url"`
 	DefaultRatio         string `json:"default_ratio"`
@@ -45,6 +49,9 @@ func configFromInternal(cfg config.Config) configResponse {
 		TTSVoice:              cfg.TTSVoice,
 		ImageModel:            cfg.ImageModel,
 		TTSInstruction:        cfg.TTSInstruction,
+		TextProvider:          cfg.TextProvider,
+		DeepSeekBaseURL:       cfg.DeepSeekBaseURL,
+		DeepSeekModel:         cfg.DeepSeekModel,
 		BailianBaseURL:        cfg.BailianBaseURL,
 		DefaultRatio:          cfg.DefaultRatio,
 		DefaultResolution:     cfg.DefaultResolution,
@@ -59,6 +66,9 @@ func configFromInternal(cfg config.Config) configResponse {
 	// 掩码 API Key
 	if cfg.BailianAPIKey != "" {
 		r.BailianAPIKey = maskKey(cfg.BailianAPIKey)
+	}
+	if cfg.DeepSeekAPIKey != "" {
+		r.DeepSeekAPIKey = maskKey(cfg.DeepSeekAPIKey)
 	}
 	return r
 }
@@ -82,6 +92,10 @@ type updateConfigReq struct {
 	TTSVoice              *string `json:"tts_voice"`
 	ImageModel            *string `json:"image_model"`
 	TTSInstruction        *string `json:"tts_instruction"`
+	TextProvider          *string `json:"text_provider"`
+	DeepSeekAPIKey        *string `json:"deepseek_api_key"`
+	DeepSeekBaseURL       *string `json:"deepseek_base_url"`
+	DeepSeekModel         *string `json:"deepseek_model"`
 	BailianAPIKey         *string `json:"bailian_api_key"`
 	BailianBaseURL        *string `json:"bailian_base_url"`
 	DefaultRatio          *string `json:"default_ratio"`
@@ -119,6 +133,18 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.TTSInstruction != nil {
 		cfg.TTSInstruction = *in.TTSInstruction
+	}
+	if in.TextProvider != nil {
+		cfg.TextProvider = *in.TextProvider
+	}
+	if in.DeepSeekAPIKey != nil && *in.DeepSeekAPIKey != "" && *in.DeepSeekAPIKey != "****" {
+		cfg.DeepSeekAPIKey = *in.DeepSeekAPIKey
+	}
+	if in.DeepSeekBaseURL != nil {
+		cfg.DeepSeekBaseURL = *in.DeepSeekBaseURL
+	}
+	if in.DeepSeekModel != nil {
+		cfg.DeepSeekModel = *in.DeepSeekModel
 	}
 	if in.BailianAPIKey != nil && *in.BailianAPIKey != "" && *in.BailianAPIKey != "****" {
 		cfg.BailianAPIKey = *in.BailianAPIKey

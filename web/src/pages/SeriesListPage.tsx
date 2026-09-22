@@ -55,7 +55,6 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
   const [visualMode, setVisualMode] = useState<'comic' | 'video'>('comic')
   // §16：声音条目 ID 必选（默认内置 longtian 龙天）；可在「声音」页管理条目。
   const [voiceID, setVoiceID] = useState('longtian')
-  const [platforms, setPlatforms] = useState('douyin,kuaishou')
   // 创作控制参数：一个 state 装下预设 + 逐项值（预设 key 存在 values.preset 里）。
   const [creative, setCreative] = useState<CreativeStyle>({})
   const [err, setErr] = useState('')
@@ -96,10 +95,6 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
         resolution,
         visual_mode: visualMode,
         voice_id: voiceID,
-        target_platforms: platforms
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean),
         ...payload,
       })
     },
@@ -111,7 +106,6 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
       setResolution('1080P')
       setVisualMode('comic')
       setVoiceID('longtian')
-      setPlatforms('douyin,kuaishou')
       setCreative({})
       setErr('')
       onClose()
@@ -163,9 +157,6 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
               </option>
             ))}
           </Select>
-        </Field>
-        <Field label="目标平台（逗号分隔，仅记录）">
-          <TextInput value={platforms} onChange={(e) => setPlatforms(e.target.value)} />
         </Field>
         <div className="sm:col-span-2">
           <CreativeFields catalog={catalog} values={creative} onChange={setCreative} />

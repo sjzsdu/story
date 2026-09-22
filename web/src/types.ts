@@ -302,6 +302,10 @@ export interface AppSettings {
   tts_voice: string
   image_model: string
   tts_instruction: string
+  text_provider: string
+  deepseek_api_key?: string
+  deepseek_base_url: string
+  deepseek_model: string
   bailian_api_key?: string
   bailian_base_url: string
   default_ratio: string

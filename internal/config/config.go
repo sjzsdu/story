@@ -29,6 +29,16 @@ type Config struct {
 	// TTSInstruction 默认旁白风格指令。
 	TTSInstruction string `yaml:"tts_instruction"`
 
+	// ---- 文本生成 provider ----
+	// TextProvider 文本生成供应商（"bailian" 或 "deepseek"），空则用 bailian。
+	TextProvider string `yaml:"text_provider"`
+	// DeepSeek API Key；留空回退 DEEPSEEK_API_KEY 环境变量。
+	DeepSeekAPIKey string `yaml:"deepseek_api_key"`
+	// DeepSeekBaseURL API 地址；留空用 https://api.deepseek.com。
+	DeepSeekBaseURL string `yaml:"deepseek_base_url"`
+	// DeepSeekModel 模型名；留空用 deepseek-chat。
+	DeepSeekModel string `yaml:"deepseek_model"`
+
 	// BailianAPIKey 百炼 API Key（造声 HTTP 直连用）；留空回退
 	// DASHSCOPE_API_KEY 环境变量与 ~/.bailian/config.json。
 	BailianAPIKey string `yaml:"bailian_api_key"`
@@ -110,6 +120,15 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("STORY_BAILIAN_BASE_URL"); v != "" {
 		cfg.BailianBaseURL = v
+	}
+	if v := os.Getenv("DEEPSEEK_API_KEY"); v != "" {
+		cfg.DeepSeekAPIKey = v
+	}
+	if v := os.Getenv("DEEPSEEK_BASE_URL"); v != "" {
+		cfg.DeepSeekBaseURL = v
+	}
+	if v := os.Getenv("STORY_TEXT_PROVIDER"); v != "" {
+		cfg.TextProvider = v
 	}
 	if v := os.Getenv("STORY_MAX_CONCURRENCY"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

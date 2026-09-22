@@ -184,12 +184,11 @@ type createSeriesReq struct {
 	// VoiceID 顶层声音条目 ID（§16，推荐路径）。
 	VoiceID string `json:"voice_id"`
 	// Voice/VoiceProfile/TTSInstruction 旧字段：未传 VoiceID 时按平迁规则现场建/取一个。
-	Voice           string   `json:"voice"`
-	VoiceProfile    string   `json:"voice_profile"`
-	TTSInstruction  string   `json:"tts_instruction"`
-	Concurrency     int      `json:"concurrency"`
-	Retries         int      `json:"retries"`
-	TargetPlatforms []string `json:"target_platforms"`
+	Voice          string `json:"voice"`
+	VoiceProfile   string `json:"voice_profile"`
+	TTSInstruction string `json:"tts_instruction"`
+	Concurrency    int    `json:"concurrency"`
+	Retries        int    `json:"retries"`
 	// Preset 创作预设 key（可选）；Creative 为逐项微调，形如 {knobKey: value}，
 	// 含画风（video_style）。合法 key/值见 GET /api/creative-catalog。
 	Preset   string            `json:"preset"`
@@ -216,21 +215,20 @@ func (s *Server) createSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	se, err := s.app.CreateSeries(r.Context(), app.CreateSeriesInput{
-		Name:            req.Name,
-		Dynasty:         req.Dynasty,
-		Description:     req.Description,
-		Ratio:           req.Ratio,
-		Resolution:      req.Resolution,
-		VisualMode:      req.VisualMode,
-		VoiceID:         req.VoiceID,
-		Voice:           req.Voice,
-		VoiceProfile:    req.VoiceProfile,
-		TTSInstruction:  req.TTSInstruction,
-		Concurrency:     req.Concurrency,
-		Retries:         req.Retries,
-		TargetPlatforms: req.TargetPlatforms,
-		VideoStyle:      videoStyle,
-		Creative:        creative,
+		Name:           req.Name,
+		Dynasty:        req.Dynasty,
+		Description:    req.Description,
+		Ratio:          req.Ratio,
+		Resolution:     req.Resolution,
+		VisualMode:     req.VisualMode,
+		VoiceID:        req.VoiceID,
+		Voice:          req.Voice,
+		VoiceProfile:   req.VoiceProfile,
+		TTSInstruction: req.TTSInstruction,
+		Concurrency:    req.Concurrency,
+		Retries:        req.Retries,
+		VideoStyle:     videoStyle,
+		Creative:       creative,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
