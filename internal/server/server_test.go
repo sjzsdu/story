@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -551,5 +552,177 @@ func TestCreateEpisodeWithInstruction(t *testing.T) {
 	}
 	if ep.Instruction != "本集只讲一个晚上。" {
 		t.Fatalf("集级附加指令未写入: %q", ep.Instruction)
+	}
+}
+
+// TestUpdateSeriesEndpoint 覆盖 PUT /api/series/{id}：补丁语义、校验与锁定项。
+func TestUpdateSeriesEndpoint(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+
+	res, err := http.Post(ts.URL+"/api/series", "application/json", strings.NewReader(
+		`{"name":"鬼谷子","dynasty":"战国","ratio":"9:16","resolution":"720P","visual_mode":"comic"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created domain.Series
+	json.NewDecoder(res.Body).Decode(&created)
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("创建系列状态码 = %d", res.StatusCode)
+	}
+
+	put := func(url, payload string) *http.Response {
+		req, err := http.NewRequest(http.MethodPut, url, strings.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+
+	// 补丁：只改名称/朝代/简介与一个 Provider 覆盖，未提到的字段保持不动。
+	var updated domain.Series
+	r := put(ts.URL+"/api/series/guiguzi",
+		`{"name":"鬼谷子纵横","dynasty":"东周","description":"纵横家","image_provider":"zhipu"}`)
+	json.NewDecoder(r.Body).Decode(&updated)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("PUT series 状态码 = %d", r.StatusCode)
+	}
+	if updated.Name != "鬼谷子纵横" || updated.Description != "纵横家" {
+		t.Fatalf("基础信息未生效: %+v", updated)
+	}
+	// 朝代两处存储必须同步。
+	if updated.Dynasty != "东周" || updated.Config.Dynasty != "东周" {
+		t.Fatalf("朝代未同步: series=%q config=%q", updated.Dynasty, updated.Config.Dynasty)
+	}
+	if updated.Config.ImageProvider != "zhipu" {
+		t.Fatalf("Provider 覆盖未生效: %q", updated.Config.ImageProvider)
+	}
+	if updated.Config.Ratio != "9:16" || updated.Config.Resolution != "720P" {
+		t.Fatalf("未提到的规格不应被改动: %q %q", updated.Config.Ratio, updated.Config.Resolution)
+	}
+	// 锁定项：声音与画面模式不因本接口改变。
+	if updated.VoiceID != created.VoiceID || updated.Config.VisualMode != created.Config.VisualMode {
+		t.Fatalf("voice_id / visual_mode 应保持锁定: %+v", updated)
+	}
+
+	// 空串 Provider ＝ 回到系统默认（omitempty，清空后不出现在响应里）。
+	var cleared domain.Series
+	r = put(ts.URL+"/api/series/guiguzi", `{"image_provider":""}`)
+	json.NewDecoder(r.Body).Decode(&cleared)
+	r.Body.Close()
+	if cleared.Config.ImageProvider != "" {
+		t.Fatalf("空串应清除 Provider 覆盖: %q", cleared.Config.ImageProvider)
+	}
+
+	// 校验：空 name / 空 ratio / 并发小于 1，均 400。
+	for _, body := range []string{`{"name":"  "}`, `{"ratio":""}`, `{"max_concurrency":0}`} {
+		r = put(ts.URL+"/api/series/guiguzi", body)
+		r.Body.Close()
+		if r.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s 应 400，得到 %d", body, r.StatusCode)
+		}
+	}
+
+	// 不存在的系列 → 404。
+	r = put(ts.URL+"/api/series/missing", `{"name":"x"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusNotFound {
+		t.Fatalf("不存在的系列应 404，得到 %d", r.StatusCode)
+	}
+}
+
+// TestUpdateEpisodeMetaEndpoint 覆盖 PATCH /api/episodes/{id}：只改元数据、
+// 版本树与产物不受影响。
+func TestUpdateEpisodeMetaEndpoint(t *testing.T) {
+	ts, a, _ := newTestServer(t)
+	ctx := context.Background()
+	if _, err := a.CreateSeries(ctx, app.CreateSeriesInput{Name: "鬼谷子"}); err != nil {
+		t.Fatal(err)
+	}
+	ep, err := a.CreateEpisode(ctx, "guiguzi", "入秦", "张仪", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodesBefore := len(ep.Nodes)
+
+	patch := func(url, payload string) *http.Response {
+		req, err := http.NewRequest(http.MethodPatch, url, strings.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+
+	// 补丁：只改标题与附加指令，未提到的主题保持原值。
+	r := patch(ts.URL+"/api/episodes/"+ep.ID, `{"title":"入秦之路","instruction":"本集只讲一个晚上。"}`)
+	var updated domain.Episode
+	json.NewDecoder(r.Body).Decode(&updated)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH episode 状态码 = %d", r.StatusCode)
+	}
+	if updated.Title != "入秦之路" || updated.Instruction != "本集只讲一个晚上。" {
+		t.Fatalf("元数据未生效: %+v", updated)
+	}
+	if updated.Topic != "张仪" {
+		t.Fatalf("未提到的主题不应被改动: %q", updated.Topic)
+	}
+	if len(updated.Nodes) != nodesBefore {
+		t.Fatalf("版本树不应被触碰: %d -> %d", nodesBefore, len(updated.Nodes))
+	}
+
+	// 空标题 → 400；不存在的集 → 404。
+	r = patch(ts.URL+"/api/episodes/"+ep.ID, `{"title":"   "}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("空标题应 400，得到 %d", r.StatusCode)
+	}
+	r = patch(ts.URL+"/api/episodes/missing", `{"title":"x"}`)
+	r.Body.Close()
+	if r.StatusCode != http.StatusNotFound {
+		t.Fatalf("不存在的集应 404，得到 %d", r.StatusCode)
+	}
+}
+
+// TestSeriesPublishJobsEndpoint 系列级发布汇总：无任务时返回空数组（不是 null），
+// 不存在的系列 404。
+func TestSeriesPublishJobsEndpoint(t *testing.T) {
+	ts, a, _ := newTestServer(t)
+	ctx := context.Background()
+	if _, err := a.CreateSeries(ctx, app.CreateSeriesInput{Name: "鬼谷子"}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := http.Get(ts.URL + "/api/series/guiguzi/publish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("发布汇总状态码 = %d", res.StatusCode)
+	}
+	if strings.TrimSpace(string(raw)) != "[]" {
+		t.Fatalf("无任务时应返回空数组，得到 %s", strings.TrimSpace(string(raw)))
+	}
+
+	res, err = http.Get(ts.URL + "/api/series/missing/publish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("不存在的系列应 404，得到 %d", res.StatusCode)
 	}
 }

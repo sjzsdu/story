@@ -51,6 +51,9 @@ type Knob struct {
 	Label string
 	// Help 前端提示语（也可以写费用提醒）。
 	Help string
+	// CostImpact 改动本参数会触发画面/分镜重做（重新调用图片或视频模型，产生费用）。
+	// 由后端显式声明，前端据此弹费用确认，不再靠 Help 里出现「费用」二字来判断。
+	CostImpact bool
 	// DefaultLabel 默认（空值）对应的中文名，供前端渲染「跟随默认：xxx」。
 	DefaultLabel string
 	Type         KnobType
@@ -78,6 +81,7 @@ type CatalogKnob struct {
 	Key          string          `json:"key"`
 	Label        string          `json:"label"`
 	Help         string          `json:"help"`
+	CostImpact   bool            `json:"cost_impact"`
 	DefaultLabel string          `json:"default_label"`
 	Type         KnobType        `json:"type"`
 	MaxLength    int             `json:"max_length,omitempty"`
@@ -180,6 +184,7 @@ func CreativeKnobs() []Knob {
 			Key:          "motion",
 			Label:        "运镜强度",
 			Help:         "小人书模式下插画推拉平移的幅度。改动会重新生成插画（产生费用）。",
+			CostImpact:   true,
 			DefaultLabel: "标准（默认）",
 			Type:         KnobEnum,
 			Get:          func(c domain.SeriesConfig) string { return c.Creative.Motion },
@@ -193,6 +198,7 @@ func CreativeKnobs() []Knob {
 			Key:          "video_style",
 			Label:        "画风",
 			Help:         "全片统一画风。改动会使分镜与画面重做（产生费用）。",
+			CostImpact:   true,
 			DefaultLabel: MatchStyle(DefaultStyleKey).Name + "（默认）",
 			Type:         KnobEnum,
 			Get:          func(c domain.SeriesConfig) string { return c.VideoStyle },
@@ -420,6 +426,7 @@ func Catalog() CreativeCatalog {
 			Key:          k.Key,
 			Label:        k.Label,
 			Help:         k.Help,
+			CostImpact:   k.CostImpact,
 			DefaultLabel: k.DefaultLabel,
 			Type:         k.Type,
 			MaxLength:    k.MaxLength,

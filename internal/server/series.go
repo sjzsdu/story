@@ -13,10 +13,14 @@ import (
 
 func (s *Server) registerSeriesExtraRoutes() {
 	s.mux.HandleFunc("GET /api/series/{id}/events", s.handleSeriesSSE)
+	// 系列基础信息与规格（名称/朝代/简介/画幅/分辨率/并发重试/Provider 覆盖）。
+	s.mux.HandleFunc("PUT /api/series/{id}", s.updateSeries)
 	s.mux.HandleFunc("PUT /api/series/{id}/characters", s.updateCharacters)
 	// 创作控制参数：叙事/受众/篇幅/运镜/画风 + 系列级自定义指令。
 	s.mux.HandleFunc("PUT /api/series/{id}/creative", s.updateCreative)
 	s.mux.HandleFunc("POST /api/series/{id}/keyframes", s.generateKeyframes)
+	// 系列级发布汇总（该系列全部集的发布任务）。
+	s.mux.HandleFunc("GET /api/series/{id}/publish", s.listSeriesPublishJobs)
 	s.mux.HandleFunc("GET /api/series/{id}/media", s.serveSeriesMedia)
 }
 
@@ -123,6 +127,119 @@ func (s *Server) updateCharacters(w http.ResponseWriter, r *http.Request) {
 	}
 	se, _ := s.app.GetSeries(r.Context(), r.PathValue("id"))
 	writeJSON(w, http.StatusOK, se)
+}
+
+// updateSeriesRequest 系列元数据与规格的补丁请求体：nil 的字段保持原值。
+// voice_id 与画面模式（visual_mode）创建后锁定，不在此列。
+type updateSeriesRequest struct {
+	Name           *string `json:"name"`
+	Dynasty        *string `json:"dynasty"`
+	Description    *string `json:"description"`
+	Ratio          *string `json:"ratio"`
+	Resolution     *string `json:"resolution"`
+	MaxConcurrency *int    `json:"max_concurrency"`
+	MaxRetries     *int    `json:"max_retries"`
+	TextProvider   *string `json:"text_provider"`
+	TTSProvider    *string `json:"tts_provider"`
+	ImageProvider  *string `json:"image_provider"`
+	VideoProvider  *string `json:"video_provider"`
+}
+
+// updateSeries 修改系列基础信息与规格。声音与画面模式仍锁定：本接口不写这两项。
+func (s *Server) updateSeries(w http.ResponseWriter, r *http.Request) {
+	se, ok := s.seriesOrError(w, r)
+	if !ok {
+		return
+	}
+	var req updateSeriesRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		return
+	}
+	if req.Name != nil {
+		name := strings.TrimSpace(*req.Name)
+		if name == "" {
+			writeErr(w, http.StatusBadRequest, "name 不能为空")
+			return
+		}
+		se.Name = name
+	}
+	if req.Dynasty != nil {
+		// 系列级朝代与 config.dynasty 是同一语义的两处存储，保持同步。
+		se.Dynasty = strings.TrimSpace(*req.Dynasty)
+		se.Config.Dynasty = se.Dynasty
+	}
+	if req.Description != nil {
+		se.Description = strings.TrimSpace(*req.Description)
+	}
+	if req.Ratio != nil {
+		ratio := strings.TrimSpace(*req.Ratio)
+		if ratio == "" {
+			writeErr(w, http.StatusBadRequest, "ratio 不能为空")
+			return
+		}
+		se.Config.Ratio = ratio
+	}
+	if req.Resolution != nil {
+		resolution := strings.TrimSpace(*req.Resolution)
+		if resolution == "" {
+			writeErr(w, http.StatusBadRequest, "resolution 不能为空")
+			return
+		}
+		se.Config.Resolution = resolution
+	}
+	if req.MaxConcurrency != nil {
+		if *req.MaxConcurrency < 1 {
+			writeErr(w, http.StatusBadRequest, "max_concurrency 至少为 1")
+			return
+		}
+		se.Config.MaxConcurrency = *req.MaxConcurrency
+	}
+	if req.MaxRetries != nil {
+		if *req.MaxRetries < 0 {
+			writeErr(w, http.StatusBadRequest, "max_retries 不能为负数")
+			return
+		}
+		se.Config.MaxRetries = *req.MaxRetries
+	}
+	// Provider 覆盖：空串＝回到系统默认。
+	if req.TextProvider != nil {
+		se.Config.TextProvider = strings.TrimSpace(*req.TextProvider)
+	}
+	if req.TTSProvider != nil {
+		se.Config.TTSProvider = strings.TrimSpace(*req.TTSProvider)
+	}
+	if req.ImageProvider != nil {
+		se.Config.ImageProvider = strings.TrimSpace(*req.ImageProvider)
+	}
+	if req.VideoProvider != nil {
+		se.Config.VideoProvider = strings.TrimSpace(*req.VideoProvider)
+	}
+	if err := s.app.UpdateSeries(r.Context(), se); err != nil {
+		if errors.Is(err, app.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "系列不存在")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, se)
+}
+
+// listSeriesPublishJobs 系列级发布汇总：该系列下全部集的发布任务。
+func (s *Server) listSeriesPublishJobs(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.seriesOrError(w, r); !ok {
+		return
+	}
+	jobs, err := s.app.ListSeriesPublishJobs(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if jobs == nil {
+		jobs = []*domain.PublishJob{}
+	}
+	writeJSON(w, http.StatusOK, jobs)
 }
 
 // updateCreativeRequest 创作设置请求体：预设 + 逐项微调。

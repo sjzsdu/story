@@ -137,6 +137,7 @@ internal/store/sqlite      （Repository 的 SQLite 实现）
 - 开发：Go 侧 `story serve` 跑 API，另在 `web/` 执行 `npm run dev`（5173 代理 /api 到 7878）。
 - 新增流水线动作必须同时补 CLI 命令与 server `buildAction` 映射（复用 engine 方法），禁止在 server 中直接写生产逻辑。
 - 系列级动作（如定妆照）同样经 broker 调度，以系列 ID 为槽位键；`GET /api/series/{id}/events` 推送系列+集列表快照，`GET /api/series/{id}/media?path=` 只允许访问 `data/projects/<series-id>/` 内文件（防路径穿越）。
+- 详情页可编辑接口（2026-09-22 增补）：`PUT /api/series/{id}`（基础信息与规格补丁：name/dynasty/description/ratio/resolution/max_concurrency/max_retries + 四个 provider 覆盖；`nil` 字段保持原值，空串 provider＝回系统默认；**voice_id 与 visual_mode 不在可改范围，保持锁定**）、`PATCH /api/episodes/{id}`（集元数据补丁：title/topic/instruction，只写这三列不碰 `nodes_json`/`active_node_id`，与执行中的流水线互不覆盖）、`GET /api/series/{id}/publish`（系列级发布汇总，Web 集列表据此按集显示发布状态，无任务返回 `[]`）。
 
 ## 12. 角色形象一致性（2026-09-19 增补；2026-09-20 泛化见 §15）
 

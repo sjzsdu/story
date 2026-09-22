@@ -85,6 +85,30 @@ func (s *Store) ListPublishJobsByEpisode(ctx context.Context, episodeID string) 
 	return out, rows.Err()
 }
 
+// ListPublishJobsBySeries 列出某系列下全部集的发布任务（按创建时间升序）。
+func (s *Store) ListPublishJobsBySeries(ctx context.Context, seriesID string) ([]*domain.PublishJob, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, episode_id, series_id, platform, node_id, status,
+		        video_path, cover_path, title, description, tags, category,
+		        platform_video_id, platform_url,
+		        scheduled_at, attempts, max_retries, error,
+		        created_at, updated_at
+		 FROM publish_jobs WHERE series_id = ? ORDER BY created_at ASC`, seriesID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.PublishJob
+	for rows.Next() {
+		job, err := scanPublishJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, job)
+	}
+	return out, rows.Err()
+}
+
 // UpdatePublishJob 更新发布任务。
 func (s *Store) UpdatePublishJob(ctx context.Context, job *domain.PublishJob) error {
 	tags, _ := json.Marshal(job.Tags)

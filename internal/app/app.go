@@ -208,8 +208,8 @@ type CreateSeriesInput struct {
 	// 零值＝内置默认，产出与历史行为完全一致。
 	Creative domain.CreativeStyle
 	// ---- 系列级 Provider 覆盖（空＝用系统默认） ----
-	TextProvider string
-	TTSProvider  string
+	TextProvider  string
+	TTSProvider   string
 	ImageProvider string
 	VideoProvider string
 }
@@ -255,10 +255,10 @@ func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.S
 			VideoStyle:     in.VideoStyle,
 			Creative:       in.Creative,
 			// 系列级 Provider 覆盖：空＝用系统默认（engine resolveProviders 时回退）。
-			TextProvider:   in.TextProvider,
-			TTSProvider:    in.TTSProvider,
-			ImageProvider:  in.ImageProvider,
-			VideoProvider:  in.VideoProvider,
+			TextProvider:  in.TextProvider,
+			TTSProvider:   in.TTSProvider,
+			ImageProvider: in.ImageProvider,
+			VideoProvider: in.VideoProvider,
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -328,6 +328,11 @@ func (a *App) CreateEpisode(ctx context.Context, seriesID, title, topic, instruc
 		return nil, err
 	}
 	return ep, nil
+}
+
+// UpdateEpisodeMeta 修改集的标题/主题/附加指令，不触发任何生产动作，也不触碰版本树。
+func (a *App) UpdateEpisodeMeta(ctx context.Context, id, title, topic, instruction string) error {
+	return translateErr(a.Repo.UpdateEpisodeMeta(ctx, id, title, topic, instruction))
 }
 
 // ErrNotFound 业务侧「不存在」错误（屏蔽具体存储实现的哨兵错误）。

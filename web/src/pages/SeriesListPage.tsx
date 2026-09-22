@@ -3,8 +3,9 @@ import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
 import type { CreativeStyle, Series } from '../types'
-import { Button, Card, Empty, ErrorBox, Field, Modal, Select, Spinner, TextInput } from '../components/ui'
+import { Button, Card, Empty, ErrorBox, Field, Modal, Select, Spinner, TextArea, TextInput } from '../components/ui'
 import CreativeFields, { knobMap } from '../components/CreativeFields'
+import { PROVIDER_FIELDS, RATIO_OPTIONS, RESOLUTION_OPTIONS, visualModeLabel } from '../labels'
 
 export default function SeriesListPage() {
   const { data: series, isLoading, error } = useQuery({ queryKey: ['series'], queryFn: api.listSeries })
@@ -50,6 +51,7 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
   const queryClient = useQueryClient()
   const [name, setName] = useState('')
   const [dynasty, setDynasty] = useState('')
+  const [description, setDescription] = useState('')
   const [ratio, setRatio] = useState('9:16')
   const [resolution, setResolution] = useState('1080P')
   const [visualMode, setVisualMode] = useState<'comic' | 'video'>('comic')
@@ -105,6 +107,7 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
       return api.createSeries({
         name: name.trim(),
         dynasty: dynasty.trim(),
+        description: description.trim(),
         ratio,
         resolution,
         visual_mode: visualMode,
@@ -120,6 +123,7 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
       void queryClient.invalidateQueries({ queryKey: ['series'] })
       setName('')
       setDynasty('')
+      setDescription('')
       setRatio('9:16')
       setResolution('1080P')
       setVisualMode('comic')
@@ -194,6 +198,16 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
             <Field label="朝代锚定">
               <TextInput value={dynasty} onChange={(e) => setDynasty(e.target.value)} placeholder="如：战国" />
             </Field>
+            <div className="sm:col-span-2">
+              <Field label="简介（可空，之后可在系列设置里改）">
+                <TextArea
+                  value={description}
+                  maxLength={300}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="一两句话说明这个系列讲什么"
+                />
+              </Field>
+            </div>
           </>
         )}
 
@@ -201,16 +215,16 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
           <>
             <Field label="画面比例">
               <Select value={ratio} onChange={(e) => setRatio(e.target.value)}>
-                <option>9:16</option>
-                <option>16:9</option>
-                <option>1:1</option>
-                <option>3:4</option>
+                {RATIO_OPTIONS.map((r) => (
+                  <option key={r}>{r}</option>
+                ))}
               </Select>
             </Field>
             <Field label="分辨率（档位为长边）">
               <Select value={resolution} onChange={(e) => setResolution(e.target.value)}>
-                <option>1080P</option>
-                <option>720P</option>
+                {RESOLUTION_OPTIONS.map((r) => (
+                  <option key={r}>{r}</option>
+                ))}
               </Select>
             </Field>
             <Field label="画面模式（创建后不可更改）">
@@ -242,8 +256,7 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
             <p className="sm:col-span-2 text-xs text-paper-300/40">
               将创建：{name.trim()}
               {dynasty.trim() && ` · ${dynasty.trim()}`} · {ratio} · {resolution} ·{' '}
-              {visualMode === 'comic' ? '小人书插画' : 'AI 生成视频'} ·{' '}
-              {voices?.find((v) => v.id === voiceID)?.name ?? voiceID}
+              {visualModeLabel(visualMode)} · {voices?.find((v) => v.id === voiceID)?.name ?? voiceID}
             </p>
           </>
         )}
@@ -252,37 +265,34 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
           <>
             <div className="sm:col-span-2">
               <p className="text-xs text-paper-300/50 mb-3">
-                系列级 Provider 覆盖 — 空值使用系统默认配置，选定后该系列所有集均使用指定 Provider。
+                系列级 Provider 覆盖 — 空值使用系统默认配置，选定后该系列所有集均使用指定 Provider。创建后可在系列设置里修改。
               </p>
             </div>
-            <Field label="文本生成">
-              <Select value={textProvider} onChange={(e) => setTextProvider(e.target.value)}>
-                <option value="">系统默认</option>
-                <option value="bailian">百炼 (bl)</option>
-                <option value="deepseek">DeepSeek</option>
-              </Select>
-            </Field>
-            <Field label="语音合成">
-              <Select value={ttsProvider} onChange={(e) => setTtsProvider(e.target.value)}>
-                <option value="">系统默认</option>
-                <option value="bailian">百炼 (CosyVoice)</option>
-                <option value="minimax">MiniMax</option>
-              </Select>
-            </Field>
-            <Field label="图片生成">
-              <Select value={imageProvider} onChange={(e) => setImageProvider(e.target.value)}>
-                <option value="">系统默认</option>
-                <option value="bailian">百炼 (通义万相)</option>
-                <option value="zhipu">智谱 (CogView)</option>
-              </Select>
-            </Field>
-            <Field label="视频生成">
-              <Select value={videoProvider} onChange={(e) => setVideoProvider(e.target.value)}>
-                <option value="">系统默认</option>
-                <option value="bailian">百炼 (Wanx Video)</option>
-                <option value="kling">可灵 (Kling)</option>
-              </Select>
-            </Field>
+            {PROVIDER_FIELDS.map((f) => {
+              const value = {
+                text_provider: textProvider,
+                tts_provider: ttsProvider,
+                image_provider: imageProvider,
+                video_provider: videoProvider,
+              }[f.key]
+              const setValue = {
+                text_provider: setTextProvider,
+                tts_provider: setTtsProvider,
+                image_provider: setImageProvider,
+                video_provider: setVideoProvider,
+              }[f.key]
+              return (
+                <Field key={f.key} label={f.label}>
+                  <Select value={value} onChange={(e) => setValue(e.target.value)}>
+                    {f.options.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              )
+            })}
           </>
         )}
 
@@ -369,7 +379,7 @@ function SeriesCard({ series: s }: { series: Series }) {
         <div className="flex gap-2">
           <dt className="w-14 shrink-0 text-paper-300/35">画面</dt>
           <dd>
-            {s.config.ratio} · {s.config.resolution} · {s.config.visual_mode === 'video' ? 'AI视频' : '小人书'}
+            {s.config.ratio} · {s.config.resolution} · {visualModeLabel(s.config.visual_mode)}
           </dd>
         </div>
         <div className="flex gap-2">

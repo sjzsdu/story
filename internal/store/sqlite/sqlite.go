@@ -371,6 +371,22 @@ func (s *Store) SaveEpisode(ctx context.Context, ep *domain.Episode) error {
 	return nil
 }
 
+// UpdateEpisodeMeta 只写元数据列，不动 nodes_json / refs_json / active_node_id，
+// 避免与执行中的流水线任务互相覆盖。
+func (s *Store) UpdateEpisodeMeta(ctx context.Context, id, title, topic, instruction string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE episodes SET title=?, topic=?, instruction=?, updated_at=? WHERE id=?`,
+		title, topic, instruction, formatTime(time.Now()), id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("%w: 集 %s", port.ErrNotFound, id)
+	}
+	return nil
+}
+
 // DeleteEpisode 删除单集。
 func (s *Store) DeleteEpisode(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM episodes WHERE id = ?`, id)

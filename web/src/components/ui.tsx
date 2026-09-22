@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
 import type { NodeStatus } from '../types'
 
 const STATUS_META: Record<NodeStatus | 'idle', { label: string; cls: string; dot: string }> = {
@@ -121,6 +121,7 @@ export function Modal({
   children: ReactNode
   wide?: boolean
 }) {
+  const titleID = useId()
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
@@ -137,13 +138,19 @@ export function Modal({
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={title ? titleID : undefined}
         className={`w-full ${wide ? 'max-w-2xl' : 'max-w-lg'} max-h-[80vh] overflow-y-auto rounded-xl border border-ink-700 bg-ink-900 shadow-2xl`}
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-center justify-between px-5 py-3.5 border-b border-ink-800">
-          <h3 className="font-display tracking-wide text-paper-100">{title}</h3>
+          <h3 id={titleID} className="font-display tracking-wide text-paper-100">
+            {title}
+          </h3>
           <button
             type="button"
+            aria-label="关闭"
             onClick={onClose}
             className="rounded px-1.5 py-0.5 text-paper-300/50 hover:text-paper-100 hover:bg-ink-800"
           >
@@ -151,6 +158,71 @@ export function Modal({
           </button>
         </header>
         <div className="p-5">{children}</div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * 右侧抽屉：全高侧滑工作台（对话 / 编辑器这类需要完整纵向空间的界面）。
+ * 与 Modal 的区别：贴右侧、占满高度、可固定底部操作条。
+ * body 始终可滚动：内容按 h-full 撑满时宽屏刚好铺满，窄屏堆叠后自动出现滚动条。
+ */
+export function Drawer({
+  open,
+  onClose,
+  title,
+  extra,
+  footer,
+  width = 'max-w-5xl',
+  children,
+}: {
+  open: boolean
+  onClose: () => void
+  title?: ReactNode
+  extra?: ReactNode
+  footer?: ReactNode
+  width?: string
+  children: ReactNode
+}) {
+  const titleID = useId()
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
+  if (!open) return null
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={title ? titleID : undefined}
+        className={`absolute right-0 top-0 h-full w-full ${width} flex flex-col border-l border-ink-700 bg-ink-900 shadow-2xl`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="flex items-center justify-between gap-3 px-5 py-3.5 border-b border-ink-800">
+          <div className="flex items-center gap-3 min-w-0">
+            <h3 id={titleID} className="font-display tracking-wide text-paper-100 shrink-0">
+              {title}
+            </h3>
+            {extra}
+          </div>
+          <button
+            type="button"
+            aria-label="关闭"
+            onClick={onClose}
+            className="shrink-0 rounded px-1.5 py-0.5 text-paper-300/50 hover:text-paper-100 hover:bg-ink-800"
+          >
+            ✕
+          </button>
+        </header>
+        <div className="flex-1 min-h-0 overflow-y-auto p-5">{children}</div>
+        {footer && <footer className="border-t border-ink-800 px-5 py-3.5">{footer}</footer>}
       </div>
     </div>
   )
@@ -169,10 +241,13 @@ export function Collapsible({
   badge?: ReactNode
 }) {
   const [open, setOpen] = useState(defaultOpen)
+  const contentID = useId()
   return (
     <section className="rounded-xl border border-ink-800 bg-ink-900/70 overflow-hidden">
       <button
         type="button"
+        aria-expanded={open}
+        aria-controls={contentID}
         onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center justify-between gap-3 px-5 py-3.5 hover:bg-ink-800/40 transition-colors"
       >
@@ -184,7 +259,11 @@ export function Collapsible({
         </div>
         <div className="flex items-center gap-2">{badge}</div>
       </button>
-      {open && <div className="border-t border-ink-800 p-5">{children}</div>}
+      {open && (
+        <div id={contentID} className="border-t border-ink-800 p-5">
+          {children}
+        </div>
+      )}
     </section>
   )
 }

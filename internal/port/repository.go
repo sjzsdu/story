@@ -26,6 +26,8 @@ type Repository interface {
 	ListEpisodes(ctx context.Context, seriesID string) ([]*domain.Episode, error)
 	// SaveEpisode 更新集（含流水线状态整体写回）。
 	SaveEpisode(ctx context.Context, ep *domain.Episode) error
+	// UpdateEpisodeMeta 只更新集的元数据（标题/主题/附加指令），不触碰版本树与产物。
+	UpdateEpisodeMeta(ctx context.Context, id, title, topic, instruction string) error
 	// DeleteEpisode 删除单集。
 	DeleteEpisode(ctx context.Context, id string) error
 
@@ -51,6 +53,8 @@ type Repository interface {
 	CreatePublishJob(ctx context.Context, job *domain.PublishJob) error
 	GetPublishJob(ctx context.Context, id string) (*domain.PublishJob, error)
 	ListPublishJobsByEpisode(ctx context.Context, episodeID string) ([]*domain.PublishJob, error)
+	// ListPublishJobsBySeries 列出某系列下全部集的发布任务（系列级汇总用）。
+	ListPublishJobsBySeries(ctx context.Context, seriesID string) ([]*domain.PublishJob, error)
 	UpdatePublishJob(ctx context.Context, job *domain.PublishJob) error
 	DeletePublishJob(ctx context.Context, id string) error
 	// ListPendingScheduledPublishJobs 返回已上传且到达定时时间的发布任务（定时发布调度用）。

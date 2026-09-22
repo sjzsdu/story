@@ -132,6 +132,17 @@ func (r *Repo) SaveEpisode(_ context.Context, ep *domain.Episode) error {
 	return nil
 }
 
+func (r *Repo) UpdateEpisodeMeta(_ context.Context, id, title, topic, instruction string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ep, ok := r.Episodes[id]
+	if !ok {
+		return fmt.Errorf("%w: 集 %s", port.ErrNotFound, id)
+	}
+	ep.Title, ep.Topic, ep.Instruction = title, topic, instruction
+	return nil
+}
+
 func (r *Repo) DeleteEpisode(_ context.Context, id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -606,6 +617,18 @@ func (r *Repo) ListPublishJobsByEpisode(_ context.Context, episodeID string) ([]
 	return out, nil
 }
 
+func (r *Repo) ListPublishJobsBySeries(_ context.Context, seriesID string) ([]*domain.PublishJob, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*domain.PublishJob
+	for _, job := range r.PublishJobs {
+		if job.SeriesID == seriesID {
+			out = append(out, job)
+		}
+	}
+	return out, nil
+}
+
 func (r *Repo) UpdatePublishJob(_ context.Context, job *domain.PublishJob) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -697,14 +720,14 @@ func (r *Repo) DeletePlatformAccount(_ context.Context, id string) error {
 
 // Publisher 平台发布 mock：记录调用并返回预设结果。
 type Publisher struct {
-	mu       sync.Mutex
-	Plat     domain.Platform
-	Calls    int
-	UploadR  *port.PublishResult
-	PublishR *port.PublishResult
-	StatusR  domain.PublishStatus
+	mu        sync.Mutex
+	Plat      domain.Platform
+	Calls     int
+	UploadR   *port.PublishResult
+	PublishR  *port.PublishResult
+	StatusR   domain.PublishStatus
 	StatusMsg string
-	Err      error
+	Err       error
 }
 
 // NewPublisher 创建指定平台的发布 mock。

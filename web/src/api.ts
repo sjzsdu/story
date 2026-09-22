@@ -68,6 +68,33 @@ export const api = {
 
   getSeries: (id: string) => request<SeriesDetail>(`/api/series/${encodeURIComponent(id)}`),
 
+  // updateSeries 修改系列基础信息与规格（补丁语义：只提交要改的字段）。
+  // voice_id 与画面模式创建后锁定，不在可改字段内。
+  updateSeries: (
+    id: string,
+    body: {
+      name?: string
+      dynasty?: string
+      description?: string
+      ratio?: string
+      resolution?: string
+      max_concurrency?: number
+      max_retries?: number
+      text_provider?: string
+      tts_provider?: string
+      image_provider?: string
+      video_provider?: string
+    },
+  ) =>
+    request<Series>(`/api/series/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
+  // listSeriesPublishJobs 系列级发布汇总：该系列全部集的发布任务。
+  listSeriesPublishJobs: (seriesId: string) =>
+    request<PublishJob[]>(`/api/series/${encodeURIComponent(seriesId)}/publish`),
+
   deleteSeries: (id: string) =>
     request<{ status: string; id: string }>(`/api/series/${encodeURIComponent(id)}`, {
       method: 'DELETE',
@@ -80,6 +107,13 @@ export const api = {
     }),
 
   getEpisode: (id: string) => request<Episode>(`/api/episodes/${encodeURIComponent(id)}`),
+
+  // updateEpisode 修改集的标题/主题/附加指令（补丁语义；不触发生产、不动版本树）。
+  updateEpisode: (id: string, body: { title?: string; topic?: string; instruction?: string }) =>
+    request<Episode>(`/api/episodes/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
 
   deleteEpisode: (id: string) =>
     request<{ status: string; id: string }>(`/api/episodes/${encodeURIComponent(id)}`, {

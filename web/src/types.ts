@@ -70,6 +70,11 @@ export interface SeriesConfig {
   voice_profile?: string // 内置声音 key：longtian/longze/longcheng/longfei/longhao/longxiaoxia
   max_concurrency: number
   max_retries: number
+  // 系列级 Provider 覆盖（空＝使用系统默认配置）。
+  text_provider?: string
+  tts_provider?: string
+  image_provider?: string
+  video_provider?: string
   creative?: CreativeStyle // 创作控制参数（全部 omitempty，未设置即不出现）
 }
 
@@ -99,6 +104,8 @@ export interface CreativeKnob {
   key: string
   label: string
   help: string
+  // 后端显式声明：改动本参数会触发分镜/画面重做（重新调用图片或视频模型，产生费用）。
+  cost_impact: boolean
   default_label: string // 默认（空值）的中文名，保持后端 snake_case
   type: 'enum' | 'text'
   max_length?: number // 文本型参数的最大字符数（后端给出，前端不写死）

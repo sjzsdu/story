@@ -1,21 +1,23 @@
 import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '../api'
+import type { Series } from '../types'
 import { Button, ErrorBox, Spinner } from './ui'
 
 /**
  * VoiceProfileCard 系列详情页「声音」卡片（§16）。
  * §16 起声音顶层实体化：series.voice_id 创建后锁定不可改，本卡片改为只读展示 + 试听；
  * 编辑入口移到独立的「声音」页（/voices）。
+ * 系列数据由上层传入，避免重复请求 /api/series/{id}。
  */
-export default function VoiceProfileCard({ seriesId }: { seriesId: string }) {
+export default function VoiceProfileCard({ series }: { series: Series }) {
   const [previewPath, setPreviewPath] = useState<string | null>(null)
 
-  // 拉取声音列表用于回查当前 series 引用的条目详情。
+  // 拉取声音列表用于回查当前 series 引用的条目详情（与上层共用同一 queryKey 缓存）。
   const { data: voices, isLoading } = useQuery({
     queryKey: ['voices'],
     queryFn: api.listVoices,
-    staleTime: Infinity,
+    staleTime: 60_000,
   })
 
   const previewMut = useMutation({
@@ -23,19 +25,7 @@ export default function VoiceProfileCard({ seriesId }: { seriesId: string }) {
     onSuccess: (data) => setPreviewPath(data.path),
   })
 
-  // 通过 series 详情查 voice_id 时不重复拉系列——上层传入 series 已有 voice_id；
-  // 这里直接靠声音列表里查匹配条目（声音数量有限，前端过滤即可）。
-  // 上层 SeriesDetailPage 用此组件时已传入 seriesId，靠 voices query + s.voice_id 反查。
-  void seriesId // 暂时保留 prop 签名兼容上层调用，未来可移除
-
-  // 找当前 series 引用的声音条目：先按 query 拉 series 拿 voice_id，再在 voices 里反查。
-  const { data: series } = useQuery({
-    queryKey: ['series', seriesId],
-    queryFn: () => api.getSeries(seriesId),
-    staleTime: 30_000,
-  })
-  const current = series?.series
-  const voiceID = current?.voice_id || ''
+  const voiceID = series.voice_id || ''
   const voice = voices?.find((v) => v.id === voiceID)
 
   if (isLoading) {

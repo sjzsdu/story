@@ -51,6 +51,7 @@ func (s *Server) routes() {
 	s.registerPlanRoutes()
 	s.registerSeriesExtraRoutes()
 	s.mux.HandleFunc("GET /api/episodes/{id}", s.getEpisode)
+	s.mux.HandleFunc("PATCH /api/episodes/{id}", s.updateEpisode)
 	s.mux.HandleFunc("DELETE /api/episodes/{id}", s.deleteEpisode)
 	s.mux.HandleFunc("POST /api/episodes/{id}/actions", s.runActionHTTP)
 	// 停止该集正在执行的后台动作（kill 正在跑的 bl/ffmpeg，已完成产物全部保留）。
@@ -326,6 +327,60 @@ func (s *Server) listEpisodes(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getEpisode(w http.ResponseWriter, r *http.Request) {
 	ep, ok := s.episodeOrError(w, r)
 	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, ep)
+}
+
+// updateEpisodeReq 集元数据补丁请求体：nil 的字段保持原值。
+type updateEpisodeReq struct {
+	Title       *string `json:"title"`
+	Topic       *string `json:"topic"`
+	Instruction *string `json:"instruction"`
+}
+
+// updateEpisode 修改集的标题/主题/附加指令（不触发生产，不触碰版本树）。
+func (s *Server) updateEpisode(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ep, err := s.app.GetEpisode(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, app.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "集不存在")
+		} else {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	var req updateEpisodeReq
+	if err := decodeBody(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		return
+	}
+	title, topic, instruction := ep.Title, ep.Topic, ep.Instruction
+	if req.Title != nil {
+		title = strings.TrimSpace(*req.Title)
+		if title == "" {
+			writeErr(w, http.StatusBadRequest, "title 不能为空")
+			return
+		}
+	}
+	if req.Topic != nil {
+		topic = strings.TrimSpace(*req.Topic)
+	}
+	if req.Instruction != nil {
+		instruction = strings.TrimSpace(*req.Instruction)
+	}
+	if err := s.app.UpdateEpisodeMeta(r.Context(), id, title, topic, instruction); err != nil {
+		if errors.Is(err, app.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "集不存在")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ep, err = s.app.GetEpisode(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, ep)

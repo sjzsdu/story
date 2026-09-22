@@ -75,6 +75,11 @@ func (a *App) ListPublishJobs(ctx context.Context, episodeID string) ([]*domain.
 	return a.Repo.ListPublishJobsByEpisode(ctx, episodeID)
 }
 
+// ListSeriesPublishJobs 列出某系列下全部集的发布任务（系列详情页汇总用）。
+func (a *App) ListSeriesPublishJobs(ctx context.Context, seriesID string) ([]*domain.PublishJob, error) {
+	return a.Repo.ListPublishJobsBySeries(ctx, seriesID)
+}
+
 // GetPublishJob 获取单个发布任务详情。
 func (a *App) GetPublishJob(ctx context.Context, jobID string) (*domain.PublishJob, error) {
 	return a.Repo.GetPublishJob(ctx, jobID)

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
 import type { CharacterSetting, EpisodeDraft } from '../types'
-import { Button, Card, ErrorBox, Spinner } from './ui'
+import { Button, ErrorBox, Spinner } from './ui'
 
 const FIELD_CLS =
   'w-full rounded-lg border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-paper-100 placeholder:text-paper-300/30 outline-none focus:border-gold-500/60'
@@ -10,10 +10,20 @@ const FIELD_CLS =
 const DEFAULT_PROMPT = '请根据这个系列的主题与体量，帮我规划一整季的分集大纲，给出建议集数与理由。'
 
 /**
- * AI 分集策划面板：左侧多轮对话，右侧全量可编辑分集草案。
- * 会话持久化在服务端（SQLite），采纳后批量创建集，但不触发视频生产。
+ * AI 分集策划工作台：左侧多轮对话，右侧全量可编辑分集草案与人物设定。
+ * 会话持久化在服务端（SQLite），采纳后批量创建集（不触发视频生产）。
+ * 本组件不自带外壳，由调用方放进 Drawer（需满高，两栏各管各的滚动区）。
  */
-export default function PlanPanel({ seriesId, existingTitles }: { seriesId: string; existingTitles: string[] }) {
+export default function PlanPanel({
+  seriesId,
+  existingTitles,
+  onApplied,
+}: {
+  seriesId: string
+  existingTitles: string[]
+  /** 采纳成功回调：参数为给用户看的结果摘要，由调用方负责关闭工作台并就地提示。 */
+  onApplied: (notice: string) => void
+}) {
   const queryClient = useQueryClient()
   const planKey = ['plan', seriesId]
   const seriesKey = ['series', seriesId]
@@ -33,7 +43,6 @@ export default function PlanPanel({ seriesId, existingTitles }: { seriesId: stri
 
   const [input, setInput] = useState('')
   const [err, setErr] = useState('')
-  const [notice, setNotice] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const messages = planQuery.data?.messages ?? []
@@ -61,12 +70,12 @@ export default function PlanPanel({ seriesId, existingTitles }: { seriesId: stri
       void queryClient.invalidateQueries({ queryKey: seriesKey })
       void queryClient.invalidateQueries({ queryKey: planKey })
       const n = res.episodes.length
-      setNotice(
-        n > 0
-          ? `已创建 ${n} 集，人物设定已随系列保存。可在下方集列表进入生产。`
-          : '草案中的集均已创建；人物设定已随系列保存。',
-      )
+      const chars = characters.length
+      const parts: string[] = []
+      if (n > 0) parts.push(`已创建 ${n} 集`)
+      if (chars > 0) parts.push(`已保存 ${chars} 个人物设定`)
       setErr('')
+      onApplied(parts.length > 0 ? parts.join('，') : '草案中的集均已创建')
     },
     onError: (e) => setErr((e as Error).message),
   })
@@ -76,7 +85,6 @@ export default function PlanPanel({ seriesId, existingTitles }: { seriesId: stri
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: planKey })
       setDrafts([])
-      setNotice('')
       setErr('')
     },
     onError: (e) => setErr((e as Error).message),
@@ -85,7 +93,6 @@ export default function PlanPanel({ seriesId, existingTitles }: { seriesId: stri
   const send = (text: string) => {
     const msg = text.trim()
     if (!msg || chatMut.isPending) return
-    setNotice('')
     chatMut.mutate(msg)
   }
 
@@ -105,16 +112,16 @@ export default function PlanPanel({ seriesId, existingTitles }: { seriesId: stri
   const canApply = pendingCount > 0 || characters.length > 0
 
   return (
-    <Card
-      title="AI 分集策划"
-      extra={
-        <span className="text-xs text-paper-300/45">对话持久保存 · 采纳只建集、不自动生产</span>
-      }
-    >
-      <div className="grid lg:grid-cols-2 gap-5">
-        {/* 左：对话 */}
-        <div className="flex flex-col rounded-xl border border-ink-800 bg-ink-950/50 min-h-[380px]">
-          <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3 max-h-[420px]">
+    <div className="flex flex-col gap-4 lg:h-full min-h-0">
+      {/* 费用提示常显：进入工作台即可看到，不藏在折叠里 */}
+      <p className="shrink-0 text-xs text-gold-500/70">
+        对话与「采纳为集列表」会真实调用文本模型（按 token 计费）；采纳只创建集记录，不触发视频生产。
+      </p>
+
+      <div className="grid lg:grid-cols-2 gap-5 lg:flex-1 min-h-0">
+        {/* 左：对话。min-h 保证窄屏（抽屉内两栏堆叠）时仍有可用高度 */}
+        <div className="flex flex-col rounded-xl border border-ink-800 bg-ink-950/50 min-h-[440px] lg:min-h-0">
+          <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
             {!hasSession && (
               <div className="text-sm text-paper-300/50 leading-relaxed py-6">
                 <p>和系列总编聊一聊这一季的构想：涵盖哪些人物与事件、叙事弧线、想要多少集。</p>
@@ -193,15 +200,15 @@ export default function PlanPanel({ seriesId, existingTitles }: { seriesId: stri
           </div>
         </div>
 
-        {/* 右：草案 */}
-        <div className="flex flex-col rounded-xl border border-ink-800 bg-ink-950/50">
+        {/* 右：草案 + 人物设定 */}
+        <div className="flex flex-col rounded-xl border border-ink-800 bg-ink-950/50 min-h-[440px] lg:min-h-0">
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-ink-800">
             <span className="text-sm text-paper-100">分集草案（{drafts.length}）</span>
             {drafts.length > 0 && (
               <span className="text-xs text-paper-300/45">待采纳 {pendingCount} 集 · 标题/主题/梗概均可手动修改</span>
             )}
           </div>
-          <div className="flex-1 overflow-y-auto p-4 space-y-3 max-h-[360px]">
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
             {drafts.length === 0 && (
               <div className="text-sm text-paper-300/40 py-10 text-center">
                 对话后这里会出现全量分集草案
@@ -258,7 +265,7 @@ export default function PlanPanel({ seriesId, existingTitles }: { seriesId: stri
             })}
           </div>
           {/* 人物设定：跨集与分镜保持人物形象一致，随采纳一并保存 */}
-          <div className="border-t border-ink-800">
+          <div className="border-t border-ink-800 shrink-0">
             <div className="flex items-center justify-between px-4 py-2.5">
               <span className="text-sm text-paper-100">
                 人物设定（{characters.length}）
@@ -269,7 +276,7 @@ export default function PlanPanel({ seriesId, existingTitles }: { seriesId: stri
               </Button>
             </div>
             {characters.length > 0 && (
-              <div className="px-4 pb-3 space-y-2 max-h-[240px] overflow-y-auto">
+              <div className="px-4 pb-3 space-y-2 max-h-[220px] overflow-y-auto">
                 {characters.map((c, i) => (
                   <div key={i} className="rounded-lg border border-ink-700 bg-ink-900/80 px-3.5 py-3 space-y-2">
                     <div className="flex items-center gap-2">
@@ -311,10 +318,10 @@ export default function PlanPanel({ seriesId, existingTitles }: { seriesId: stri
               </div>
             )}
           </div>
-          <div className="border-t border-ink-800 px-4 py-3 flex items-center justify-between gap-3">
-            <div className="text-xs">
-              {notice && <span className="text-emerald-300/90">{notice}</span>}
-            </div>
+          <div className="border-t border-ink-800 px-4 py-3 flex items-center justify-between gap-3 shrink-0">
+            <span className="text-xs text-paper-300/45">
+              采纳不会覆盖已存在的同标题集
+            </span>
             <Button
               type="button"
               variant="primary"
@@ -324,7 +331,6 @@ export default function PlanPanel({ seriesId, existingTitles }: { seriesId: stri
                 if (pendingCount > 0) parts.push(`创建 ${pendingCount} 集`)
                 if (characters.length > 0) parts.push(`保存 ${characters.length} 个人物设定`)
                 if (window.confirm(`将${parts.join('，并')}（不自动生产视频，已创建的集自动跳过）。确定？`)) {
-                  setNotice('')
                   applyMut.mutate()
                 }
               }}
@@ -335,8 +341,9 @@ export default function PlanPanel({ seriesId, existingTitles }: { seriesId: stri
           </div>
         </div>
       </div>
-      {err && <div className="mt-3"><ErrorBox>{err}</ErrorBox></div>}
-    </Card>
+
+      {err && <ErrorBox>{err}</ErrorBox>}
+    </div>
   )
 }
 
