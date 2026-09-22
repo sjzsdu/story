@@ -19,7 +19,8 @@ const RefsDirName = "refs"
 // GenerateKeyframe 为单个角色生成定妆照（水墨工笔立绘），落到系列 refs/ 目录。
 // 已存在且 force=false 时跳过（幂等，支持断点）。
 func (e *Engine) GenerateKeyframe(ctx context.Context, series *domain.Series, ch *domain.CharacterSetting, force bool) (string, error) {
-	if e.images == nil {
+	img := e.resolveImage(series.Config)
+	if img == nil {
 		return "", fmt.Errorf("未配置图片生成能力（ImageGenerator）")
 	}
 	refsDir := filepath.Join(e.projectsDir, series.ID, RefsDirName)
@@ -39,7 +40,7 @@ func (e *Engine) GenerateKeyframe(ctx context.Context, series *domain.Series, ch
 		ch.Name, ch.Identity, ch.Appearance, ch.Temperament,
 	)
 	req := port.ImageRequest{OutPath: outPath, Prompt: prompt, Size: "3:4"}
-	if _, err := e.images.GenerateImage(ctx, req); err != nil {
+	if _, err := img.GenerateImage(ctx, req); err != nil {
 		return "", fmt.Errorf("生成 %s 定妆照: %w", ch.Name, err)
 	}
 	ch.RefImage = outPath

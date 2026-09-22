@@ -25,6 +25,14 @@ type Engine struct {
 	planner  port.SeriesPlanner
 	images   port.ImageGenerator
 
+	// ---- 多 Provider 注册表（系列级覆盖用） ----
+	// key = provider identifier（bailian / deepseek / minimax / zhipu / kling）。
+	textProviders  map[string]port.StoryGenerator
+	boardProviders map[string]port.StoryboardPlanner
+	ttsProviders   map[string]port.SpeechSynthesizer
+	imageProviders map[string]port.ImageGenerator
+	videoProviders map[string]port.VideoGenerator
+
 	// projectsDir 媒体项目根目录（data/projects），用于系列级产物（定妆照）落盘。
 	// 构造时归一为绝对路径：定妆照会以绝对路径写进 bl 命令与持久化数据，避免受服务进程 cwd 影响。
 	projectsDir string
@@ -54,19 +62,88 @@ func New(
 		}
 	}
 	return &Engine{
-		repo:        repo,
-		stories:     stories,
-		boards:      boards,
-		videos:      videos,
-		speech:      speech,
-		composer:    composer,
-		planner:     planner,
-		images:      images,
-		projectsDir: projectsDir,
-		runner:      NewRunner(concurrency, retries),
-		voice:       voice,
-		instruction: instruction,
+		repo:           repo,
+		stories:        stories,
+		boards:         boards,
+		videos:         videos,
+		speech:         speech,
+		composer:       composer,
+		planner:        planner,
+		images:         images,
+		textProviders:  make(map[string]port.StoryGenerator),
+		boardProviders: make(map[string]port.StoryboardPlanner),
+		ttsProviders:   make(map[string]port.SpeechSynthesizer),
+		imageProviders: make(map[string]port.ImageGenerator),
+		videoProviders: make(map[string]port.VideoGenerator),
+		projectsDir:    projectsDir,
+		runner:         NewRunner(concurrency, retries),
+		voice:          voice,
+		instruction:    instruction,
 	}
+}
+
+// RegisterProvider 注册一个 provider 实例到引擎的注册表，
+// 供系列级覆盖时按名称取用。key 与 config 中的 provider 名称一致
+//（如 "bailian" / "deepseek" / "minimax" / "zhipu" / "kling"）。
+func (e *Engine) RegisterProvider(key string, p any) {
+	switch v := p.(type) {
+	case port.StoryGenerator:
+		e.textProviders[key] = v
+	case port.StoryboardPlanner:
+		e.boardProviders[key] = v
+	case port.SpeechSynthesizer:
+		e.ttsProviders[key] = v
+	case port.ImageGenerator:
+		e.imageProviders[key] = v
+	case port.VideoGenerator:
+		e.videoProviders[key] = v
+	}
+}
+
+// resolveText 按系列配置选择文本生成 provider；空或未注册时用默认。
+func (e *Engine) resolveText(cfg domain.SeriesConfig) port.StoryGenerator {
+	if cfg.TextProvider != "" {
+		if p, ok := e.textProviders[cfg.TextProvider]; ok {
+			return p
+		}
+	}
+	return e.stories
+}
+
+func (e *Engine) resolveBoard(cfg domain.SeriesConfig) port.StoryboardPlanner {
+	if cfg.TextProvider != "" {
+		if p, ok := e.boardProviders[cfg.TextProvider]; ok {
+			return p
+		}
+	}
+	return e.boards
+}
+
+func (e *Engine) resolveTTS(cfg domain.SeriesConfig) port.SpeechSynthesizer {
+	if cfg.TTSProvider != "" {
+		if p, ok := e.ttsProviders[cfg.TTSProvider]; ok {
+			return p
+		}
+	}
+	return e.speech
+}
+
+func (e *Engine) resolveImage(cfg domain.SeriesConfig) port.ImageGenerator {
+	if cfg.ImageProvider != "" {
+		if p, ok := e.imageProviders[cfg.ImageProvider]; ok {
+			return p
+		}
+	}
+	return e.images
+}
+
+func (e *Engine) resolveVideo(cfg domain.SeriesConfig) port.VideoGenerator {
+	if cfg.VideoProvider != "" {
+		if p, ok := e.videoProviders[cfg.VideoProvider]; ok {
+			return p
+		}
+	}
+	return e.videos
 }
 
 // GenerateStory 步骤 1：生成故事定稿，取得（或新建）story 根节点。
@@ -107,7 +184,7 @@ func (e *Engine) GenerateStory(ctx context.Context, episodeID string, opts Deriv
 		return nil, err
 	}
 
-	candidates, err := e.stories.GenerateCandidates(ctx, port.StoryRequest{
+	candidates, err := e.resolveText(series.Config).GenerateCandidates(ctx, port.StoryRequest{
 		SeriesName: series.Name,
 		Dynasty:    series.Config.Dynasty,
 		Topic:      ep.Topic,
@@ -181,7 +258,7 @@ func (e *Engine) PlanStoryboard(ctx context.Context, episodeID string, opts Deri
 		return nil, err
 	}
 
-	sb, err := e.boards.PlanStoryboard(ctx, port.StoryboardRequest{
+	sb, err := e.resolveBoard(series.Config).PlanStoryboard(ctx, port.StoryboardRequest{
 		Story:       *parent.Story,
 		Dynasty:     dynasty,
 		Ratio:       series.Config.Ratio,
@@ -510,10 +587,11 @@ func (e *Engine) produceClip(ctx context.Context, series *domain.Series, mode st
 		// comic 小人书模式：AI 出插画（已出则续用）→ ffmpeg Ken Burns
 		// 本地渲染成同规格片段；除出图外不产生任何模型费用。
 		if !reusable(m.PanelPath) {
-			if e.images == nil {
+			img := e.resolveImage(series.Config)
+			if img == nil {
 				return domain.MediaResult{}, fmt.Errorf("未配置图片生成能力（ImageGenerator），无法使用 comic 模式")
 			}
-			if _, err := e.images.GenerateImage(ctx, port.ImageRequest{
+			if _, err := img.GenerateImage(ctx, port.ImageRequest{
 				OutPath: m.PanelPath,
 				Prompt:  withNote(buildImagePrompt(sc, style), note),
 				Size:    panelImageSize(series.Config.Ratio),
@@ -540,7 +618,7 @@ func (e *Engine) produceClip(ctx context.Context, series *domain.Series, mode st
 		if len(refImgs) > 0 {
 			prompt = refPromptPrefix(visualRefs, refImgs) + prompt
 		}
-		if _, err := e.videos.GenerateClip(ctx, port.ClipRequest{
+		if _, err := e.resolveVideo(series.Config).GenerateClip(ctx, port.ClipRequest{
 			OutPath:     m.ClipPath,
 			Prompt:      prompt,
 			RefImages:   refImgs,
@@ -568,7 +646,7 @@ func (e *Engine) produceAudio(ctx context.Context, series *domain.Series, m scen
 	}
 	// 解析语音画像：§16 起优先按 series.voice_id 查表，回退旧字段。
 	voice, model, rate, pitch, instr := e.resolveVoice(ctx, series.Config, series.VoiceID, e.voice, e.instruction)
-	if _, err := e.speech.Synthesize(ctx, port.SpeechRequest{
+	if _, err := e.resolveTTS(series.Config).Synthesize(ctx, port.SpeechRequest{
 		OutPath:     m.AudioPath,
 		Text:        sc.Narration,
 		Voice:       voice,

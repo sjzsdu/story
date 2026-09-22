@@ -193,6 +193,11 @@ type createSeriesReq struct {
 	// 含画风（video_style）。合法 key/值见 GET /api/creative-catalog。
 	Preset   string            `json:"preset"`
 	Creative map[string]string `json:"creative"`
+	// ---- 系列级 Provider 覆盖（空＝用系统默认） ----
+	TextProvider  string `json:"text_provider"`
+	TTSProvider   string `json:"tts_provider"`
+	ImageProvider string `json:"image_provider"`
+	VideoProvider string `json:"video_provider"`
 }
 
 func (s *Server) createSeries(w http.ResponseWriter, r *http.Request) {
@@ -229,6 +234,10 @@ func (s *Server) createSeries(w http.ResponseWriter, r *http.Request) {
 		Retries:        req.Retries,
 		VideoStyle:     videoStyle,
 		Creative:       creative,
+		TextProvider:   req.TextProvider,
+		TTSProvider:    req.TTSProvider,
+		ImageProvider:  req.ImageProvider,
+		VideoProvider:  req.VideoProvider,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())

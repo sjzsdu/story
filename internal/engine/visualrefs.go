@@ -143,7 +143,8 @@ func refPromptPrefix(refs []domain.VisualRef, imgs []string) string {
 // GenerateEpisodeRef 为单条集级视觉参考生成参考图，落到 <episode>/refs/ 目录。
 // 已存在且 force=false 时跳过（幂等）。
 func (e *Engine) GenerateEpisodeRef(ctx context.Context, series *domain.Series, ep *domain.Episode, ref *domain.VisualRef, force bool) (string, error) {
-	if e.images == nil {
+	img := e.resolveImage(series.Config)
+	if img == nil {
 		return "", fmt.Errorf("未配置图片生成能力（ImageGenerator）")
 	}
 	refsDir := filepath.Join(ep.WorkDir, EpisodeRefsDirName)
@@ -168,7 +169,7 @@ func (e *Engine) GenerateEpisodeRef(ctx context.Context, series *domain.Series, 
 		prompt = style.KeyframePrompt(dynasty, ref.Name, "", ref.Description, "")
 		size = "3:4"
 	}
-	if _, err := e.images.GenerateImage(ctx, port.ImageRequest{OutPath: outPath, Prompt: prompt, Size: size}); err != nil {
+	if _, err := img.GenerateImage(ctx, port.ImageRequest{OutPath: outPath, Prompt: prompt, Size: size}); err != nil {
 		kind := "人物"
 		if ref.Kind == domain.RefKindScene {
 			kind = "场景"

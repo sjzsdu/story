@@ -46,6 +46,11 @@ export const api = {
     // 全部留空时不要传这两个字段——保持与历史请求逐字一致。
     preset?: string
     creative?: Record<string, string>
+    // 系列级 Provider 覆盖（空＝用系统默认）
+    text_provider?: string
+    tts_provider?: string
+    image_provider?: string
+    video_provider?: string
   }) => request<Series>('/api/series', { method: 'POST', body: JSON.stringify(body) }),
 
   // getCreativeCatalog 拉取创作参数注册表（knob/preset 声明式快照），前端据此渲染控件。

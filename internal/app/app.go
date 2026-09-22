@@ -135,6 +135,23 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*App, error) {
 		cfg.MaxConcurrency, cfg.MaxRetries,
 		cfg.TTSVoice, cfg.TTSInstruction,
 	)
+
+	// 注册所有 provider 到引擎的注册表（系列级覆盖用）。
+	// 文本：bailian + deepseek
+	eng.RegisterProvider("bailian", bl)
+	if ds := deepseekprov.NewClient(cfg.DeepSeekAPIKey, cfg.DeepSeekBaseURL, cfg.DeepSeekModel); ds != nil {
+		eng.RegisterProvider("deepseek", ds)
+	}
+	// TTS：bailian + minimax
+	mm := minimaxprov.NewClient(cfg.MinimaxAPIKey, cfg.MinimaxBaseURL, cfg.MinimaxModel)
+	eng.RegisterProvider("minimax", mm)
+	// 图片：bailian + zhipu
+	zp := zhipuprov.NewClient(cfg.ZhipuAPIKey, cfg.ZhipuBaseURL, "")
+	eng.RegisterProvider("zhipu", zp)
+	// 视频：bailian + kling
+	kl := klingprov.NewClient(cfg.KlingAccessKey, cfg.KlingSecretKey, cfg.KlingBaseURL, "")
+	eng.RegisterProvider("kling", kl)
+
 	app := &App{
 		Cfg:    cfg,
 		Repo:   store,
@@ -190,6 +207,11 @@ type CreateSeriesInput struct {
 	// Creative 创作控制参数（叙事/受众/篇幅/运镜/自定义指令）。
 	// 零值＝内置默认，产出与历史行为完全一致。
 	Creative domain.CreativeStyle
+	// ---- 系列级 Provider 覆盖（空＝用系统默认） ----
+	TextProvider string
+	TTSProvider  string
+	ImageProvider string
+	VideoProvider string
 }
 
 // CreateSeries 创建一个新系列（ID 由名称生成拼音 slug，冲突时追加序号）。
@@ -232,6 +254,11 @@ func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.S
 			MaxRetries:     orDefault(in.Retries, a.Cfg.MaxRetries),
 			VideoStyle:     in.VideoStyle,
 			Creative:       in.Creative,
+			// 系列级 Provider 覆盖：空＝用系统默认（engine resolveProviders 时回退）。
+			TextProvider:   in.TextProvider,
+			TTSProvider:    in.TTSProvider,
+			ImageProvider:  in.ImageProvider,
+			VideoProvider:  in.VideoProvider,
 		},
 		CreatedAt: now,
 		UpdatedAt: now,

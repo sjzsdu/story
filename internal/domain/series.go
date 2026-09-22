@@ -50,6 +50,16 @@ type SeriesConfig struct {
 	// 用 omitzero（非 omitempty）——omitempty 对结构体无效，旧系列的 config_json
 	// 会凭空多出 "creative":{}。
 	Creative CreativeStyle `json:"creative,omitzero"`
+
+	// ---- 系列级 Provider 覆盖（空＝用系统默认，见 app.resolveProviders） ----
+	// TextProvider 文本生成供应商覆盖（bailian / deepseek）。
+	TextProvider string `json:"text_provider,omitempty"`
+	// TTSProvider 语音合成供应商覆盖（bailian / minimax）。
+	TTSProvider string `json:"tts_provider,omitempty"`
+	// ImageProvider 图片生成供应商覆盖（bailian / zhipu）。
+	ImageProvider string `json:"image_provider,omitempty"`
+	// VideoProvider 视频生成供应商覆盖（bailian / kling）。
+	VideoProvider string `json:"video_provider,omitempty"`
 }
 
 // 画面生产模式（SeriesConfig.VisualMode）。

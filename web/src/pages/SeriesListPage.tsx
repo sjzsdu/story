@@ -57,6 +57,11 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
   const [voiceID, setVoiceID] = useState('longtian')
   // 创作控制参数：一个 state 装下预设 + 逐项值（预设 key 存在 values.preset 里）。
   const [creative, setCreative] = useState<CreativeStyle>({})
+  // 系列级 Provider 覆盖（空＝用系统默认）
+  const [textProvider, setTextProvider] = useState('')
+  const [ttsProvider, setTtsProvider] = useState('')
+  const [imageProvider, setImageProvider] = useState('')
+  const [videoProvider, setVideoProvider] = useState('')
   const [err, setErr] = useState('')
   const [step, setStep] = useState(1)
 
@@ -104,6 +109,10 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
         resolution,
         visual_mode: visualMode,
         voice_id: voiceID,
+        text_provider: textProvider || undefined,
+        tts_provider: ttsProvider || undefined,
+        image_provider: imageProvider || undefined,
+        video_provider: videoProvider || undefined,
         ...payload,
       })
     },
@@ -116,6 +125,10 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
       setVisualMode('comic')
       setVoiceID('longtian')
       setCreative({})
+      setTextProvider('')
+      setTtsProvider('')
+      setImageProvider('')
+      setVideoProvider('')
       setErr('')
       setStep(1)
       onClose()
@@ -235,6 +248,44 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
           </>
         )}
 
+        {step === 4 && (
+          <>
+            <div className="sm:col-span-2">
+              <p className="text-xs text-paper-300/50 mb-3">
+                系列级 Provider 覆盖 — 空值使用系统默认配置，选定后该系列所有集均使用指定 Provider。
+              </p>
+            </div>
+            <Field label="文本生成">
+              <Select value={textProvider} onChange={(e) => setTextProvider(e.target.value)}>
+                <option value="">系统默认</option>
+                <option value="bailian">百炼 (bl)</option>
+                <option value="deepseek">DeepSeek</option>
+              </Select>
+            </Field>
+            <Field label="语音合成">
+              <Select value={ttsProvider} onChange={(e) => setTtsProvider(e.target.value)}>
+                <option value="">系统默认</option>
+                <option value="bailian">百炼 (CosyVoice)</option>
+                <option value="minimax">MiniMax</option>
+              </Select>
+            </Field>
+            <Field label="图片生成">
+              <Select value={imageProvider} onChange={(e) => setImageProvider(e.target.value)}>
+                <option value="">系统默认</option>
+                <option value="bailian">百炼 (通义万相)</option>
+                <option value="zhipu">智谱 (CogView)</option>
+              </Select>
+            </Field>
+            <Field label="视频生成">
+              <Select value={videoProvider} onChange={(e) => setVideoProvider(e.target.value)}>
+                <option value="">系统默认</option>
+                <option value="bailian">百炼 (Wanx Video)</option>
+                <option value="kling">可灵 (Kling)</option>
+              </Select>
+            </Field>
+          </>
+        )}
+
         {err && (
           <div className="sm:col-span-2">
             <ErrorBox>{err}</ErrorBox>
@@ -272,6 +323,7 @@ const STEPS = [
   { key: 1, label: '基本信息' },
   { key: 2, label: '规格与声音' },
   { key: 3, label: '创作预设' },
+  { key: 4, label: 'Provider' },
 ]
 
 function SeriesCard({ series: s }: { series: Series }) {
