@@ -170,7 +170,7 @@ function ProviderConfig({ group }: { group: 'text' | 'tts' | 'image' | 'video' }
           <SettingFields
             fields={[
               { key: 'tts_model', label: 'TTS 模型', type: 'select', options: ['cosyvoice-v3-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash'] },
-              { key: 'tts_voice', label: '默认音色', type: 'text', placeholder: 'longtian_v3' },
+              { key: 'tts_voice', label: '默认音色', type: 'voice-select' },
               { key: 'tts_instruction', label: '默认旁白指令', type: 'textarea', placeholder: '请用沉稳厚重、富有历史讲述感的语调…' },
             ]}
           />
@@ -302,7 +302,38 @@ type FieldDef = {
   | { type: 'text' | 'password' | 'textarea'; options?: never; parse?: never; allowEmpty?: never }
   | { type: 'select'; options: string[]; parse?: (v: string) => any; allowEmpty?: boolean }
   | { type: 'provider-select'; options: string[]; parse?: never; allowEmpty?: never }
+  | { type: 'voice-select'; options?: never; parse?: never; allowEmpty?: never }
 )
+
+// VoiceSelectField 声音下拉选择器：从声音列表 API 加载，显示声音名称 + 音色 ID。
+function VoiceSelectField({ label, value, onChange }: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+}) {
+  const { data: voices } = useQuery({
+    queryKey: ['voices'],
+    queryFn: api.listVoices,
+    staleTime: Infinity,
+  })
+  return (
+    <div className="grid grid-cols-[140px_1fr] gap-3 items-center">
+      <label className="text-paper-300/70">{label}</label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="px-3 py-1.5 rounded bg-ink-800 border border-ink-700 text-paper-100 text-sm font-body min-w-[200px]"
+      >
+        <option value="">未设置</option>
+        {voices?.map((v) => (
+          <option key={v.id} value={v.id}>
+            {v.name}（{v.voice}）
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
 
 function SettingFields({ fields }: { fields: FieldDef[] }) {
   const queryClient = useQueryClient()
@@ -350,6 +381,16 @@ function SettingFields({ fields }: { fields: FieldDef[] }) {
                 onChange={(v) => mut.mutate({ [f.key]: v })}
               />
             </div>
+          )
+        }
+        if (f.type === 'voice-select') {
+          return (
+            <VoiceSelectField
+              key={f.key}
+              label={f.label}
+              value={val}
+              onChange={(v) => mut.mutate({ [f.key]: v })}
+            />
           )
         }
         if (f.type === 'select') {
