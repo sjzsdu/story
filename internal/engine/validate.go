@@ -14,7 +14,7 @@ const (
 	minScenes     = 4
 	// maxScenes 与分镜 prompt 的 18-26 镜上限闭环（下限留宽松余量）。
 	// 2026-09-20 上调自 12：故事正文长度加长至 1200-1800 字，原 8-12 镜 × 45 字（540 字）装不下。
-	maxScenes = 28
+	maxScenes   = 28
 	minSceneDur = 3
 	// maxSceneDur 与分镜 prompt 的 duration 上限一致（6-12 秒）。
 	// 2026-09-20 上调自 10：成年人口播允许 12 秒慢镜头承载关键场面慢写。

@@ -143,7 +143,10 @@ func refPromptPrefix(refs []domain.VisualRef, imgs []string) string {
 // GenerateEpisodeRef 为单条集级视觉参考生成参考图，落到 <episode>/refs/ 目录。
 // 已存在且 force=false 时跳过（幂等）。
 func (e *Engine) GenerateEpisodeRef(ctx context.Context, series *domain.Series, ep *domain.Episode, ref *domain.VisualRef, force bool) (string, error) {
-	img := e.resolveImage(series.Config)
+	img, err := e.resolveImage(series.Config)
+	if err != nil {
+		return "", err
+	}
 	if img == nil {
 		return "", fmt.Errorf("未配置图片生成能力（ImageGenerator）")
 	}

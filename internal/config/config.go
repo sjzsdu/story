@@ -38,6 +38,18 @@ type Config struct {
 	ImageProvider string `yaml:"image_provider"`
 	// VideoProvider 视频生成供应商（"bailian" 或 "kling"），空则用 bailian。
 	VideoProvider string `yaml:"video_provider"`
+	// ImageUnderstandProvider 图像理解供应商（§22，当前仅 "bailian"），空则用 bailian。
+	ImageUnderstandProvider string `yaml:"image_understand_provider"`
+	// VideoUnderstandProvider 视频理解供应商（§22，当前仅 "bailian"），空则用 bailian。
+	VideoUnderstandProvider string `yaml:"video_understand_provider"`
+	// SFXProvider 音效生成供应商（§22）：bl 尚无音效命令，暂无实现可选，
+	// 字段先留位；配置了也因实现表为空而回退「无默认」（调用报错不静默）。
+	SFXProvider string `yaml:"sfx_provider"`
+
+	// VisionModel 视觉理解模型（图像/视频理解共用，§22），空则用 bl 默认 qwen3-vl-plus。
+	VisionModel string `yaml:"vision_model"`
+	// SFXModel 音效模型（§22 预留）：接入供应商后由其读取，当前无消费方。
+	SFXModel string `yaml:"sfx_model"`
 
 	// ---- DeepSeek ----
 	DeepSeekAPIKey  string `yaml:"deepseek_api_key"`
@@ -54,9 +66,9 @@ type Config struct {
 	ZhipuBaseURL string `yaml:"zhipu_base_url"`
 
 	// ---- 可灵 (Kling) 视频 ----
-	KlingAccessKey  string `yaml:"kling_access_key"`
-	KlingSecretKey  string `yaml:"kling_secret_key"`
-	KlingBaseURL    string `yaml:"kling_base_url"`
+	KlingAccessKey string `yaml:"kling_access_key"`
+	KlingSecretKey string `yaml:"kling_secret_key"`
+	KlingBaseURL   string `yaml:"kling_base_url"`
 
 	// ---- 百炼（保留作为默认/兼容） ----
 	BailianAPIKey  string `yaml:"bailian_api_key"`
@@ -119,6 +131,39 @@ func Load(yamlPath string) (Config, error) {
 	return cfg, nil
 }
 
+// Save 把配置原子写回 yamlPath（先写同目录临时文件再 rename，
+// 避免写一半断电留下截断的配置文件）。目录不存在时自动创建。
+//
+// 注意：写回的是内存里的完整配置（含从环境变量合并进来的值）；
+// 下次 Load 仍会再叠一次环境变量覆盖，行为不变。
+func Save(yamlPath string, cfg Config) error {
+	b, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("序列化配置: %w", err)
+	}
+	dir := filepath.Dir(yamlPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("创建配置目录: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".story-yaml-*")
+	if err != nil {
+		return fmt.Errorf("创建临时配置文件: %w", err)
+	}
+	tmpName := tmp.Name()
+	_, werr := tmp.Write(b)
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(tmpName, yamlPath)
+	}
+	if werr != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("写入配置文件 %s: %w", yamlPath, werr)
+	}
+	return nil
+}
+
 func applyEnv(cfg *Config) {
 	if v := os.Getenv("STORY_DATA_DIR"); v != "" {
 		cfg.DataDir = v
@@ -155,6 +200,18 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("STORY_VIDEO_PROVIDER"); v != "" {
 		cfg.VideoProvider = v
+	}
+	if v := os.Getenv("STORY_IMAGE_UNDERSTAND_PROVIDER"); v != "" {
+		cfg.ImageUnderstandProvider = v
+	}
+	if v := os.Getenv("STORY_VIDEO_UNDERSTAND_PROVIDER"); v != "" {
+		cfg.VideoUnderstandProvider = v
+	}
+	if v := os.Getenv("STORY_SFX_PROVIDER"); v != "" {
+		cfg.SFXProvider = v
+	}
+	if v := os.Getenv("STORY_VISION_MODEL"); v != "" {
+		cfg.VisionModel = v
 	}
 	if v := os.Getenv("MINIMAX_API_KEY"); v != "" {
 		cfg.MinimaxAPIKey = v

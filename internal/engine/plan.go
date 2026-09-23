@@ -65,10 +65,15 @@ func (e *Engine) ChatSeriesPlan(ctx context.Context, seriesID, userText string) 
 		existing = append(existing, port.ExistingEpisodeBrief{Number: ep.Number, Title: ep.Title, Topic: ep.Topic})
 	}
 
-	if e.planner == nil {
+	// 系列策划沿「系列覆盖（text_provider）→ 系统默认」解析，与其余能力同款选择链。
+	_, planner, err := e.Plan.Resolve(series.Config.TextProvider)
+	if err != nil {
+		return nil, err
+	}
+	if planner == nil {
 		return nil, fmt.Errorf("未配置分集策划能力（SeriesPlanner）")
 	}
-	result, err := e.planner.PlanEpisodes(ctx, port.SeriesPlanRequest{
+	result, err := planner.PlanEpisodes(ctx, port.SeriesPlanRequest{
 		SeriesName:  series.Name,
 		Dynasty:     series.Config.Dynasty,
 		Description: series.Description,

@@ -34,6 +34,11 @@ var (
 	// 成片 BGM（§20）：--bgm 路径（相对系列目录），--bgm-volume 音量（0＝未设置）。
 	seriesBGM       string
 	seriesBGMVolume float64
+	// 系列级 Provider 覆盖（§21）：空＝跟随系统默认；四个能力各自独立。
+	seriesTextProvider  string
+	seriesTTSProvider   string
+	seriesImageProvider string
+	seriesVideoProvider string
 )
 
 var seriesCmd = &cobra.Command{
@@ -73,6 +78,11 @@ var seriesCreateCmd = &cobra.Command{
 			Creative:       creative,
 			BGMPath:        seriesBGM,
 			BGMVolume:      seriesBGMVolume,
+			// 系列级 Provider 覆盖（§21）：空＝跟随系统默认。
+			TextProvider:  strings.TrimSpace(seriesTextProvider),
+			TTSProvider:   strings.TrimSpace(seriesTTSProvider),
+			ImageProvider: strings.TrimSpace(seriesImageProvider),
+			VideoProvider: strings.TrimSpace(seriesVideoProvider),
 		})
 		if err != nil {
 			return err
@@ -83,6 +93,7 @@ var seriesCreateCmd = &cobra.Command{
 		fmt.Printf("  画面: %s / %s / %s\n", se.Config.Ratio, se.Config.Resolution, visualModeLabel(se.Config.VisualMode))
 		fmt.Printf("  声音: %s（创建后锁定，不可改）\n", se.VoiceID)
 		fmt.Printf("  并发: %d  重试: %d\n", se.Config.MaxConcurrency, se.Config.MaxRetries)
+		printProviders(se)
 		printCreative(se)
 		return nil
 	},
@@ -104,11 +115,43 @@ var seriesSetCmd = &cobra.Command{
 		// 成片 BGM（§20）：只有显式出现在命令行上的 flag 才提交（补丁语义）。
 		bgmChanged := cmd.Flags().Changed("bgm")
 		volChanged := cmd.Flags().Changed("bgm-volume")
-		if len(knobs) == 0 && preset == "" && !bgmChanged && !volChanged {
-			return fmt.Errorf("没有要修改的项：请用 --preset / --creative key=value / --story-instruction / --video-style / --bgm / --bgm-volume")
+		// Provider 覆盖（§21）：同样按 Changed 区分「未提供＝保持原值」与
+		// 「显式空串＝清除该项、回到系统默认」。
+		providerChanged := map[string]bool{
+			"text-provider":  cmd.Flags().Changed("text-provider"),
+			"tts-provider":   cmd.Flags().Changed("tts-provider"),
+			"image-provider": cmd.Flags().Changed("image-provider"),
+			"video-provider": cmd.Flags().Changed("video-provider"),
+		}
+		anyProvider := providerChanged["text-provider"] || providerChanged["tts-provider"] ||
+			providerChanged["image-provider"] || providerChanged["video-provider"]
+		if len(knobs) == 0 && preset == "" && !bgmChanged && !volChanged && !anyProvider {
+			return fmt.Errorf("没有要修改的项：请用 --preset / --creative key=value / --story-instruction / --video-style / --bgm / --bgm-volume / --text-provider / --tts-provider / --image-provider / --video-provider")
 		}
 		if len(knobs) > 0 || preset != "" {
 			if _, err := application.UpdateSeriesCreative(rootCtx, args[0], preset, knobs); err != nil {
+				return err
+			}
+		}
+		if anyProvider {
+			se, err := application.GetSeries(rootCtx, args[0])
+			if err != nil {
+				return err
+			}
+			if providerChanged["text-provider"] {
+				se.Config.TextProvider = strings.TrimSpace(seriesTextProvider)
+			}
+			if providerChanged["tts-provider"] {
+				se.Config.TTSProvider = strings.TrimSpace(seriesTTSProvider)
+			}
+			if providerChanged["image-provider"] {
+				se.Config.ImageProvider = strings.TrimSpace(seriesImageProvider)
+			}
+			if providerChanged["video-provider"] {
+				se.Config.VideoProvider = strings.TrimSpace(seriesVideoProvider)
+			}
+			// 与 server updateSeries 同一条链路（补丁后整条写回）。
+			if err := application.UpdateSeries(rootCtx, se); err != nil {
 				return err
 			}
 		}
@@ -205,7 +248,26 @@ func printSeries(se *domain.Series) {
 		// 兼容旧 series（迁移前）：显示旧字段
 		fmt.Printf("  音色: %s（旧字段，重启后会迁移到 voice_id）\n", se.Config.TTSVoice)
 	}
+	printProviders(se)
 	printCreative(se)
+}
+
+// providerLabel 渲染某项 Provider 覆盖：空＝跟随系统默认。
+func providerLabel(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "跟随系统默认"
+	}
+	return v
+}
+
+// printProviders 打印系列的四项 Provider 覆盖（§21 两级选择链的第一级）。
+func printProviders(se *domain.Series) {
+	fmt.Printf("  Provider 覆盖: 故事/分镜/策划=%s  语音=%s  图片=%s  视频=%s\n",
+		providerLabel(se.Config.TextProvider),
+		providerLabel(se.Config.TTSProvider),
+		providerLabel(se.Config.ImageProvider),
+		providerLabel(se.Config.VideoProvider),
+	)
 }
 
 // printCreative 打印系列的创作设置。参数名与可选值来自 templates 注册表，
@@ -320,9 +382,11 @@ func init() {
 	seriesCreateCmd.Flags().IntVar(&seriesConcurrency, "concurrency", 0, "单集最大并发镜头数（默认 3）")
 	seriesCreateCmd.Flags().IntVar(&seriesRetries, "retries", 0, "失败重试次数（默认 3）")
 	registerBGMFlags(seriesCreateCmd)
+	registerProviderFlags(seriesCreateCmd)
 
 	registerCreativeFlags(seriesSetCmd)
 	registerBGMFlags(seriesSetCmd)
+	registerProviderFlags(seriesSetCmd)
 
 	seriesCmd.AddCommand(seriesCreateCmd, seriesSetCmd, seriesListCmd, seriesShowCmd)
 	rootCmd.AddCommand(seriesCmd)
@@ -343,6 +407,19 @@ func registerCreativeFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&seriesPreset, "preset", "", "创作预设 key：classic（默认）/ documentary / kids / suspense / teen / first_person / long_form")
 	cmd.Flags().StringVar(&seriesStoryInstr, "story-instruction", "", "自定义创作指令（自由文本，上限 500 字；与硬性规则冲突时以硬性规则为准）")
 	cmd.Flags().StringVar(&seriesVideoStyle, "video-style", "", "全片画风 key（选项由 templates 的风格包给出，如 gongbi/ink）")
+}
+
+// registerProviderFlags 注册系列级 Provider 覆盖 flag（create 与 set 共用同一组变量，§21）。
+// 留空＝跟随系统默认；set 用 `Changed` 区分「未提供（保持原值）」与「显式空串（清除）」。
+func registerProviderFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&seriesTextProvider, "text-provider", "",
+		"系列级故事/分镜/策划供应商覆盖（空＝跟随系统默认；可用值见 `story capabilities`）")
+	cmd.Flags().StringVar(&seriesTTSProvider, "tts-provider", "",
+		"系列级语音合成供应商覆盖（空＝跟随系统默认）")
+	cmd.Flags().StringVar(&seriesImageProvider, "image-provider", "",
+		"系列级图片生成供应商覆盖（空＝跟随系统默认）")
+	cmd.Flags().StringVar(&seriesVideoProvider, "video-provider", "",
+		"系列级视频生成供应商覆盖（空＝跟随系统默认）")
 }
 
 // visualModeLabel 展示用的画面模式中文名（空值按默认 comic 显示）。

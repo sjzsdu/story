@@ -90,12 +90,12 @@ func base64URLEncode(data []byte) string {
 // ---- 可灵 API 结构 ----
 
 type text2VideoRequest struct {
-	ModelName       string     `json:"model_name"`
-	Prompt          string     `json:"prompt"`
-	NegativePrompt  string     `json:"negative_prompt,omitempty"`
-	Duration        string     `json:"duration"`
-	AspectRatio     string     `json:"aspect_ratio"`
-	ReferenceImage  *refImage  `json:"reference_image,omitempty"`
+	ModelName      string    `json:"model_name"`
+	Prompt         string    `json:"prompt"`
+	NegativePrompt string    `json:"negative_prompt,omitempty"`
+	Duration       string    `json:"duration"`
+	AspectRatio    string    `json:"aspect_ratio"`
+	ReferenceImage *refImage `json:"reference_image,omitempty"`
 }
 
 type refImage struct {
@@ -103,9 +103,9 @@ type refImage struct {
 }
 
 type taskResponse struct {
-	Code  int    `json:"code"`
-	Msg   string `json:"msg"`
-	Data  struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data struct {
 		TaskID string `json:"task_id"`
 	} `json:"data"`
 }

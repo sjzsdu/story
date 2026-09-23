@@ -52,7 +52,7 @@ var publishRunCmd = &cobra.Command{
 		// 确定账号
 		accountName := publishAccount
 		if accountName == "" {
-			accountName = application.Cfg.DefaultPublishAccount
+			accountName = application.Config().DefaultPublishAccount
 		}
 
 		// 解析定时发布时间
@@ -206,7 +206,7 @@ var platformCheckCmd = &cobra.Command{
 		platform := args[0]
 		account := publishAccount
 		if account == "" {
-			account = application.Cfg.DefaultPublishAccount
+			account = application.Config().DefaultPublishAccount
 		}
 		if account == "" {
 			return fmt.Errorf("请用 --account 指定账号名")

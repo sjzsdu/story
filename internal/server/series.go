@@ -338,7 +338,7 @@ func (s *Server) serveSeriesMedia(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	base, err := filepath.Abs(filepath.Join(s.app.Cfg.ProjectsDir(), se.ID))
+	base, err := filepath.Abs(filepath.Join(s.app.Config().ProjectsDir(), se.ID))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

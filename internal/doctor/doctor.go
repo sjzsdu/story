@@ -25,10 +25,10 @@ import (
 type Status int
 
 const (
-	StatusOK       Status = iota // 正常
-	StatusMissing                // 未安装
-	StatusWarning                 // 版本过低或其他警告
-	StatusError                  // 检查出错
+	StatusOK      Status = iota // 正常
+	StatusMissing               // 未安装
+	StatusWarning               // 版本过低或其他警告
+	StatusError                 // 检查出错
 )
 
 func (s Status) String() string {
@@ -46,11 +46,11 @@ func (s Status) String() string {
 
 // CheckResult 单项检查结果。
 type CheckResult struct {
-	Name    string  // 组件名
-	Status  Status  // 状态
-	Version string  // 检测到的版本
-	Message string  // 附加说明（错误/警告原因）
-	Fix     string  // 修复建议
+	Name    string // 组件名
+	Status  Status // 状态
+	Version string // 检测到的版本
+	Message string // 附加说明（错误/警告原因）
+	Fix     string // 修复建议
 }
 
 // Doctor 全局健康检查器。
@@ -120,8 +120,8 @@ func Summary(results []*CheckResult) (ok, warn, fail int) {
 // CheckBL 检查百炼 CLI。
 func (d *Doctor) CheckBL(ctx context.Context) *CheckResult {
 	r := &CheckResult{
-		Name:    "bl (百炼 CLI)",
-		Fix:     "参考 https://help.aliyun.com/zh/model-studio/getting-started/install 安装",
+		Name: "bl (百炼 CLI)",
+		Fix:  "参考 https://help.aliyun.com/zh/model-studio/getting-started/install 安装",
 	}
 	version, err := runVersion(ctx, d.BlBin, "--version")
 	if err != nil {

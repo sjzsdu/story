@@ -5,7 +5,7 @@ import { api } from '../api'
 import type { CreativeStyle, Series } from '../types'
 import { Button, Card, Empty, ErrorBox, Field, Modal, Select, Spinner, TextArea, TextInput } from '../components/ui'
 import CreativeFields, { knobMap } from '../components/CreativeFields'
-import { PROVIDER_FIELDS, RATIO_OPTIONS, RESOLUTION_OPTIONS, visualModeLabel } from '../labels'
+import { PROVIDER_FIELDS, RATIO_OPTIONS, RESOLUTION_OPTIONS, providerOptions, visualModeLabel } from '../labels'
 
 export default function SeriesListPage() {
   const { data: series, isLoading, error } = useQuery({ queryKey: ['series'], queryFn: api.listSeries })
@@ -49,6 +49,8 @@ export default function SeriesListPage() {
 /** 新建系列弹窗：画面模式与声音创建后锁定，不可修改。 */
 function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const queryClient = useQueryClient()
+  // 供应商下拉由能力目录驱动（展示名以后端 catalog 为准）。
+  const { data: caps } = useQuery({ queryKey: ['capabilities'], queryFn: api.getCapabilities })
   const [name, setName] = useState('')
   const [dynasty, setDynasty] = useState('')
   const [description, setDescription] = useState('')
@@ -281,10 +283,12 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
                 image_provider: setImageProvider,
                 video_provider: setVideoProvider,
               }[f.key]
+              // 可选项由能力目录下发（§21），前端不硬编码供应商清单。
+              const options = providerOptions(caps, f.key)
               return (
                 <Field key={f.key} label={f.label}>
                   <Select value={value} onChange={(e) => setValue(e.target.value)}>
-                    {f.options.map((o) => (
+                    {options.map((o) => (
                       <option key={o.value} value={o.value}>
                         {o.label}
                       </option>

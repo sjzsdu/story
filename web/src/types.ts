@@ -308,6 +308,32 @@ export interface PlatformInfo {
   has_schedule: boolean
 }
 
+// §21 能力注册表：一项能力（故事生成/分镜规划/…）登记了哪些供应商实现、系统默认是谁。
+// 前端各处的供应商下拉与展示文案一律由该目录驱动，不硬编码供应商。
+export interface CapabilityProvider {
+  key: string
+  label: string
+  desc: string
+}
+
+export interface CapabilityInfo {
+  key: string
+  label: string
+  help: string
+  // config_field 系统默认对应的配置字段（story.yaml / PUT /api/settings）。
+  config_field: string
+  // series_field 系列覆盖对应的 SeriesConfig 字段（空＝该能力不支持系列覆盖）。
+  series_field: string
+  // default 当前系统默认实现 key（空＝未设置）。
+  default: string
+  providers: CapabilityProvider[]
+}
+
+export interface CapabilityCatalog {
+  capabilities: CapabilityInfo[]
+  providers: CapabilityProvider[]
+}
+
 export interface AppSettings {
   data_dir: string
   bl_bin: string
@@ -322,6 +348,12 @@ export interface AppSettings {
   tts_provider: string
   image_provider: string
   video_provider: string
+  // §22：三个新能力的系统默认（无系列覆盖）+ 理解/音效模型。
+  image_understand_provider: string
+  video_understand_provider: string
+  sfx_provider: string
+  vision_model: string
+  sfx_model: string
   deepseek_api_key?: string
   deepseek_base_url: string
   deepseek_model: string

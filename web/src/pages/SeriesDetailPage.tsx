@@ -36,6 +36,7 @@ import {
   RESOLUTION_OPTIONS,
   formatTime,
   providerLabel,
+  providerOptions,
   visualModeLabel,
 } from '../labels'
 
@@ -564,6 +565,8 @@ function SeriesMetaSection({
   voiceLoading: boolean
 }) {
   const queryClient = useQueryClient()
+  // 供应商下拉/标签由能力目录驱动（展示名以后端 catalog 为准，前端只兜底）。
+  const { data: caps } = useQuery({ queryKey: ['capabilities'], queryFn: api.getCapabilities })
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<MetaDraft>(() => metaDraftOf(series))
   const [err, setErr] = useState('')
@@ -656,7 +659,7 @@ function SeriesMetaSection({
           {PROVIDER_FIELDS.map((f) => (
             <Field key={f.key} label={`${f.label} Provider`}>
               <Select value={draft[f.key]} onChange={(e) => set(f.key, e.target.value)}>
-                {f.options.map((o) => (
+                {providerOptions(caps, f.key).map((o) => (
                   <option key={o.value} value={o.value}>
                     {o.label}
                   </option>
@@ -704,7 +707,11 @@ function SeriesMetaSection({
           value={voiceLoading ? '读取中…' : voiceName || '未关联'}
         />
         {PROVIDER_FIELDS.map((f) => (
-          <InfoTile key={f.key} label={`${f.label} Provider`} value={providerLabel(f.key, series.config[f.key])} />
+          <InfoTile
+            key={f.key}
+            label={`${f.label} Provider`}
+            value={providerLabel(series.config[f.key], providerOptions(caps, f.key))}
+          />
         ))}
         <InfoTile label="成片 BGM" value={series.config.bgm_path || '未设置'} />
       </div>

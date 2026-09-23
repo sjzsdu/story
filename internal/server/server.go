@@ -84,6 +84,12 @@ func (s *Server) routes() {
 	// 全局配置 GET/PUT。
 	s.mux.HandleFunc("GET /api/settings", s.getConfig)
 	s.mux.HandleFunc("PUT /api/settings", s.updateConfig)
+
+	// 能力注册表内省（§21）：前端据此渲染各能力的供应商下拉，不硬编码文案。
+	s.mux.HandleFunc("GET /api/capabilities", s.getCapabilities)
+
+	// §22：图像/视频理解（本地路径限制在数据目录内，见 describeImageOrVideo 注释）。
+	s.mux.HandleFunc("POST /api/vision/describe", s.describeImageOrVideo)
 }
 
 // Handler 返回带 SPA 回退的总 handler。

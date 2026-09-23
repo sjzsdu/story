@@ -26,6 +26,11 @@ type configResponse struct {
 	TTSProvider           string `json:"tts_provider"`
 	ImageProvider         string `json:"image_provider"`
 	VideoProvider         string `json:"video_provider"`
+	ImageUnderstandProvider string `json:"image_understand_provider"`
+	VideoUnderstandProvider string `json:"video_understand_provider"`
+	SFXProvider           string `json:"sfx_provider"`
+	VisionModel           string `json:"vision_model"`
+	SFXModel              string `json:"sfx_model"`
 	DeepSeekAPIKey        string `json:"deepseek_api_key,omitempty"`
 	DeepSeekBaseURL       string `json:"deepseek_base_url"`
 	DeepSeekModel         string `json:"deepseek_model"`
@@ -89,6 +94,11 @@ func configFromInternal(cfg config.Config) configResponse {
 		TTSProvider:           cfg.TTSProvider,
 		ImageProvider:         cfg.ImageProvider,
 		VideoProvider:         cfg.VideoProvider,
+		ImageUnderstandProvider: cfg.ImageUnderstandProvider,
+		VideoUnderstandProvider: cfg.VideoUnderstandProvider,
+		SFXProvider:           cfg.SFXProvider,
+		VisionModel:           cfg.VisionModel,
+		SFXModel:              cfg.SFXModel,
 		DeepSeekBaseURL:       cfg.DeepSeekBaseURL,
 		DeepSeekModel:         cfg.DeepSeekModel,
 		MinimaxBaseURL:        cfg.MinimaxBaseURL,
@@ -130,6 +140,12 @@ func configFromInternal(cfg config.Config) configResponse {
 	return r
 }
 
+// getCapabilities 返回能力注册表内省（§21/§22）：目录（12 项能力 + 静态文案）
+// 与各槽运行时登记结果（默认 key + 已实现列表），前端据此渲染下拉，不硬编码供应商。
+func (s *Server) getCapabilities(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, s.app.CapabilityInfo())
+}
+
 func maskKey(k string) string {
 	if len(k) <= 8 {
 		return "****"
@@ -138,7 +154,7 @@ func maskKey(k string) string {
 }
 
 func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, configFromInternal(s.app.Cfg))
+	writeJSON(w, 200, configFromInternal(s.app.Config()))
 }
 
 // updateConfigReq 前端提交的可编辑配置字段。
@@ -153,6 +169,11 @@ type updateConfigReq struct {
 	TTSProvider           *string `json:"tts_provider"`
 	ImageProvider         *string `json:"image_provider"`
 	VideoProvider         *string `json:"video_provider"`
+	ImageUnderstandProvider *string `json:"image_understand_provider"`
+	VideoUnderstandProvider *string `json:"video_understand_provider"`
+	SFXProvider           *string `json:"sfx_provider"`
+	VisionModel           *string `json:"vision_model"`
+	SFXModel              *string `json:"sfx_model"`
 	DeepSeekAPIKey        *string `json:"deepseek_api_key"`
 	DeepSeekBaseURL       *string `json:"deepseek_base_url"`
 	DeepSeekModel         *string `json:"deepseek_model"`
@@ -183,7 +204,9 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "请求格式错误: "+err.Error())
 		return
 	}
-	cfg := &s.app.Cfg
+	// 在配置副本上打补丁（当前生效配置不动，提交成功后整组换新）。
+	old := s.app.Config()
+	cfg := old
 	if in.TextModel != nil {
 		cfg.TextModel = *in.TextModel
 	}
@@ -213,6 +236,21 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.VideoProvider != nil {
 		cfg.VideoProvider = *in.VideoProvider
+	}
+	if in.ImageUnderstandProvider != nil {
+		cfg.ImageUnderstandProvider = *in.ImageUnderstandProvider
+	}
+	if in.VideoUnderstandProvider != nil {
+		cfg.VideoUnderstandProvider = *in.VideoUnderstandProvider
+	}
+	if in.SFXProvider != nil {
+		cfg.SFXProvider = *in.SFXProvider
+	}
+	if in.VisionModel != nil {
+		cfg.VisionModel = *in.VisionModel
+	}
+	if in.SFXModel != nil {
+		cfg.SFXModel = *in.SFXModel
 	}
 	if in.DeepSeekAPIKey != nil && *in.DeepSeekAPIKey != "" && *in.DeepSeekAPIKey != "****" {
 		cfg.DeepSeekAPIKey = *in.DeepSeekAPIKey
@@ -280,5 +318,16 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	if in.BilibiliDefaultTid != nil {
 		cfg.BilibiliDefaultTid = *in.BilibiliDefaultTid
 	}
-	writeJSON(w, 200, configFromInternal(*cfg))
+	// 热更新（§21）：① 重建全部能力实现并整表换新各能力槽 + 写生效配置；
+	// ② 落盘 story.yaml。② 失败则回滚 ① 的内存状态并返回 500（配置不生效）。
+	if err := s.app.Reconfigure(cfg); err != nil {
+		writeErr(w, 500, "应用配置失败: "+err.Error())
+		return
+	}
+	if err := s.app.SaveConfig(); err != nil {
+		_ = s.app.Reconfigure(old)
+		writeErr(w, 500, "保存配置文件失败（已回滚，配置未生效）: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, configFromInternal(cfg))
 }

@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sjzsdu/story/internal/app"
+	"github.com/sjzsdu/story/internal/capability"
 	"github.com/sjzsdu/story/internal/config"
 	"github.com/sjzsdu/story/internal/domain"
 )
@@ -24,7 +25,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *app.App, string) {
 	cfg := config.Default()
 	cfg.DataDir = dir
 
-	a, err := app.Bootstrap(context.Background(), cfg)
+	a, err := app.Bootstrap(context.Background(), cfg, filepath.Join(dir, "story.yaml"))
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
@@ -639,7 +640,7 @@ func TestUpdateSeriesEndpoint(t *testing.T) {
 
 // TestUpdateSeriesBGMPatch 覆盖系列 BGM 配置的补丁语义（§20）：
 // 设置、清空、volume 越界 400、volume=0 视为清除回默认；创建时同样可带 BGM 字段
-//（decodeBody 是 DisallowUnknownFields，前端会提交的字段必须都在请求体结构里）。
+// （decodeBody 是 DisallowUnknownFields，前端会提交的字段必须都在请求体结构里）。
 func TestUpdateSeriesBGMPatch(t *testing.T) {
 	ts, _, _ := newTestServer(t)
 
@@ -826,5 +827,159 @@ func TestSeriesPublishJobsEndpoint(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("不存在的系列应 404，得到 %d", res.StatusCode)
+	}
+}
+
+// TestPutSettingsPersistsAndReconfigures §21 热更新：PUT /api/settings 必须
+// ① 改到内存生效配置、② 换掉能力槽默认（立即对后续流水线生效）、
+// ③ 落盘到 story.yaml（t.TempDir），三者缺一即失败。
+func TestPutSettingsPersistsAndReconfigures(t *testing.T) {
+	ts, a, dir := newTestServer(t)
+
+	req, err := http.NewRequest(http.MethodPut, ts.URL+"/api/settings",
+		strings.NewReader(`{"text_provider":"deepseek","max_retries":5}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		var e struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(res.Body).Decode(&e)
+		t.Fatalf("PUT settings 状态码 = %d：%s", res.StatusCode, e.Error)
+	}
+
+	// ① 生效配置已换。
+	if got := a.Config().TextProvider; got != "deepseek" {
+		t.Fatalf("生效配置 text_provider = %q，期望 deepseek", got)
+	}
+	if got := a.Config().MaxRetries; got != 5 {
+		t.Fatalf("生效配置 max_retries = %d，期望 5", got)
+	}
+
+	// ② 能力槽默认已换（无需重启即对新任务生效）。
+	if got := a.Engine.Text.Default(); got != "deepseek" {
+		t.Fatalf("text 槽默认 = %q，期望 deepseek", got)
+	}
+	// 未提交的能力不受影响。
+	if got := a.Engine.TTS.Default(); got != "bailian" {
+		t.Fatalf("tts 槽默认应保持 bailian，得到 %q", got)
+	}
+
+	// ③ 落盘到 t.TempDir 下的 story.yaml。
+	raw, err := os.ReadFile(filepath.Join(dir, "story.yaml"))
+	if err != nil {
+		t.Fatalf("读配置文件: %v", err)
+	}
+	if !strings.Contains(string(raw), "text_provider: deepseek") ||
+		!strings.Contains(string(raw), "max_retries: 5") {
+		t.Fatalf("story.yaml 未落盘提交内容:\n%s", raw)
+	}
+
+	// GET /api/settings 回读一致。
+	gres, err := http.Get(ts.URL + "/api/settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gres.Body.Close()
+	var back struct {
+		TextProvider string `json:"text_provider"`
+		MaxRetries   int    `json:"max_retries"`
+	}
+	if err := json.NewDecoder(gres.Body).Decode(&back); err != nil {
+		t.Fatal(err)
+	}
+	if back.TextProvider != "deepseek" || back.MaxRetries != 5 {
+		t.Fatalf("GET settings 回读不一致: %+v", back)
+	}
+}
+
+// TestCapabilitiesEndpoint §21/§22 能力目录内省：12 项能力、字段齐全、
+// 运行时默认与已实现列表如实反映槽登记结果，供应商全表可用。
+func TestCapabilitiesEndpoint(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+	res, err := http.Get(ts.URL + "/api/capabilities")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("capabilities 状态码 = %d", res.StatusCode)
+	}
+	var info capability.Info
+	if err := json.NewDecoder(res.Body).Decode(&info); err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Capabilities) != 12 {
+		t.Fatalf("能力数 = %d，期望 12", len(info.Capabilities))
+	}
+	byKey := map[string]capability.CapabilityInfo{}
+	for _, c := range info.Capabilities {
+		if c.Key == "" || c.Label == "" || c.Help == "" {
+			t.Fatalf("能力描述不完整: %+v", c)
+		}
+		// §22：sfx 尚无 provider（bl 无音效命令），空 Providers 是合法降级；
+		// 其余能力必须至少登记一个实现。
+		if c.Key == capability.SFX {
+			if len(c.Providers) != 0 || c.Default != "" {
+				t.Fatalf("sfx 能力应为空槽（无实现无默认）: %+v", c)
+			}
+		} else if len(c.Providers) == 0 {
+			t.Fatalf("能力 %q 没有已实现供应商", c.Key)
+		}
+		for _, p := range c.Providers {
+			if p.Key == "" || p.Label == "" {
+				t.Fatalf("供应商展示信息不完整: %+v", p)
+			}
+		}
+		byKey[c.Key] = c
+	}
+	// 文本类能力共用 text_provider 配置字段与系列覆盖字段。
+	text, ok := byKey[capability.Text]
+	if !ok {
+		t.Fatal("缺少故事生成能力")
+	}
+	if text.ConfigField != "text_provider" || text.SeriesField != "text_provider" {
+		t.Fatalf("text 能力字段映射异常: %+v", text)
+	}
+	if text.Default != "bailian" {
+		t.Fatalf("text 默认 = %q，期望 bailian", text.Default)
+	}
+	// 系列策划必须能被 deepseek 覆盖（即便实现仍是 bl 客户端）。
+	plan, ok := byKey[capability.Plan]
+	if !ok || plan.SeriesField != "text_provider" {
+		t.Fatalf("plan 能力系列覆盖字段异常: %+v", plan)
+	}
+	// 图/视频理解：百炼单实现、无系列覆盖、系统默认 bailian。
+	iv, ok := byKey[capability.ImageUnderstand]
+	if !ok || len(iv.Providers) != 1 || iv.Providers[0].Key != "bailian" ||
+		iv.SeriesField != "" || iv.Default != "bailian" {
+		t.Fatalf("image_understand 能力异常: %+v", iv)
+	}
+	vv, ok := byKey[capability.VideoUnderstand]
+	if !ok || vv.ConfigField != "video_understand_provider" || vv.Default != "bailian" {
+		t.Fatalf("video_understand 能力异常: %+v", vv)
+	}
+	// 发布能力：5 个平台、无系统默认。
+	pub, ok := byKey[capability.Publish]
+	if !ok || len(pub.Providers) != 5 || pub.Default != "" || pub.SeriesField != "" {
+		t.Fatalf("publish 能力异常: %+v", pub)
+	}
+	// 供应商全表（静态文案）可用。
+	if len(info.Providers) < 9 {
+		t.Fatalf("供应商全表过短: %d", len(info.Providers))
+	}
+	seen := map[string]string{}
+	for _, p := range info.Providers {
+		seen[p.Key] = p.Label
+	}
+	if seen["kling"] == "" || seen["bailian"] == "" || seen["douyin"] == "" {
+		t.Fatalf("供应商全表缺少已知项: %+v", seen)
 	}
 }

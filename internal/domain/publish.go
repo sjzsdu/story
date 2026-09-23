@@ -7,24 +7,24 @@ import "time"
 type Platform string
 
 const (
-	PlatformDouyin      Platform = "douyin"       // 抖音
-	PlatformKuaishou    Platform = "kuaishou"     // 快手
-	PlatformBilibili    Platform = "bilibili"     // B站
-	PlatformXiaohongshu Platform = "xiaohongshu"  // 小红书
-	PlatformWeixin      Platform = "weixin"       // 视频号
+	PlatformDouyin      Platform = "douyin"      // 抖音
+	PlatformKuaishou    Platform = "kuaishou"    // 快手
+	PlatformBilibili    Platform = "bilibili"    // B站
+	PlatformXiaohongshu Platform = "xiaohongshu" // 小红书
+	PlatformWeixin      Platform = "weixin"      // 视频号
 )
 
 // PublishStatus 发布任务状态。
 type PublishStatus string
 
 const (
-	PublishPending   PublishStatus = "pending"    // 待发布
-	PublishUploading PublishStatus = "uploading"  // 上传中
-	PublishUploaded  PublishStatus = "uploaded"   // 已上传（待确认发布 / 定时队列）
-	PublishPublished PublishStatus = "published"  // 已发布
-	PublishFailed    PublishStatus = "failed"     // 发布失败（可重试）
-	PublishRejected  PublishStatus = "rejected"   // 平台审核拒绝（不可重试）
-	PublishCanceled  PublishStatus = "canceled"   // 已取消
+	PublishPending   PublishStatus = "pending"   // 待发布
+	PublishUploading PublishStatus = "uploading" // 上传中
+	PublishUploaded  PublishStatus = "uploaded"  // 已上传（待确认发布 / 定时队列）
+	PublishPublished PublishStatus = "published" // 已发布
+	PublishFailed    PublishStatus = "failed"    // 发布失败（可重试）
+	PublishRejected  PublishStatus = "rejected"  // 平台审核拒绝（不可重试）
+	PublishCanceled  PublishStatus = "canceled"  // 已取消
 )
 
 // PublishJob 一次发布任务（§19 顶层持久化实体）。
@@ -36,10 +36,10 @@ type PublishJob struct {
 	NodeID    string        `json:"node_id"` // 发布的 final 节点 ID
 	Status    PublishStatus `json:"status"`
 	// 素材
-	VideoPath   string `json:"video_path"`
-	CoverPath   string `json:"cover_path,omitempty"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
+	VideoPath   string   `json:"video_path"`
+	CoverPath   string   `json:"cover_path,omitempty"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
 	Tags        []string `json:"tags,omitempty"`
 	Category    string   `json:"category,omitempty"`
 	// 平台返回
@@ -70,8 +70,8 @@ func (j *PublishJob) CanCancel() bool {
 type PlatformAccount struct {
 	ID           string    `json:"id"`
 	Platform     Platform  `json:"platform"`
-	AccountName  string    `json:"account_name"`  // 平台侧用户名/昵称
-	AccountID    string    `json:"account_id"`    // 平台侧用户 ID
+	AccountName  string    `json:"account_name"` // 平台侧用户名/昵称
+	AccountID    string    `json:"account_id"`   // 平台侧用户 ID
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	TokenExpiry  time.Time `json:"token_expiry"`

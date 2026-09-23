@@ -9,29 +9,34 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sjzsdu/story/internal/capability"
 	"github.com/sjzsdu/story/internal/domain"
 	"github.com/sjzsdu/story/internal/port"
 	"github.com/sjzsdu/story/internal/templates"
 )
 
 // Engine 流水线引擎，编排各步骤并在集级版本树上派生节点。
+//
+// 各 AI 能力实现统一登记在 capability 泛型能力槽里（§21），沿「系列覆盖 → 系统默认」
+// 两级链路解析；引擎自身不维护任何手写 provider map。装配层（internal/app）通过槽的
+// ReplaceAll 注册具名实现并在设置热更新时整表换新。
 type Engine struct {
 	repo     port.Repository
-	stories  port.StoryGenerator
-	boards   port.StoryboardPlanner
-	videos   port.VideoGenerator
-	speech   port.SpeechSynthesizer
 	composer port.VideoComposer
-	planner  port.SeriesPlanner
-	images   port.ImageGenerator
 
-	// ---- 多 Provider 注册表（系列级覆盖用） ----
-	// key = provider identifier（bailian / deepseek / minimax / zhipu / kling）。
-	textProviders  map[string]port.StoryGenerator
-	boardProviders map[string]port.StoryboardPlanner
-	ttsProviders   map[string]port.SpeechSynthesizer
-	imageProviders map[string]port.ImageGenerator
-	videoProviders map[string]port.VideoGenerator
+	// ---- 能力槽（key = provider 标识：bailian / deepseek / minimax / zhipu / kling）----
+	// Text 故事生成；Board 分镜规划；Plan 系列策划；TTS 语音合成；Image 图片生成；Video 视频生成；
+	// ImageUnderstand 图像理解；VideoUnderstand 视频理解；SFX 音效生成（§22 后三者无系列覆盖，
+	// 使用时以单次 provider 参数指定，空则走系统默认）。
+	Text            *capability.Slot[port.StoryGenerator]
+	Board           *capability.Slot[port.StoryboardPlanner]
+	Plan            *capability.Slot[port.SeriesPlanner]
+	TTS             *capability.Slot[port.SpeechSynthesizer]
+	Image           *capability.Slot[port.ImageGenerator]
+	Video           *capability.Slot[port.VideoGenerator]
+	ImageUnderstand *capability.Slot[port.ImageUnderstander]
+	VideoUnderstand *capability.Slot[port.VideoUnderstander]
+	SFX             *capability.Slot[port.SoundEffectGenerator]
 
 	// projectsDir 媒体项目根目录（data/projects），用于系列级产物（定妆照）落盘。
 	// 构造时归一为绝对路径：定妆照会以绝对路径写进 bl 命令与持久化数据，避免受服务进程 cwd 影响。
@@ -43,6 +48,10 @@ type Engine struct {
 }
 
 // New 创建引擎。
+//
+// 传入的实现登记进各能力槽的保留 key `capability.DefaultKey` 并设为默认（两级链路的第二级）；
+// 装配层 Bootstrap 随后会用具名 key（如 "bailian"）ReplaceAll 升级整表。签名保持 13 参不变，
+// 调用点无需改动。
 func New(
 	repo port.Repository,
 	stories port.StoryGenerator,
@@ -61,89 +70,119 @@ func New(
 			projectsDir = abs
 		}
 	}
-	return &Engine{
-		repo:           repo,
-		stories:        stories,
-		boards:         boards,
-		videos:         videos,
-		speech:         speech,
-		composer:       composer,
-		planner:        planner,
-		images:         images,
-		textProviders:  make(map[string]port.StoryGenerator),
-		boardProviders: make(map[string]port.StoryboardPlanner),
-		ttsProviders:   make(map[string]port.SpeechSynthesizer),
-		imageProviders: make(map[string]port.ImageGenerator),
-		videoProviders: make(map[string]port.VideoGenerator),
-		projectsDir:    projectsDir,
-		runner:         NewRunner(concurrency, retries),
-		voice:          voice,
-		instruction:    instruction,
+	e := &Engine{
+		repo:        repo,
+		composer:    composer,
+		Text:        capability.NewSlot[port.StoryGenerator]("故事生成"),
+		Board:       capability.NewSlot[port.StoryboardPlanner]("分镜规划"),
+		Plan:        capability.NewSlot[port.SeriesPlanner]("系列策划"),
+		TTS:         capability.NewSlot[port.SpeechSynthesizer]("语音合成"),
+		Image:       capability.NewSlot[port.ImageGenerator]("图片生成"),
+		Video:       capability.NewSlot[port.VideoGenerator]("视频生成"),
+		// §22 三个新槽：New 签名保持 13 参不变（不接收这三个实现），此处只建空槽，
+		// 由装配层 Bootstrap/applyProviders 以具名 key 整表登记；engine 单测若要用
+		// 这三个能力，需自行 Register（见 provider_slots_test.go 的注释）。
+		ImageUnderstand: capability.NewSlot[port.ImageUnderstander]("图像理解"),
+		VideoUnderstand: capability.NewSlot[port.VideoUnderstander]("视频理解"),
+		SFX:             capability.NewSlot[port.SoundEffectGenerator]("音效生成"),
+		projectsDir:     projectsDir,
+		runner:          NewRunner(concurrency, retries),
+		voice:           voice,
+		instruction:     instruction,
 	}
+	// 保留 key 兜底：装配层尚未 ReplaceAll 前（单测/直接 New），传入实现就是默认实现。
+	// 忽略错误：key 固定非空且表为空，不可能失败。
+	_ = e.Text.Register(capability.DefaultKey, stories)
+	_ = e.Board.Register(capability.DefaultKey, boards)
+	_ = e.Plan.Register(capability.DefaultKey, planner)
+	_ = e.TTS.Register(capability.DefaultKey, speech)
+	_ = e.Image.Register(capability.DefaultKey, images)
+	_ = e.Video.Register(capability.DefaultKey, videos)
+	_ = e.Text.SetDefault(capability.DefaultKey)
+	_ = e.Board.SetDefault(capability.DefaultKey)
+	_ = e.Plan.SetDefault(capability.DefaultKey)
+	_ = e.TTS.SetDefault(capability.DefaultKey)
+	_ = e.Image.SetDefault(capability.DefaultKey)
+	_ = e.Video.SetDefault(capability.DefaultKey)
+	return e
 }
 
-// RegisterProvider 注册一个 provider 实例到引擎的注册表，
-// 供系列级覆盖时按名称取用。key 与 config 中的 provider 名称一致
-//（如 "bailian" / "deepseek" / "minimax" / "zhipu" / "kling"）。
-func (e *Engine) RegisterProvider(key string, p any) {
-	switch v := p.(type) {
-	case port.StoryGenerator:
-		e.textProviders[key] = v
-	case port.StoryboardPlanner:
-		e.boardProviders[key] = v
-	case port.SpeechSynthesizer:
-		e.ttsProviders[key] = v
-	case port.ImageGenerator:
-		e.imageProviders[key] = v
-	case port.VideoGenerator:
-		e.videoProviders[key] = v
-	}
+// resolveText 沿「系列覆盖（cfg.TextProvider）→ 系统默认」解析故事生成实现。
+func (e *Engine) resolveText(cfg domain.SeriesConfig) (port.StoryGenerator, error) {
+	_, impl, err := e.Text.Resolve(cfg.TextProvider)
+	return impl, err
 }
 
-// resolveText 按系列配置选择文本生成 provider；空或未注册时用默认。
-func (e *Engine) resolveText(cfg domain.SeriesConfig) port.StoryGenerator {
-	if cfg.TextProvider != "" {
-		if p, ok := e.textProviders[cfg.TextProvider]; ok {
-			return p
-		}
-	}
-	return e.stories
+// resolveBoard 分镜规划复用 text_provider 作系列覆盖字段（board 能力没有独立配置项）。
+func (e *Engine) resolveBoard(cfg domain.SeriesConfig) (port.StoryboardPlanner, error) {
+	_, impl, err := e.Board.Resolve(cfg.TextProvider)
+	return impl, err
 }
 
-func (e *Engine) resolveBoard(cfg domain.SeriesConfig) port.StoryboardPlanner {
-	if cfg.TextProvider != "" {
-		if p, ok := e.boardProviders[cfg.TextProvider]; ok {
-			return p
-		}
-	}
-	return e.boards
+func (e *Engine) resolveTTS(cfg domain.SeriesConfig) (port.SpeechSynthesizer, error) {
+	_, impl, err := e.TTS.Resolve(cfg.TTSProvider)
+	return impl, err
 }
 
-func (e *Engine) resolveTTS(cfg domain.SeriesConfig) port.SpeechSynthesizer {
-	if cfg.TTSProvider != "" {
-		if p, ok := e.ttsProviders[cfg.TTSProvider]; ok {
-			return p
-		}
-	}
-	return e.speech
+func (e *Engine) resolveImage(cfg domain.SeriesConfig) (port.ImageGenerator, error) {
+	_, impl, err := e.Image.Resolve(cfg.ImageProvider)
+	return impl, err
 }
 
-func (e *Engine) resolveImage(cfg domain.SeriesConfig) port.ImageGenerator {
-	if cfg.ImageProvider != "" {
-		if p, ok := e.imageProviders[cfg.ImageProvider]; ok {
-			return p
-		}
-	}
-	return e.images
+func (e *Engine) resolveVideo(cfg domain.SeriesConfig) (port.VideoGenerator, error) {
+	_, impl, err := e.Video.Resolve(cfg.VideoProvider)
+	return impl, err
 }
 
-func (e *Engine) resolveVideo(cfg domain.SeriesConfig) port.VideoGenerator {
-	if cfg.VideoProvider != "" {
-		if p, ok := e.videoProviders[cfg.VideoProvider]; ok {
-			return p
-		}
+// resolveImageUnderstand 解析图像理解实现（§22）：无系列覆盖，override 是
+// 使用处单次传入的 provider key（CLI --provider / API body.provider），空则走系统默认。
+func (e *Engine) resolveImageUnderstand(override string) (port.ImageUnderstander, error) {
+	_, impl, err := e.ImageUnderstand.Resolve(override)
+	return impl, err
+}
+
+// resolveVideoUnderstand 解析视频理解实现（§22），语义同 resolveImageUnderstand。
+func (e *Engine) resolveVideoUnderstand(override string) (port.VideoUnderstander, error) {
+	_, impl, err := e.VideoUnderstand.Resolve(override)
+	return impl, err
+}
+
+// resolveSFX 解析音效生成实现（§22）。当前无 provider 注册（bl 无音效命令），
+// 空 override 也会因无默认而报错——明确失败，绝不静默跳过。
+func (e *Engine) resolveSFX(override string) (port.SoundEffectGenerator, error) {
+	_, impl, err := e.SFX.Resolve(override)
+	return impl, err
+}
+
+// DescribeImage 图像理解入口（§22）。
+//
+// 工具型能力：不挂集、不进版本树也不进派生键（derive.go 与它无关），
+// 因此没有 DeriveOptions——override 只是单次实现选择，不产生任何持久化状态。
+func (e *Engine) DescribeImage(ctx context.Context, req port.DescribeImageRequest, override string) (port.DescribeResult, error) {
+	impl, err := e.resolveImageUnderstand(override)
+	if err != nil {
+		return port.DescribeResult{}, err
 	}
-	return e.videos
+	return impl.DescribeImage(ctx, req)
+}
+
+// DescribeVideo 视频理解入口（§22），语义同 DescribeImage。
+func (e *Engine) DescribeVideo(ctx context.Context, req port.DescribeVideoRequest, override string) (port.DescribeResult, error) {
+	impl, err := e.resolveVideoUnderstand(override)
+	if err != nil {
+		return port.DescribeResult{}, err
+	}
+	return impl.DescribeVideo(ctx, req)
+}
+
+// GenerateSoundEffect 音效生成入口（§22）。当前无 provider，调用即返回
+// 能力槽的「未配置默认实现」错误（见 resolveSFX 注释）。
+func (e *Engine) GenerateSoundEffect(ctx context.Context, req port.SoundEffectRequest, override string) (port.SoundEffectResult, error) {
+	impl, err := e.resolveSFX(override)
+	if err != nil {
+		return port.SoundEffectResult{}, err
+	}
+	return impl.GenerateSoundEffect(ctx, req)
 }
 
 // GenerateStory 步骤 1：生成故事定稿，取得（或新建）story 根节点。
@@ -184,7 +223,11 @@ func (e *Engine) GenerateStory(ctx context.Context, episodeID string, opts Deriv
 		return nil, err
 	}
 
-	candidates, err := e.resolveText(series.Config).GenerateCandidates(ctx, port.StoryRequest{
+	text, err := e.resolveText(series.Config)
+	if err != nil {
+		return nil, e.failNode(ctx, ep, node, err)
+	}
+	candidates, err := text.GenerateCandidates(ctx, port.StoryRequest{
 		SeriesName: series.Name,
 		Dynasty:    series.Config.Dynasty,
 		Topic:      ep.Topic,
@@ -258,7 +301,11 @@ func (e *Engine) PlanStoryboard(ctx context.Context, episodeID string, opts Deri
 		return nil, err
 	}
 
-	sb, err := e.resolveBoard(series.Config).PlanStoryboard(ctx, port.StoryboardRequest{
+	board, err := e.resolveBoard(series.Config)
+	if err != nil {
+		return nil, e.failNode(ctx, ep, node, err)
+	}
+	sb, err := board.PlanStoryboard(ctx, port.StoryboardRequest{
 		Story:       *parent.Story,
 		Dynasty:     dynasty,
 		Ratio:       series.Config.Ratio,
@@ -587,7 +634,10 @@ func (e *Engine) produceClip(ctx context.Context, series *domain.Series, mode st
 		// comic 小人书模式：AI 出插画（已出则续用）→ ffmpeg Ken Burns
 		// 本地渲染成同规格片段；除出图外不产生任何模型费用。
 		if !reusable(m.PanelPath) {
-			img := e.resolveImage(series.Config)
+			img, err := e.resolveImage(series.Config)
+			if err != nil {
+				return domain.MediaResult{}, err
+			}
 			if img == nil {
 				return domain.MediaResult{}, fmt.Errorf("未配置图片生成能力（ImageGenerator），无法使用 comic 模式")
 			}
@@ -618,7 +668,11 @@ func (e *Engine) produceClip(ctx context.Context, series *domain.Series, mode st
 		if len(refImgs) > 0 {
 			prompt = refPromptPrefix(visualRefs, refImgs) + prompt
 		}
-		if _, err := e.resolveVideo(series.Config).GenerateClip(ctx, port.ClipRequest{
+		vid, err := e.resolveVideo(series.Config)
+		if err != nil {
+			return domain.MediaResult{}, err
+		}
+		if _, err := vid.GenerateClip(ctx, port.ClipRequest{
 			OutPath:     m.ClipPath,
 			Prompt:      prompt,
 			RefImages:   refImgs,
@@ -646,7 +700,11 @@ func (e *Engine) produceAudio(ctx context.Context, series *domain.Series, m scen
 	}
 	// 解析语音画像：§16 起优先按 series.voice_id 查表，回退旧字段。
 	voice, model, rate, pitch, instr := e.resolveVoice(ctx, series.Config, series.VoiceID, e.voice, e.instruction)
-	if _, err := e.resolveTTS(series.Config).Synthesize(ctx, port.SpeechRequest{
+	tts, err := e.resolveTTS(series.Config)
+	if err != nil {
+		return domain.MediaResult{}, err
+	}
+	if _, err := tts.Synthesize(ctx, port.SpeechRequest{
 		OutPath:     m.AudioPath,
 		Text:        sc.Narration,
 		Voice:       voice,
@@ -797,11 +855,16 @@ func (e *Engine) resolveBGMPath(series *domain.Series) (string, error) {
 }
 
 // PreviewVoice 用指定语音画像合成一段样音（试音用，不计入流水线状态）。
+// 试音不绑系列，故沿 TTS 槽走系统默认（不传系列覆盖）。
 func (e *Engine) PreviewVoice(ctx context.Context, p domain.VoiceProfile, text, outPath string) (string, error) {
 	if text == "" {
 		text = "话说天下大势，分久必合，合久必分。"
 	}
-	_, err := e.speech.Synthesize(ctx, port.SpeechRequest{
+	_, tts, err := e.TTS.Resolve("")
+	if err != nil {
+		return "", err
+	}
+	_, err = tts.Synthesize(ctx, port.SpeechRequest{
 		OutPath:     outPath,
 		Text:        text,
 		Voice:       p.Voice,

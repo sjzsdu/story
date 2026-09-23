@@ -43,10 +43,10 @@ type PublishRequest struct {
 
 // PublishResult 发布结果。
 type PublishResult struct {
-	VideoID string              // 平台侧视频 ID
-	URL     string              // 发布后链接
+	VideoID string // 平台侧视频 ID
+	URL     string // 发布后链接
 	Status  domain.PublishStatus
-	Error   string              // 平台返回的错误信息
+	Error   string // 平台返回的错误信息
 }
 
 // PublishOptions 发布请求选项（engine 层使用，§19）。

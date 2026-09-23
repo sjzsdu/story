@@ -24,7 +24,7 @@ var doctorCmd = &cobra.Command{
 		if application == nil {
 			return fmt.Errorf("应用未初始化")
 		}
-		cfg := application.Cfg
+		cfg := application.Config()
 
 		d := doctor.New(cfg.BLBin, cfg.FFMPEGBin, cfg.PythonBin, cfg.SAUBin)
 		results := d.RunAll(cmd.Context())

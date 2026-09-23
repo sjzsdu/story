@@ -27,9 +27,10 @@ var (
 var rootCmd = &cobra.Command{
 	Use:     "story",
 	Version: version,
-	Short:   "中国历史故事 AI 视频流水线",
-	Long: "story —— 从中国历史典籍取材，经 AI 生成故事、分镜、视频与旁白，" +
-		"最终由 ffmpeg 合成带字幕的多平台 MP4 短视频。",
+	Short:   "通用 AI 视频制作流水线",
+	Long: "story —— 通用的 AI 视频制作流水线：给一个题材/主题，经「故事/脚本 → 分镜 → " +
+		"画面 + 旁白 → 成片」四个阶段，产出带旁白、带硬字幕的 MP4 短视频，" +
+		"可发布到抖音、快手、B站、小红书、视频号等平台。中国历史故事是内置的第一套题材模板。",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// 信号可取消的全局 context。
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -48,7 +49,7 @@ var rootCmd = &cobra.Command{
 		// 不需要 app 容器：它们只操作 PID 文件或 fork 子进程。
 		// --daemonized 子进程需要 app（实际跑 HTTP 服务）。
 		if needsBootstrap(cmd) {
-			application, err = app.Bootstrap(rootCtx, cfg)
+			application, err = app.Bootstrap(rootCtx, cfg, configPath)
 			if err != nil {
 				return err
 			}
@@ -78,7 +79,7 @@ var initCmd = &cobra.Command{
 		if application == nil {
 			return fmt.Errorf("应用未初始化")
 		}
-		cfg := application.Cfg
+		cfg := application.Config()
 
 		fmt.Println("story 初始化")
 		fmt.Println("═══════════════════════════════════════")

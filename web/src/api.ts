@@ -1,6 +1,7 @@
 import type {
   ActionName,
   AppSettings,
+  CapabilityCatalog,
   CharacterSetting,
   CreativeCatalog,
   Episode,
@@ -384,6 +385,9 @@ export const api = {
 
   // ---- 全局设置 ----
   getSettings: () => request<AppSettings>('/api/settings'),
+
+  // getCapabilities 拉取能力注册表（§21）：各能力的可选供应商与系统默认。
+  getCapabilities: () => request<CapabilityCatalog>('/api/capabilities'),
 
   updateSettings: (body: Partial<AppSettings>) =>
     request<AppSettings>('/api/settings', {

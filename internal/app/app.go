@@ -9,13 +9,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
 	"github.com/mozillazg/go-pinyin"
 
+	"github.com/sjzsdu/story/internal/capability"
 	"github.com/sjzsdu/story/internal/config"
 	"github.com/sjzsdu/story/internal/domain"
 	"github.com/sjzsdu/story/internal/engine"
@@ -32,28 +33,304 @@ import (
 )
 
 // App 应用容器，CLI 命令通过它访问全部能力。
+//
+// 能力装配统一走 §21 能力注册表：engine 的 6 个 AI 能力槽由本容器持有（经 Engine 字段），
+// 本容器另持 voice_build / voice_list / publish 三个槽；三者都用 capability.Slot 泛型槽，
+// 沿「系列覆盖 → 系统默认」两级链路解析，设置热更新时整表原子换新（Reconfigure）。
 type App struct {
-	Cfg    config.Config
 	Repo   port.Repository
 	Engine *engine.Engine
 
-	// voiceListers 系统音色列表查询（浏览音色库）注册表，key = 供应商标识
+	// cfg 当前生效配置。加锁读写：PUT /api/settings 热更新时整体换新，
+	// 读取一律经 Config()（返回副本），避免与热更新竞态。
+	cfg   config.Config
+	cfgMu sync.RWMutex
+	// configPath story.yaml 路径（Bootstrap 记录）；空串＝不落盘（如单测）。
+	configPath string
+
+	// voiceListers 系统音色列表查询（浏览音色库）能力槽，key = 供应商标识
 	// （domain.VoiceProviderXxx）；与 voiceBuilders 同构，按供应商分发。
-	voiceListers map[string]port.VoiceLister
-	// voiceBuilders 造声能力（声音设计/声音复刻）注册表，key = 供应商标识
-	// （domain.VoiceProviderXxx）。造声与供应商强绑定（模型/音色体系各异），
+	voiceListers *capability.Slot[port.VoiceLister]
+	// voiceBuilders 造声能力（声音设计/声音复刻）槽，key = 供应商标识
+	//（domain.VoiceProviderXxx）。造声与供应商强绑定（模型/音色体系各异），
 	// 故按供应商分发而非持有单一实例；接第二家 TTS 时在此加一项即可。
-	voiceBuilders map[string]port.VoiceBuilder
-	// audioNormalizer 参考音频归一化（§16 声音复刻：浏览器录音/上传件统一转
-	// 16kHz 单声道 wav 再提交）；由 ffmpeg provider 实现。
-	audioNormalizer port.AudioNormalizer
-	// publishProvidersRegistry 平台发布能力注册表，key = domain.Platform（§19）。
+	voiceBuilders *capability.Slot[port.VoiceBuilder]
+	// publish 平台发布能力槽，key = string(domain.Platform)（§19）。
 	// 接入新平台时在此加一项，engine/CLI 逻辑零改动。
-	publishProvidersRegistry map[domain.Platform]port.PlatformPublisher
+	publish *capability.Slot[port.PlatformPublisher]
+	// audioNormalizer 参考音频归一化（§16 声音复刻：浏览器录音/上传件统一转
+	// 16kHz 单声道 wav 再提交）；由 ffmpeg provider 实现（不随热更新换，见 §21）。
+	audioNormalizer port.AudioNormalizer
+}
+
+// Config 返回当前生效配置的副本（加锁读，热更新后立即可见新值）。
+func (a *App) Config() config.Config {
+	a.cfgMu.RLock()
+	defer a.cfgMu.RUnlock()
+	return a.cfg
+}
+
+// setConfig 覆盖生效配置（调用方须已持锁或处于单写场景）。
+func (a *App) setConfig(cfg config.Config) {
+	a.cfgMu.Lock()
+	a.cfg = cfg
+	a.cfgMu.Unlock()
+}
+
+// ---- 能力实现构建（§21）----
+
+// providerSet 一次构建出的全部能力实现（key ＝ 供应商/平台标识）。
+// 构造 provider 客户端不会失败（凭据缺失要到真正调用时才报错），
+// 因此 buildProviders 无 error 返回；「整体不生效」的失败只会发生在登记阶段。
+type providerSet struct {
+	text  map[string]port.StoryGenerator
+	board map[string]port.StoryboardPlanner
+	plan  map[string]port.SeriesPlanner
+	tts   map[string]port.SpeechSynthesizer
+	image map[string]port.ImageGenerator
+	video map[string]port.VideoGenerator
+
+	// §22：视觉理解 / 视频理解 / 音效三个新能力（当前无系列级覆盖，
+	// 默认取自系统配置 *_provider，使用时可单次指定 override）。
+	imageUnderstand map[string]port.ImageUnderstander
+	videoUnderstand map[string]port.VideoUnderstander
+	sfx             map[string]port.SoundEffectGenerator
+
+	voiceBuilders map[string]port.VoiceBuilder
+	voiceListers  map[string]port.VoiceLister
+	publish       map[string]port.PlatformPublisher
+}
+
+// buildProviders 按配置构建全部能力实现的具名登记表。
+//
+// 注意每张表都**完整列出该能力全部可用供应商**（不是只建当前选中的那个）：
+// 系列级覆盖可以指定任意一家，系统默认才由 defaultKeyFor 决定。
+func buildProviders(cfg config.Config) providerSet {
+	bl := bailianprov.NewClient(cfg.BLBin, cfg.TextModel, cfg.VideoModel, cfg.TTSModel, cfg.ImageModel,
+		cfg.BailianAPIKey, cfg.BailianBaseURL)
+	ds := deepseekprov.NewClient(cfg.DeepSeekAPIKey, cfg.DeepSeekBaseURL, cfg.DeepSeekModel)
+	mm := minimaxprov.NewClient(cfg.MinimaxAPIKey, cfg.MinimaxBaseURL, cfg.MinimaxModel)
+	zp := zhipuprov.NewClient(cfg.ZhipuAPIKey, cfg.ZhipuBaseURL, "")
+	kl := klingprov.NewClient(cfg.KlingAccessKey, cfg.KlingSecretKey, cfg.KlingBaseURL, "")
+
+	return providerSet{
+		// 故事/分镜：bailian + deepseek。
+		text:  map[string]port.StoryGenerator{"bailian": bl, "deepseek": ds},
+		board: map[string]port.StoryboardPlanner{"bailian": bl, "deepseek": ds},
+		// 系列策划：deepseek 客户端暂不实现 SeriesPlanner（多轮对话 + 复杂 JSON
+		// 结构仍走 bl），故 deepseek 槽位登记 bl 实例——语义为「选 deepseek 时策划
+		// 会话沿用 bl」，与历史行为一致，同时让显式覆盖不会被判成未知供应商。
+		plan: map[string]port.SeriesPlanner{"bailian": bl, "deepseek": bl},
+		// 语音合成：bailian + minimax。
+		tts: map[string]port.SpeechSynthesizer{"bailian": bl, "minimax": mm},
+		// 图片：bailian + zhipu。
+		image: map[string]port.ImageGenerator{"bailian": bl, "zhipu": zp},
+		// 视频：bailian + kling。
+		video: map[string]port.VideoGenerator{"bailian": bl, "kling": kl},
+
+		// §22：图/视频理解走 bl vision describe（当前只有百炼）；
+		// 音效 bl 无对应命令 → 空表（等首个 provider 落地再登记）。
+		imageUnderstand: map[string]port.ImageUnderstander{"bailian": bl},
+		videoUnderstand: map[string]port.VideoUnderstander{"bailian": bl},
+		sfx:             map[string]port.SoundEffectGenerator{},
+
+		// 造声/系统音色：当前只有百炼；新增供应商时在此各登记一项。
+		voiceBuilders: map[string]port.VoiceBuilder{domain.VoiceProviderBailian: bl},
+		voiceListers:  map[string]port.VoiceLister{domain.VoiceProviderBailian: bl},
+		// §19：平台发布能力。
+		publish: buildPublishProviders(cfg),
+	}
+}
+
+// defaultKeyFor 从配置取值解析某能力的默认 key：
+// 取值非空且已登记 → 用它；空值/未登记 → 回退 "bailian"（系统内置默认）；
+// 表里连 bailian 都没有 → 取升序第一个；空表 → 空串（该能力尚无实现）。
+//
+// 这里刻意**不**把未知配置值直接透传给 ReplaceAll：配置文件里残留的旧值
+// （如已下线的供应商名）不应让整个应用起不来，兜底到内置默认最稳。
+func defaultKeyFor[T any](want string, impls map[string]T) string {
+	k := strings.ToLower(strings.TrimSpace(want))
+	if k != "" {
+		if _, ok := impls[k]; ok {
+			return k
+		}
+	}
+	if _, ok := impls["bailian"]; ok {
+		return "bailian"
+	}
+	keys := make([]string, 0, len(impls))
+	for key := range impls {
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	// 稳定起见取最小 key。
+	min := keys[0]
+	for _, key := range keys[1:] {
+		if key < min {
+			min = key
+		}
+	}
+	return min
+}
+
+// applyProviders 把一组能力实现整表登记进各能力槽并设好默认
+// （engine 6 槽 + app 3 槽）。任一槽登记失败即返回错误（整组配置不生效）。
+func (a *App) applyProviders(p providerSet, cfg config.Config) error {
+	txtKey := defaultKeyFor(cfg.TextProvider, p.text)
+	if err := a.Engine.Text.ReplaceAll(p.text, txtKey); err != nil {
+		return err
+	}
+	// 分镜与系列策划共用 text_provider 作默认取值（board/plan 无独立配置项）。
+	if err := a.Engine.Board.ReplaceAll(p.board, defaultKeyFor(cfg.TextProvider, p.board)); err != nil {
+		return err
+	}
+	if err := a.Engine.Plan.ReplaceAll(p.plan, defaultKeyFor(cfg.TextProvider, p.plan)); err != nil {
+		return err
+	}
+	if err := a.Engine.TTS.ReplaceAll(p.tts, defaultKeyFor(cfg.TTSProvider, p.tts)); err != nil {
+		return err
+	}
+	if err := a.Engine.Image.ReplaceAll(p.image, defaultKeyFor(cfg.ImageProvider, p.image)); err != nil {
+		return err
+	}
+	if err := a.Engine.Video.ReplaceAll(p.video, defaultKeyFor(cfg.VideoProvider, p.video)); err != nil {
+		return err
+	}
+	// §22：三个新能力仅系统默认（无系列覆盖），空 override 调用时报错而非静默。
+	if err := a.Engine.ImageUnderstand.ReplaceAll(p.imageUnderstand,
+		defaultKeyFor(cfg.ImageUnderstandProvider, p.imageUnderstand)); err != nil {
+		return err
+	}
+	if err := a.Engine.VideoUnderstand.ReplaceAll(p.videoUnderstand,
+		defaultKeyFor(cfg.VideoUnderstandProvider, p.videoUnderstand)); err != nil {
+		return err
+	}
+	if err := a.Engine.SFX.ReplaceAll(p.sfx, defaultKeyFor(cfg.SFXProvider, p.sfx)); err != nil {
+		return err
+	}
+	if err := a.voiceBuilders.ReplaceAll(p.voiceBuilders,
+		defaultKeyFor(domain.VoiceProviderBailian, p.voiceBuilders)); err != nil {
+		return err
+	}
+	if err := a.voiceListers.ReplaceAll(p.voiceListers,
+		defaultKeyFor(domain.VoiceProviderBailian, p.voiceListers)); err != nil {
+		return err
+	}
+	// 发布槽只做枚举，不设默认（发布必须显式指定平台）。
+	if err := a.publish.ReplaceAll(p.publish, ""); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Reconfigure 用新配置热更新：重建全部能力实现并整表换新各能力槽，
+// 随后写入生效配置（顺序：先换槽、再换 cfg，槽登记失败则 cfg 保持旧值）。
+//
+// 生效范围与需重启项见 AGENTS.md §21；本方法只负责能力槽与 cfg，
+// 不动 composer/ffmpeg/字幕字体、engine 默认语音回退与 projectsDir。
+func (a *App) Reconfigure(cfg config.Config) error {
+	if err := a.applyProviders(buildProviders(cfg), cfg); err != nil {
+		return err
+	}
+	a.setConfig(cfg)
+	return nil
+}
+
+// SaveConfig 把当前生效配置写回 story.yaml（configPath 为空则跳过，如单测）。
+func (a *App) SaveConfig() error {
+	if a.configPath == "" {
+		return nil
+	}
+	return config.Save(a.configPath, a.Config())
+}
+
+// CapabilityInfo 返回能力目录 + 各槽运行时登记结果（GET /api/capabilities、`story capabilities`）。
+func (a *App) CapabilityInfo() capability.Info {
+	return capability.Info{
+		Capabilities: []capability.CapabilityInfo{
+			buildCapInfo(capability.Text, a.Engine.Text),
+			buildCapInfo(capability.Board, a.Engine.Board),
+			buildCapInfo(capability.Plan, a.Engine.Plan),
+			buildCapInfo(capability.TTS, a.Engine.TTS),
+			buildCapInfo(capability.Image, a.Engine.Image),
+			buildCapInfo(capability.Video, a.Engine.Video),
+			buildCapInfo(capability.ImageUnderstand, a.Engine.ImageUnderstand),
+			buildCapInfo(capability.VideoUnderstand, a.Engine.VideoUnderstand),
+			buildCapInfo(capability.SFX, a.Engine.SFX),
+			buildCapInfo(capability.VoiceBuild, a.voiceBuilders),
+			buildCapInfo(capability.VoiceList, a.voiceListers),
+			buildCapInfo(capability.Publish, a.publish),
+		},
+		Providers: capability.KnownProviders(),
+	}
+}
+
+// DescribeImage 图像理解入口（§22）：补上配置的默认理解模型（cfg.VisionModel，
+// 空则由 provider 省略 --model 走 bl 默认），再透传 engine（override 单次指定实现）。
+func (a *App) DescribeImage(ctx context.Context, req port.DescribeImageRequest, override string) (port.DescribeResult, error) {
+	if req.Model == "" {
+		req.Model = a.Config().VisionModel
+	}
+	return a.Engine.DescribeImage(ctx, req, override)
+}
+
+// DescribeVideo 视频理解入口（§22），模型透传语义同 DescribeImage。
+func (a *App) DescribeVideo(ctx context.Context, req port.DescribeVideoRequest, override string) (port.DescribeResult, error) {
+	if req.Model == "" {
+		req.Model = a.Config().VisionModel
+	}
+	return a.Engine.DescribeVideo(ctx, req, override)
+}
+
+// GenerateSoundEffect 音效生成入口（§22）：补 cfg.SFXModel（预留字段）后透传。
+// 当前无 provider 注册，调用会返回能力槽的「未配置默认实现」错误（三处降级之一）。
+func (a *App) GenerateSoundEffect(ctx context.Context, req port.SoundEffectRequest, override string) (port.SoundEffectResult, error) {
+	if req.Model == "" {
+		req.Model = a.Config().SFXModel
+	}
+	return a.Engine.GenerateSoundEffect(ctx, req, override)
+}
+
+// slotEnum 能力槽的枚举视图（capability.Slot 泛型实例天然满足）。
+type slotEnum interface {
+	Keys() []string
+	Default() string
+}
+
+// buildCapInfo 把静态目录项与运行时槽状态拼成下发视图。
+func buildCapInfo[T any](capKey string, s *capability.Slot[T]) capability.CapabilityInfo {
+	var c capability.Capability
+	for _, item := range capability.Catalog() {
+		if item.Key == capKey {
+			c = item
+			break
+		}
+	}
+	var e slotEnum = s
+	def := e.Default()
+	// 槽里默认 key 仍是装配期占位 "default" 时对前端隐藏（不具信息量）。
+	if def == capability.DefaultKey {
+		def = ""
+	}
+	out := capability.CapabilityInfo{
+		Key: c.Key, Label: c.Label, Help: c.Help,
+		ConfigField: c.ConfigField, SeriesField: c.SeriesField,
+		Default:   def,
+		Providers: make([]capability.Provider, 0, len(e.Keys())),
+	}
+	for _, k := range e.Keys() {
+		out.Providers = append(out.Providers, capability.ProviderInfo(k))
+	}
+	return out
 }
 
 // Bootstrap 装配整个应用（打开数据库、构造 provider 与 engine）。
-func Bootstrap(ctx context.Context, cfg config.Config) (*App, error) {
+//
+// configPath 是 story.yaml 的路径，记录下来供 PUT /api/settings 落盘（热更新）；
+// 空串＝不落盘（单测用）。落盘能力见 Reconfigure/SaveConfig。
+func Bootstrap(ctx context.Context, cfg config.Config, configPath string) (*App, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("创建数据目录: %w", err)
 	}
@@ -74,8 +351,8 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*App, error) {
 		return nil, fmt.Errorf("重映射旧内置声音: %w", err)
 	}
 
-	bl := bailianprov.NewClient(cfg.BLBin, cfg.TextModel, cfg.VideoModel, cfg.TTSModel, cfg.ImageModel,
-		cfg.BailianAPIKey, cfg.BailianBaseURL)
+	// ffmpeg 合成器（composer）不在能力槽内：全项目只有一种实现，
+	// 且字幕字体渲染器在构造时绑定，热更新不换（§21 需重启项）。
 	composer := ffmpegprov.New(cfg.FFMPEGBin, cfg.FFProbeBin())
 	if cfg.SubtitleFont != "" {
 		r, err := subtitle.NewRenderer(cfg.SubtitleFont)
@@ -85,90 +362,40 @@ func Bootstrap(ctx context.Context, cfg config.Config) (*App, error) {
 		composer.WithSubtitles(r)
 	}
 
-	// ---- 按配置选择各能力 provider ----
-
-	// 文本生成：deepseek 或 bailian（默认）
-	var textGen port.StoryGenerator
-	var boardGen port.StoryboardPlanner
-	var planner port.SeriesPlanner
-	switch strings.ToLower(cfg.TextProvider) {
-	case "deepseek":
-		ds := deepseekprov.NewClient(cfg.DeepSeekAPIKey, cfg.DeepSeekBaseURL, cfg.DeepSeekModel)
-		textGen = ds
-		boardGen = ds
-		planner = bl // 策划会话暂仍用 bl（多轮对话 + 复杂 JSON 结构）
-	default:
-		textGen = bl
-		boardGen = bl
-		planner = bl
-	}
-
-	// TTS：minimax 或 bailian（默认）
-	var speech port.SpeechSynthesizer
-	switch strings.ToLower(cfg.TTSProvider) {
-	case "minimax":
-		speech = minimaxprov.NewClient(cfg.MinimaxAPIKey, cfg.MinimaxBaseURL, cfg.MinimaxModel)
-	default:
-		speech = bl
-	}
-
-	// 图片：zhipu 或 bailian（默认）
-	var images port.ImageGenerator
-	switch strings.ToLower(cfg.ImageProvider) {
-	case "zhipu":
-		images = zhipuprov.NewClient(cfg.ZhipuAPIKey, cfg.ZhipuBaseURL, "")
-	default:
-		images = bl
-	}
-
-	// 视频：kling 或 bailian（默认）
-	var videos port.VideoGenerator
-	switch strings.ToLower(cfg.VideoProvider) {
-	case "kling":
-		videos = klingprov.NewClient(cfg.KlingAccessKey, cfg.KlingSecretKey, cfg.KlingBaseURL, "")
-	default:
-		videos = bl
-	}
+	// 全部能力实现按配置一次性构建（每张表含该能力所有可用供应商）。
+	set := buildProviders(cfg)
 
 	eng := engine.New(
-		store, textGen, boardGen, videos, speech, composer, planner, images,
+		store,
+		set.text[defaultKeyFor(cfg.TextProvider, set.text)],
+		set.board[defaultKeyFor(cfg.TextProvider, set.board)],
+		set.video[defaultKeyFor(cfg.VideoProvider, set.video)],
+		set.tts[defaultKeyFor(cfg.TTSProvider, set.tts)],
+		composer,
+		set.plan[defaultKeyFor(cfg.TextProvider, set.plan)],
+		set.image[defaultKeyFor(cfg.ImageProvider, set.image)],
 		cfg.ProjectsDir(),
 		cfg.MaxConcurrency, cfg.MaxRetries,
 		cfg.TTSVoice, cfg.TTSInstruction,
 	)
 
-	// 注册所有 provider 到引擎的注册表（系列级覆盖用）。
-	// 文本：bailian + deepseek
-	eng.RegisterProvider("bailian", bl)
-	if ds := deepseekprov.NewClient(cfg.DeepSeekAPIKey, cfg.DeepSeekBaseURL, cfg.DeepSeekModel); ds != nil {
-		eng.RegisterProvider("deepseek", ds)
-	}
-	// TTS：bailian + minimax
-	mm := minimaxprov.NewClient(cfg.MinimaxAPIKey, cfg.MinimaxBaseURL, cfg.MinimaxModel)
-	eng.RegisterProvider("minimax", mm)
-	// 图片：bailian + zhipu
-	zp := zhipuprov.NewClient(cfg.ZhipuAPIKey, cfg.ZhipuBaseURL, "")
-	eng.RegisterProvider("zhipu", zp)
-	// 视频：bailian + kling
-	kl := klingprov.NewClient(cfg.KlingAccessKey, cfg.KlingSecretKey, cfg.KlingBaseURL, "")
-	eng.RegisterProvider("kling", kl)
-
 	app := &App{
-		Cfg:    cfg,
 		Repo:   store,
 		Engine: eng,
-		// 造声/系统音色能力注册表：当前只有百炼；新增供应商时在此各登记一项。
-		voiceListers: map[string]port.VoiceLister{
-			domain.VoiceProviderBailian: bl,
-		},
-		voiceBuilders: map[string]port.VoiceBuilder{
-			domain.VoiceProviderBailian: bl,
-		},
-		// 参考音频归一化复用 ffmpeg composer（§16 复刻：录音/上传件统一转码）。
-		audioNormalizer: composer,
-		// §19：平台发布能力注册表。
-		publishProvidersRegistry: initPublishProviders(cfg),
+		// 造声/系统音色/平台发布三个能力槽（engine 6 槽由 engine.New 建好）。
+		voiceBuilders:   capability.NewSlot[port.VoiceBuilder]("造声"),
+		voiceListers:    capability.NewSlot[port.VoiceLister]("音色库列举"),
+		publish:         capability.NewSlot[port.PlatformPublisher]("平台发布"),
+		audioNormalizer: composer, // 参考音频归一化复用 ffmpeg composer（§16）
+		configPath:      configPath,
 	}
+	// 整表登记 + 设默认（engine 6 槽一并升级为具名 key）。
+	if err := app.applyProviders(set, cfg); err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("登记能力实现: %w", err)
+	}
+	app.setConfig(cfg)
+
 	if err := bootstrapApp(ctx, app, store); err != nil {
 		return nil, err
 	}
@@ -247,6 +474,7 @@ func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.S
 	}
 
 	now := time.Now()
+	cfg := a.Config()
 	se := &domain.Series{
 		ID:          id,
 		Name:        in.Name,
@@ -255,14 +483,14 @@ func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.S
 		VoiceID:     voiceID,
 		Config: domain.SeriesConfig{
 			Dynasty:        in.Dynasty,
-			Ratio:          firstNonEmpty(in.Ratio, a.Cfg.DefaultRatio),
-			Resolution:     firstNonEmpty(in.Resolution, a.Cfg.DefaultResolution),
+			Ratio:          firstNonEmpty(in.Ratio, cfg.DefaultRatio),
+			Resolution:     firstNonEmpty(in.Resolution, cfg.DefaultResolution),
 			VisualMode:     domain.NormalizeVisualMode(in.VisualMode),
 			VoiceProfile:   in.VoiceProfile,
-			TTSVoice:       firstNonEmpty(in.Voice, a.Cfg.TTSVoice),
-			TTSInstruction: firstNonEmpty(in.TTSInstruction, a.Cfg.TTSInstruction),
-			MaxConcurrency: orDefault(in.Concurrency, a.Cfg.MaxConcurrency),
-			MaxRetries:     orDefault(in.Retries, a.Cfg.MaxRetries),
+			TTSVoice:       firstNonEmpty(in.Voice, cfg.TTSVoice),
+			TTSInstruction: firstNonEmpty(in.TTSInstruction, cfg.TTSInstruction),
+			MaxConcurrency: orDefault(in.Concurrency, cfg.MaxConcurrency),
+			MaxRetries:     orDefault(in.Retries, cfg.MaxRetries),
 			VideoStyle:     in.VideoStyle,
 			Creative:       in.Creative,
 			// 成片 BGM（§20）：相对路径相对系列目录，音量 0＝默认 0.18。
@@ -280,7 +508,7 @@ func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.S
 	if err := a.Repo.CreateSeries(ctx, se); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(a.Cfg.ProjectsDir(), id), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(a.Config().ProjectsDir(), id), 0o755); err != nil {
 		return nil, err
 	}
 	return se, nil
@@ -298,7 +526,7 @@ func (a *App) resolveCreateSeriesVoiceID(ctx context.Context, in CreateSeriesInp
 		}
 		return v.ID, nil
 	}
-	voice := firstNonEmpty(in.Voice, a.Cfg.TTSVoice)
+	voice := firstNonEmpty(in.Voice, a.Config().TTSVoice)
 	if voice == "" {
 		// 全空 → 默认条目（Bootstrap 已 seed，必存在）。
 		return domain.DefaultVoiceID, nil
@@ -310,7 +538,7 @@ func (a *App) resolveCreateSeriesVoiceID(ctx context.Context, in CreateSeriesInp
 		Name:        "自定义 " + voice,
 		Provider:    domain.VoiceProviderBailian,
 		Voice:       voice,
-		Instruction: firstNonEmpty(in.TTSInstruction, a.Cfg.TTSInstruction),
+		Instruction: firstNonEmpty(in.TTSInstruction, a.Config().TTSInstruction),
 		IsBuiltin:   false,
 	}
 	if err := a.Repo.CreateVoice(ctx, v); err != nil {
@@ -331,7 +559,7 @@ func (a *App) CreateEpisode(ctx context.Context, seriesID, title, topic, instruc
 		return nil, err
 	}
 	id := fmt.Sprintf("%s-e%02d", series.ID, number)
-	workDir := filepath.Join(a.Cfg.ProjectsDir(), series.ID, id)
+	workDir := filepath.Join(a.Config().ProjectsDir(), series.ID, id)
 	if err := os.MkdirAll(filepath.Join(workDir, engine.VersionsDirName), 0o755); err != nil {
 		return nil, err
 	}
@@ -388,7 +616,7 @@ func (a *App) DeleteSeries(ctx context.Context, id string) error {
 	if err := translateErr(a.Repo.DeleteSeries(ctx, id)); err != nil {
 		return err
 	}
-	_ = os.RemoveAll(filepath.Join(a.Cfg.ProjectsDir(), id))
+	_ = os.RemoveAll(filepath.Join(a.Config().ProjectsDir(), id))
 	return nil
 }
 
@@ -654,7 +882,7 @@ func (a *App) BuildVoice(ctx context.Context, in BuildVoiceInput) (*BuildVoiceRe
 		return nil, fmt.Errorf("未知造声方式 %q（支持 %s/%s）", in.Kind, domain.VoiceBuildDesign, domain.VoiceBuildClone)
 	}
 
-	targetModel := firstNonEmpty(in.TargetModel, a.Cfg.TTSModel, domain.VoiceBuildModelDefault)
+	targetModel := firstNonEmpty(in.TargetModel, a.Config().TTSModel, domain.VoiceBuildModelDefault)
 	// 试听音频统一落在预览目录，便于经 /api/voices/preview 回放。
 	previewPath := filepath.Join(os.TempDir(), "story-voice-preview", fmt.Sprintf("%s-%d.wav", kind, time.Now().UnixNano()))
 
@@ -704,22 +932,17 @@ func (a *App) resolveVoiceBuilder(provider string) (string, port.VoiceBuilder, e
 	if p == "" {
 		p = domain.VoiceProviderBailian
 	}
-	if b, ok := a.voiceBuilders[p]; ok && b != nil {
-		return p, b, nil
+	key, b, err := a.voiceBuilders.Resolve(p)
+	if err != nil || b == nil {
+		return "", nil, fmt.Errorf("造声能力暂不支持供应商 %q（当前支持：%s）",
+			provider, strings.Join(a.voiceBuilderProviders(), "/"))
 	}
-	return "", nil, fmt.Errorf("造声能力暂不支持供应商 %q（当前支持：%s）", provider, strings.Join(a.voiceBuilderProviders(), "/"))
+	return key, b, nil
 }
 
 // voiceBuilderProviders 已登记造声能力的供应商标识（排序后，用于错误提示）。
 func (a *App) voiceBuilderProviders() []string {
-	out := make([]string, 0, len(a.voiceBuilders))
-	for p, b := range a.voiceBuilders {
-		if b != nil {
-			out = append(out, p)
-		}
-	}
-	sort.Strings(out)
-	return out
+	return a.voiceBuilders.Keys()
 }
 
 // minSampleSeconds 复刻参考音频时长下限（供应商要求 3-30s）。
@@ -813,27 +1036,20 @@ func (a *App) DeleteVoice(ctx context.Context, id string) error {
 // model 为空时用配置的 TTS 模型，再空由 provider 用其默认模型。
 func (a *App) ListSystemVoices(ctx context.Context, provider, model string) ([]domain.SystemVoice, error) {
 	p := domain.NormalizeVoiceProvider(provider)
-	lister := a.voiceListers[p]
-	if lister == nil {
+	_, lister, err := a.voiceListers.Resolve(p)
+	if err != nil || lister == nil {
 		return nil, fmt.Errorf("暂不支持 TTS 供应商 %q 的系统音色列表（当前支持：%s）",
 			provider, strings.Join(a.voiceListerProviders(), "/"))
 	}
 	if strings.TrimSpace(model) == "" {
-		model = a.Cfg.TTSModel
+		model = a.Config().TTSModel
 	}
 	return lister.ListSystemVoices(ctx, model)
 }
 
 // voiceListerProviders 已登记系统音色列表能力的供应商标识（排序后，用于错误提示）。
 func (a *App) voiceListerProviders() []string {
-	out := make([]string, 0, len(a.voiceListers))
-	for p, l := range a.voiceListers {
-		if l != nil {
-			out = append(out, p)
-		}
-	}
-	sort.Strings(out)
-	return out
+	return a.voiceListers.Keys()
 }
 
 // VoiceProviderInfo TTS 供应商能力快照（声音库表单/造声下拉渲染用）。
@@ -853,8 +1069,8 @@ func (a *App) VoiceProviderInfos() []VoiceProviderInfo {
 	for _, id := range domain.VoiceProviders {
 		out = append(out, VoiceProviderInfo{
 			ID:       id,
-			CanBuild: a.voiceBuilders[id] != nil,
-			CanList:  a.voiceListers[id] != nil,
+			CanBuild: a.voiceBuilders.Has(id),
+			CanList:  a.voiceListers.Has(id),
 		})
 	}
 	return out

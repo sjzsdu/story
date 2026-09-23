@@ -123,11 +123,11 @@ type UploadVideoRequest struct {
 
 // UploadResult 上传结果。
 type UploadResult struct {
-	Success    bool
-	Message    string
-	VideoURL   string // 发布后的视频链接（如果平台返回）
-	VideoID    string // 平台侧视频 ID
-	RawOutput  string // sau 原始输出
+	Success   bool
+	Message   string
+	VideoURL  string // 发布后的视频链接（如果平台返回）
+	VideoID   string // 平台侧视频 ID
+	RawOutput string // sau 原始输出
 }
 
 // UploadVideo 调用 sau 上传视频到指定平台。
@@ -209,7 +209,7 @@ type UploadNoteRequest struct {
 	Account  string
 	Images   []string // 图片路径列表
 	Title    string
-	Note     string   // 正文
+	Note     string // 正文
 	Tags     []string
 }
 

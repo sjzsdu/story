@@ -353,6 +353,82 @@ func (m *ImageGen) CallsCount() int {
 	return m.Calls
 }
 
+// ---- Vision / SoundEffect（§22）----
+
+// Visioner 图像/视频理解 mock：两接口共用一个实现（与 bailian 同构），
+// 返回固定文本并记录请求，供引擎入口与 server 端点断言透传。
+type Visioner struct {
+	mu           sync.Mutex
+	ImageCalls   int
+	VideoCalls   int
+	ImageReq     port.DescribeImageRequest
+	VideoReq     port.DescribeVideoRequest
+	// Reply 返回的文本（空则回默认样例）。
+	Reply string
+	Fail  error
+}
+
+// DescribeImage 实现 port.ImageUnderstander。
+func (m *Visioner) DescribeImage(_ context.Context, req port.DescribeImageRequest) (port.DescribeResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ImageCalls++
+	m.ImageReq = req
+	if m.Fail != nil {
+		return port.DescribeResult{}, m.Fail
+	}
+	return port.DescribeResult{Text: m.replyLocked()}, nil
+}
+
+// DescribeVideo 实现 port.VideoUnderstander。
+func (m *Visioner) DescribeVideo(_ context.Context, req port.DescribeVideoRequest) (port.DescribeResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.VideoCalls++
+	m.VideoReq = req
+	if m.Fail != nil {
+		return port.DescribeResult{}, m.Fail
+	}
+	return port.DescribeResult{Text: m.replyLocked()}, nil
+}
+
+func (m *Visioner) replyLocked() string {
+	if m.Reply != "" {
+		return m.Reply
+	}
+	return "mock 理解结果"
+}
+
+// SfxGen 音效生成 mock（首个 provider 落地后使用；当前空槽测试走「未配置默认实现」分支）。
+type SfxGen struct {
+	mu    sync.Mutex
+	Calls int
+	Req   port.SoundEffectRequest
+	Fail  error
+}
+
+// GenerateSoundEffect 实现 port.SoundEffectGenerator：写假音频文件。
+func (m *SfxGen) GenerateSoundEffect(_ context.Context, req port.SoundEffectRequest) (port.SoundEffectResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Calls++
+	m.Req = req
+	if m.Fail != nil {
+		return port.SoundEffectResult{}, m.Fail
+	}
+	if err := os.MkdirAll(filepath.Dir(req.OutPath), 0o755); err != nil {
+		return port.SoundEffectResult{}, err
+	}
+	if err := os.WriteFile(req.OutPath, []byte("fake-wav"), 0o644); err != nil {
+		return port.SoundEffectResult{}, err
+	}
+	d := req.DurationSec
+	if d <= 0 {
+		d = 2
+	}
+	return port.SoundEffectResult{OutPath: req.OutPath, DurationSec: d}, nil
+}
+
 // ---- Video / Speech ----
 
 // VideoGen 视频生成 mock：在 OutPath 写入假文件；FailFirst 次调用失败以验证重试。

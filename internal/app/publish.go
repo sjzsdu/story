@@ -16,27 +16,36 @@ import (
 	"github.com/sjzsdu/story/internal/provider/publish/xiaohongshu"
 )
 
-// initPublishProviders 根据配置初始化平台发布器注册表（§19）。
+// buildPublishProviders 构建平台发布能力登记表（key ＝ string(domain.Platform)，§19/§21）。
 // 所有平台统一走 sau CLI（social-auto-upload），无需 OAuth 凭证；
 // 用户只需 pip install social-auto-upload + 各平台扫码登录一次。
-func initPublishProviders(cfg config.Config) map[domain.Platform]port.PlatformPublisher {
+func buildPublishProviders(cfg config.Config) map[string]port.PlatformPublisher {
 	sauClient := sau.NewClient(cfg.SAUBin, cfg.PythonBin, 600)
 
-	providers := make(map[domain.Platform]port.PlatformPublisher)
-
-	// 全部平台默认注册——sau 支持的平台都可以尝试
-	providers[domain.PlatformDouyin] = douyin.New(sauClient)
-	providers[domain.PlatformKuaishou] = kuaishou.New(sauClient)
-	providers[domain.PlatformBilibili] = bilibili.New(sauClient, cfg.BilibiliDefaultTid)
-	providers[domain.PlatformXiaohongshu] = xiaohongshu.New(sauClient)
-	providers[domain.PlatformWeixin] = tencent.New(sauClient)
-
-	return providers
+	// 全部平台默认登记——sau 支持的平台都可以尝试。
+	return map[string]port.PlatformPublisher{
+		string(domain.PlatformDouyin):      douyin.New(sauClient),
+		string(domain.PlatformKuaishou):    kuaishou.New(sauClient),
+		string(domain.PlatformBilibili):    bilibili.New(sauClient, cfg.BilibiliDefaultTid),
+		string(domain.PlatformXiaohongshu): xiaohongshu.New(sauClient),
+		string(domain.PlatformWeixin):      tencent.New(sauClient),
+	}
 }
 
-// publishProviders 返回已注册的平台发布器（§19）。
+// publishProviders 返回已登记的平台发布器（从能力槽重建 domain 键视图，§19/§21）。
+// 槽为空（能力未装配）时返回 nil，调用方据此报「发布能力未初始化」。
 func (a *App) publishProviders() map[domain.Platform]port.PlatformPublisher {
-	return a.publishProvidersRegistry
+	keys := a.publish.Keys()
+	if len(keys) == 0 {
+		return nil
+	}
+	out := make(map[domain.Platform]port.PlatformPublisher, len(keys))
+	for _, k := range keys {
+		if _, p, err := a.publish.Resolve(k); err == nil && p != nil {
+			out[domain.Platform(k)] = p
+		}
+	}
+	return out
 }
 
 // Publish 发布一集成片到指定平台。
@@ -122,13 +131,13 @@ func (a *App) ListRegisteredPlatforms() []domain.Platform {
 
 // SauLogin 调用 sau 执行平台登录（扫码/Cookie 持久化）。
 func (a *App) SauLogin(ctx context.Context, platform, account string) error {
-	sauClient := sau.NewClient(a.Cfg.SAUBin, a.Cfg.PythonBin, 120)
+	sauClient := sau.NewClient(a.Config().SAUBin, a.Config().PythonBin, 120)
 	return sauClient.Login(ctx, platform, account)
 }
 
 // SauCheck 调用 sau 检查平台登录状态。
 func (a *App) SauCheck(ctx context.Context, platform, account string) (bool, error) {
-	sauClient := sau.NewClient(a.Cfg.SAUBin, a.Cfg.PythonBin, 30)
+	sauClient := sau.NewClient(a.Config().SAUBin, a.Config().PythonBin, 30)
 	return sauClient.Check(ctx, platform, account)
 }
 

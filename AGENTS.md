@@ -38,7 +38,8 @@ internal/engine  ── 版本树派生、调度、验收、并发/重试
 internal/port    ── 全部接口定义（StoryGenerator / StoryboardPlanner /
       │              SeriesPlanner / VideoGenerator / ImageGenerator /
       │              SpeechSynthesizer / VoiceLister / VoiceBuilder /
-      │              AudioNormalizer / VideoComposer / TaskPoller / Repository）
+      │              AudioNormalizer / VideoComposer / TaskPoller / Repository /
+      │              ImageUnderstander / VideoUnderstander / SoundEffectGenerator）
       ▲
       │ 实现
 internal/provider/bailian  （bl：故事/分镜/策划/视频/图片/语音/造声/任务）
@@ -664,6 +665,133 @@ type PublishConfig struct {
 - 后续方向（未实现）：Fun-Music 生成式音源（按系列/题材生成专属 BGM），届时只需在 series 目录生成曲目文件并写回 `BGMPath`，本节接口不变。
 - 测试（成本红线内，全程 mock，未真实调用 bl；本机 ffmpeg 真跑集成测试）：`engine` 派生键零值 JSON 不变 + finalParams bgm/无 bgm 用例、`Compose` 透传 BGM 与文件缺失报错、`bgmMixFilter` 纯函数单测、server 创建/补丁/清空/越界 400、ffmpeg 集成 `TestComposeWithBGMIntegration`（基线 vs 带 BGM 时长 ±0.2s、有音轨、字幕/无字幕两分支）。
 
+## 21. 能力注册表与选择链路（2026-09-23 增补）
+
+> 章节号说明：BGM 已占 §20（原任务设想的编号），本节顺延为 **§21**。
+
+### 21.1 背景与目标
+
+此前各能力（文本/分镜/策划/TTS/图片/视频/造声/音色库/发布）的实现散落在 `engine` 的手写 `map[string]any` + `RegisterProvider(any)` 类型 switch 与 `app` 的手写 map 中。类型 switch **首命中即返回**：`bl` 客户端只进 textProviders，导致 board/plan/tts/image/video 的 bailian 系列覆盖**全部静默失效**（真 bug）。同时没有统一入口能回答「系统有哪些能力、各能力有哪些实现、默认是谁」。
+
+### 21.2 `internal/capability`：零依赖泛型注册表
+
+- **`Slot[T]`**（`slot.go`，指针接收者、读方法 nil 安全）：
+  - `NewSlot[T](name)` 建空槽；`Register(key string, impl T) error`（空 key / 重复 key 报错）；
+  - `SetDefault(key) error`（未登记报错并列出可用项）；`Default() string`；`Keys() []string`（升序）；`Has(key) bool`；
+  - **`Resolve(key string) (string, T, error)`**——非空 key 必须已登记，否则报错且**错误文案含能力中文展示名与已登记项**（如 `能力「语音合成」未登记实现 "x"（已登记：bailian、minimax）`，join 用「、」，空表「（无）」）；空 key → 取默认；默认未配置也报错；
+  - `ReplaceAll(impls map[string]T, defaultKey string) error`——写锁下**原子**换整表；`defaultKey` 非空时必须存在于新表，空 `defaultKey` 允许（发布能力无系统默认）。
+- **能力目录**（`catalog.go`）：`DefaultKey = "default"`；9 项 `Capability{Key,Label,Help,ConfigField,SeriesField,Providers}`（text/board/plan/tts/image/video/voice_build/voice_list/publish）；`Provider{Key,Label,Desc}` 静态展示表（bailian 百炼 (bl)、deepseek、minimax、zhipu 智谱 CogView、kling 可灵 + 5 发布平台）；`Info`/`CapabilityInfo` DTO；`ProviderInfo(key)`（未知 key 回退原样显示）、`KnownProviders()`、`orderProviders()`（按目录序 + 未知 key 升序追加）。
+- **board/plan 的 `config_field` 与 `series_field` 均为 `text_provider`**（文本类共用一个配置字段，目录里 text 排最前，find-first 命中即它）；voice_build/voice_list/publish 无配置字段与系列覆盖（`ConfigField`/`SeriesField` 为空）。
+- 包**零依赖**（不 import domain/port），单测覆盖 Resolve 三分支、未知报错含可用项、SetDefault 校验、ReplaceAll 原子、Keys 升序、并发 race、Catalog 9 项不变式。
+
+### 21.3 两级选择链：系列覆盖 → 系统默认
+
+- engine 导出 6 槽 `Text/Board/Plan/TTS/Image/Video *capability.Slot[...]`；6 个 resolve helper 改返回 `(impl, error)`：override 分别取 `cfg.TextProvider`（text/board/plan 共用）、`cfg.TTSProvider`、`cfg.ImageProvider`、`cfg.VideoProvider`。**显式未知覆盖一律报错，绝不静默回退默认**。
+- **Plan 槽**：override 同样是 `cfg.TextProvider`；app 把 `plan` 登记为 `{bailian: bl, deepseek: bl}`（deepseek 客户端暂不实现 SeriesPlanner，策划仍走 bl）——引擎只认选择链、不认供应商能力。
+- **`PreviewVoice` 走 `e.TTS.Resolve("")`**：试音不绑系列，沿槽取系统默认；`SetDefault` 换默认后下一次试音立刻生效。
+- app 侧 `providerSet` + `buildProviders(cfg)` 构造（构造不失败）：text/board `bailian+deepseek`、plan `bailian+bl / deepseek+bl`、tts `bailian+minimax`、image `bailian+zhipu`、video `bailian+kling`、voiceBuilders/voiceListers `bailian`、publish 5 平台。`defaultKeyFor(want, impls)`：非空且已登记 → 用它；空/未登记 → `"bailian"`；无 bailian → 最小 key；空表 → `""`（**刻意不把配置残留旧值透传给 ReplaceAll**）。
+- `applyProviders(p, cfg)` 统一 `ReplaceAll` engine 6 槽 + app voiceBuilders/voiceListers/publish 三槽（publish `defaultKey=""`）。
+
+### 21.4 签名变化
+
+- **`engine.New` 13 参签名不变**（3 个调用点零改动）：New 内部建空槽，把传入实现注册到 `capability.DefaultKey`（`"default"`）并 `SetDefault("default")`；随后 `app.Bootstrap` 用 `ReplaceAll` 升级成具名 key（`bailian` 等）。
+- **`app.Bootstrap(ctx, cfg, configPath string)`**：新增 `configPath`（调用点 `cmd/story/root.go`、`server_test.go`）；`App.Cfg` 公开字段改**私有 `cfg` + `sync.RWMutex` + `Config()`**，全部读点改 `Config()`；新增 `Reconfigure(cfg)`、`SaveConfig()`、`CapabilityInfo()`；`config` 包新增 `Save(path, cfg)`（yaml.Marshal + 同目录临时文件 + rename 原子写）。
+
+### 21.5 `PUT /api/settings` 热更新（此前只改内存不落盘、不换实现）
+
+顺序（`server/settings.go` `updateConfig`）：① 在配置副本上打补丁（当前生效配置不动）→ ② `Reconfigure(cfg)`：`buildProviders` 构建 → `applyProviders` 整表换 9 个槽 → `setConfig`（**槽 ReplaceAll 失败则 cfg 保持旧值，不写入**）→ ③ `SaveConfig()` 落盘 `story.yaml`；**③ 失败 → `Reconfigure(old)` 回滚 ①② 的内存状态并返回 500「配置未生效」**。掩码 `"****"` 不覆盖既有 Key 的语义保留。
+
+**热更立即生效范围**：engine 6 槽、app voiceBuilders/voiceListers/publish 3 槽、`a.Config()`。
+
+**需重启才生效（写入文档、本次不改）**：
+- composer / ffmpeg / 字幕字体（`subtitle_font`）等构造期注入的实现；
+- engine 默认语音回退 `tts_voice` / `tts_instruction`（New 时已快照进 engine，热改**不生效**）；
+- runner 并发/重试默认（New 时快照）；`projectsDir`。
+
+### 21.6 三端入口
+
+- **CLI**：`story series create/set` 各加 4 个 provider flag（`--text-provider/--tts-provider/--image-provider/--video-provider`；**set 用 `cmd.Flags().Changed` 区分「未提供（不改）」与「显式空串（清除＝回系统默认）」**，走与 server `PUT /api/series/{id}` 相同的 `UpdateSeries` 链路）；`story series show` 打印四项；新增 **`story capabilities`** 打印 9 项能力 + 各能力已登记实现与默认。`cmd/story/root.go` 的 Short/Long 文案已从写死的「中国历史故事」改为通用 AI 视频流水线定位（§1）。
+- **server**：`GET /api/capabilities` → `capability.Info`（9 项 + 供应商全表；`Default == "default"` 时下发空串）。
+- **Web**：`labels.ts` 只留「字段 → 标签」映射，`providerOptions(caps, configField)`（首项恒为空值「系统默认」）与 `providerLabel(value, options)`（**参数顺序与旧版相反**）由 catalog 驱动；SettingsPage AI Tab、系列新建弹窗、系列详情编辑/只读四处全部改 catalog 取数；**`ready_providers` 灰显与「未配置凭据」告警保留，bailian 恒可用**（未配置的供应商选项置灰禁用）。
+- **取舍（如实记录）**：provider 展示名统一为后端每供应商一签——原「百炼 (CosyVoice)」「百炼 (通义万相)」「百炼 (Wanx Video)」按能力拆分的写法**收敛为「百炼 (bl)」**（一个供应商一条静态文案，跨能力复用）；`labels.ts` 的 `VOICE_PROVIDER_LABELS`（声音库页面，属 Voice.Provider 而非本注册表）不动。
+
+### 21.7 回归测试（成本红线内全程 mock）
+
+- `internal/capability/registry_test.go`：Resolve 三分支、未知报错含已登记项、nil 槽安全、Register/SetDefault 校验、ReplaceAll 三态、Keys 升序、并发 race、Catalog 不变式、orderProviders。
+- `internal/engine/provider_slots_test.go`：系列覆盖**真正分流**专项（text 覆盖 deepseek/空/bailian/未知四态、Plan 槽 override 含 deepseek、PreviewVoice 走 TTS 默认槽 + SetDefault 换默认、5 个 resolve helper 三分支 + 错误含能力中文名与已登记项）。
+- `internal/app/app_test.go`：`TestResolveVoiceBuilder`（断言保留：空回退 bailian、未知报错）+ `TestReconfigureSwapsCapabilityDefaults`（Reconfigure 换默认 + SaveConfig 落 `t.TempDir()` + `config.Load` 重载）、`TestPublishSlotSemantics`（5 平台、空 key 无默认报错、Reconfigure 后仍完整）、`TestVoiceListerSlotSemantics`。
+- `internal/server/server_test.go`：`TestPutSettingsPersistsAndReconfigures`（内存生效 + 槽默认变化 + 落盘 + GET 回读一致）、`TestCapabilitiesEndpoint`（9 项、字段映射、text 默认 bailian、publish 5 平台无默认、供应商全表）。
+- 硬约束遵守：`derive.go` 一字未改；engine/domain/port 未 import provider/store；装配仍只在 `app` 与 `cmd/story`；既有字节级回归断言未为过而改；未真实调用 `bl`。
+
+## 22. 三个新 AI 能力：图像理解 / 视频理解 / 音效生成（2026-09-23 增补）
+
+> 架构改造第二步：在 §21 能力注册表地基上，为三个新能力落地「port 接口 + 注册表槽位 + 默认/覆盖选择 + 使用入口」四件套。能力目录由 9 项增至 **12 项**。
+
+### 22.1 port 接口（`internal/port/vision.go`、`internal/port/sound_effect.go`）
+
+```go
+type DescribeImageRequest struct { Image, Prompt, Model string }          // Image 必填（路径或 URL）
+type DescribeVideoRequest  struct { Video, Image, Prompt, Model string }  // Video 必填；Image 为可选关键帧
+type DescribeResult        struct { Text string }
+
+type ImageUnderstander interface {
+    DescribeImage(ctx context.Context, req DescribeImageRequest) (DescribeResult, error)
+}
+type VideoUnderstander interface {
+    DescribeVideo(ctx context.Context, req DescribeVideoRequest) (DescribeResult, error)
+}
+
+type SoundEffectRequest  struct { Prompt string; DurationSec float64; OutPath, Model string }
+type SoundEffectResult   struct { OutPath string; DurationSec float64 }
+type SoundEffectGenerator interface {
+    GenerateSoundEffect(ctx context.Context, req SoundEffectRequest) (SoundEffectResult, error)
+}
+```
+
+### 22.2 bailian 实现与关键取舍（`internal/provider/bailian/vision.go`）
+
+- 命令：`bl vision describe --image <path|url> [--video <url>] [--prompt <text>] [--model <m>]`（`--help` 实测：**video 可单独调用**，`--model` 默认 `qwen3-vl-plus`，`--output` 默认 text）。
+- **走 `run()` 纯文本，不走 runJSON**：理解结果是自由文本、无稳定 JSON 结构；TrimSpace 后为空报「bl vision describe 返回空结果」（不返回空成功）。
+- 超时沿用 `run()` 注入的 `--timeout`（600s），理解类无需单独放宽；model 空省略 `--model`（复用 `appendModel`）。
+- `DescribeVideo` 恒传 `--video`；`--image` 仅在提供时传。入参空值在 provider 层校验（「图像理解缺少图片路径或 URL」/「视频理解缺少视频 URL 或路径」）。
+- 同一个 bailian `Client` 实现两个接口。
+- **音效：`bl` 无任何音效命令** → 只立接口 + 槽位，**不注册任何 provider**。
+
+### 22.3 槽位与选择链
+
+- catalog 新增 3 项（key `image_understand` / `video_understand` / `sfx`），`ConfigField` = `key + "_provider"`（`image_understand_provider` / `video_understand_provider` / `sfx_provider`），**SeriesField 一律为空——本轮不做系列级覆盖**。
+- `engine.New` **13 参签名不变**：三个新槽在 New 中建**空槽**，由 Bootstrap/applyProviders 以具名 key 整表登记；engine 单测要使用需自行 Register（见 `provider_slots_test.go`）。
+- resolve helper 签名 `resolveImageUnderstand(override string)` 等：override 是**使用时单次指定**（非 SeriesConfig），空值走系统默认；显式未知一律报错（含能力中文名与已登记项）。
+- app：`providerSet` 加三表；`buildProviders` 登记 `imageUnderstand/videoUnderstand = {bailian: bl}`、`sfx = 空表`；`applyProviders` ReplaceAll 三槽（`defaultKeyFor(cfg.XXXProvider, …)`，空表 → 空默认）；`CapabilityInfo` 加 3 行（共 12 项）。
+- config 新增 5 字段：三个 provider + `vision_model`（图/视频理解共用，空=bl 默认）+ `sfx_model`（预留无消费方）；env 覆盖 `STORY_IMAGE_UNDERSTAND_PROVIDER` / `STORY_VIDEO_UNDERSTAND_PROVIDER` / `STORY_SFX_PROVIDER` / `STORY_VISION_MODEL`。
+
+### 22.4 使用入口（三端）
+
+- engine：`DescribeImage/DescribeVideo/GenerateSoundEffect(ctx, req, override string)`——**无 DeriveOptions、不挂集、不落库、不进派生键**（`derive.go` 一字未改）。
+- app：包装方法补模型透传——`req.Model` 为空时注入 `cfg.VisionModel` / `cfg.SFXModel`，显式 model 不覆盖。
+- CLI：`story vision image <path|url>` / `story vision video <url|path>`，flags `--prompt/--model/--provider`（video 另有 `--image` 关键帧）。
+- server：`POST /api/vision/describe`，body `{kind:"image"|"video", image, video, prompt, model, provider}`。
+  - **安全取舍（旁注）**：该端点会让服务端读「路径或 URL」。URL 原样透传 bl；**本地路径必须落在 `cfg.DataDir` 内**（否则任意 HTTP 客户端可借端点读服务器任意文件），越界 403 且不触达实现；CLI 不受此限（本机用户本就能读自己的文件）。必填/kind 非法 400；槽错误（未知 provider 等）502。
+
+### 22.5 sfx 三处降级表现（空实现必须处处可见、不静默）
+
+1. **engine 空槽调用**：`resolveSFX` → `Slot.Resolve("")` 报「能力「音效生成」未配置默认实现，且未指定实现（可用：（无））」。
+2. **装配/能力目录**：`buildProviders` 登记空表 → `/api/capabilities` 与 `story capabilities` 显示 0 实现、默认空。
+3. **App 包装层**：`GenerateSoundEffect` 只注入预留 `cfg.SFXModel`，空槽错误原样上抛（不吞错）。
+   - Web 设置页优雅降级：`providerOptions` 对无实现能力只返回「系统默认」一项，SettingFields 检测 `options.length <= 1` 渲染灰色说明「暂未接入供应商，能力槽已预留」（禁用态空值提交合法），不报错。
+   - `labels.ts` 新增 `SYSTEM_PROVIDER_FIELDS`（4 旧 + 3 新）供设置页；**`PROVIDER_FIELDS` 保持 4 项且 key 类型收窄为 `SeriesProviderFieldKey`**——系列创建/编辑表单以它为键，新能力无系列字段，混入会渲染/提交不存在的键。
+
+### 22.6 回归测试（成本红线内全程 mock，零真实 bl 调用）
+
+- `internal/capability/registry_test.go`：`TestCatalogInvariants` 9→12 + 新能力字段断言（ConfigField=`key+"_provider"`、SeriesField 空）+「sfx 是唯一允许空 Providers 的能力」。
+- `internal/server/server_test.go`：`TestCapabilitiesEndpoint` 9→12；「无 Providers 即 Fatalf」改为 **sfx 例外（空 Providers + 空 Default 合法）**，其余能力仍必须非空；新增 image/video understanding 断言。
+- `internal/provider/bailian/vision_test.go`：**假 bl sh 脚本**（落临时目录、回显参数到 args.txt + 固定 stdout）覆盖参数拼装、model/prompt 空省略、video 单独调用、`--image` 可选、入参校验、空结果报错。
+- `internal/engine/provider_slots_test.go`：`TestVisionAndSFXSlotResolve`（三分支 + sfx 空槽错误含「音效生成」「未配置默认实现」）、`TestSFXSlotAfterRegistration`（登记后通路）。
+- `internal/app/vision_test.go`：12 项 CapabilityInfo、包装层 VisionModel 注入/显式不覆盖、sfx 错误上抛、Reconfigure 后新槽仍在（未知配置值兜底 bailian、空表空默认合法）。
+- `internal/server/vision_test.go`：端点 200/400/403/502 全分支 + 目录外路径不触达实现。
+- `internal/config/config_test.go`（新建，该目录原无测试）：四个新 env 覆盖生效、空 env 不覆盖、未设置保持原值。
+- mock 补 `Visioner`（两接口共用）与 `SfxGen`。
+
 ## 变更记录
 
 - 2026-09-18：初始决策（Go + cobra + SQLite；接口驱动；系列/集模型；并发上限 3、重试 3；百炼为首家 provider；ffmpeg 合成与硬字幕；默认 9:16）。
@@ -692,3 +820,5 @@ type PublishConfig struct {
 - 2026-09-21（多平台发布系统，见新增 §19）：成片（final）合成完毕后的第 5 阶段——将视频与配套素材发布到各平台。全部平台（抖音/快手/B站/小红书/视频号）一次性并行接入。架构 Ports & Adapters：新增 `port.PlatformPublisher` 接口 + 各平台 provider（`internal/provider/publish/<platform>/`），engine/app 不知道具体平台；新增 `PublishJob`（发布任务）与 `PlatformAccount`（平台账号凭证）两个顶层持久化实体（SQLite `publish_jobs` + `platform_accounts` 表）。封面双模式：自动截帧（默认零成本，ffmpeg 截第一帧+高潮帧）+ AI 生成封面（可选按张计费，复用 ImageGenerator）。标题/描述/标签基于 Story 节点自动生成并按平台规则裁剪。触发：CLI `story publish` + Web 集详情页「发布」面板 + Compose 成功后自动创建 pending 草稿（human-in-the-loop 确认后发布）。定时发布：立即上传到草稿箱，`ScheduledAt` 时间到自动确认发布（后台 goroutine 每分钟扫描）。失败处理：网络错误/平台 500 指数退避重试 3 次、认证过期自动 refresh、审核拒绝标记 rejected 不重试、频率限制按窗口延迟。断点续发：按磁盘产物判断从失败点继续。小红书无官方 API 采用半自动模式（系统备素材 + 跳转上传页）。回归测试全程 mock。
 - 2026-09-22（移除系列级目标平台 + 补预设，见 §18/§19）：用户指出新建系列表单里「目标平台（仅记录）」名不副实——该字段实际被 §19 用作发布默认目标，且 Web 集详情页发布面板本就能手选平台，故全链路删除：`domain.SeriesConfig.TargetPlatforms`、`app.CreateSeriesInput.TargetPlatforms`、`server.createSeriesReq.target_platforms`、CLI `series create --platforms` 与 `series show` 的目标平台行、Web `api.ts`/`types.ts` 字段与系列卡片「平台」行、`Engine.CreatePublishDrafts`（本就无调用点）与 `App.CreatePublishDrafts`、CLI `publish run --all` 及 `Engine.Publish` 的系列回退（现在必须显式 `--platform`）；Compose 成功后不再自动建草稿。同期 §18 预设由 4 个增至 7 个：`teen`（受众=青少年）、`first_person`（叙事=当事人自述）、`long_form`（长篇+弱运镜），纯注册表数据，`--preset` flag help 同步。`go build/vet/test` 与 `npm run build` 全绿（前端改动需 `make install` 后重启 serve 生效）。
 - 2026-09-23（成片 BGM 背景音乐轨，见 §20）：系列可配置一首背景音乐，`Compose` 时循环混入成片（音量可配、开头淡入、结尾淡出、总时长不变）。`SeriesConfig` 加 `BGMPath`/`BGMVolume`（**均 omitempty**，否则存量 config_json 与 final 派生键全变）；相对路径相对 `data/projects/<series-id>/`（过 `serveSeriesMedia` 白名单、Web 可试听），绝对路径也接受；音量 0..1、0/未设＝默认 0.18（归一化在 ffmpeg `bgmMixFilter`，engine/params 存原始值）。`finalParams` 加 `bgm`/`bgm_vol`（omitempty，`legacy.go` 同步）；engine `resolveBGMPath` 解析+校验，文件不存在报含绝对路径的清晰中文错误、不静默跳过；ffmpeg 侧 Stage 4 混音覆盖烧字幕与无字幕两条分支（`-stream_loop -1`、`amix duration=first normalize=0` 需 ffmpeg ≥4.4、视频 `-c:v copy`、临时文件再 move，BGM 为空行为逐字节不变）。配置入口四层同步：app `UpdateSeriesBGM` 补丁语义、server create/update 对称（越界 400）、CLI `--bgm`/`--bgm-volume`（set 按 `Changed` 提交）、Web types/api/SeriesDetailPage（编辑态两控件 + 只读态相对路径 `<audio controls>`）。回归测试全程 mock + 本机 ffmpeg 集成测试（`TestComposeWithBGMIntegration`），未真实调用 bl。
+- 2026-09-23（能力注册表与选择链路，见新增 §21）：新增零依赖泛型注册表 `internal/capability`（`Slot[T]`：`NewSlot/Register/SetDefault/Default/Keys/Has/Resolve/ReplaceAll` + 9 项能力目录与供应商静态表），把 engine 手写 map 与 `RegisterProvider(any)` 类型 switch（**首命中即返回，曾致 board/plan/tts/image/video 的 bailian 系列覆盖静默失效**）、app 手写 map 全部注册表化，统一「系列覆盖 → 系统默认」两级选择链与**显式未知报错**（错误含能力中文名与已登记项）；Plan 槽 override 取 `cfg.TextProvider`、`PreviewVoice` 走 `TTS.Resolve("")`。签名：`engine.New` 13 参**不变**（New 注册到 `capability.DefaultKey` 并设默认，Bootstrap 后 `ReplaceAll` 升级具名 key），`app.Bootstrap(ctx, cfg, configPath)` 增 configPath，`App.Cfg` 私有化 + `Config()` + `Reconfigure/SaveConfig/CapabilityInfo`，`config.Save` 原子写。修 `PUT /api/settings` 只改内存不落盘：副本打补丁 → `Reconfigure`（构建→整表换 9 槽→写 cfg，槽失败不写）→ `SaveConfig` 落盘（失败 `Reconfigure(old)` 回滚 + 500）；热更立即生效 engine 6 槽 + app 3 槽 + 生效配置，**需重启**：composer/ffmpeg/字幕字体、`tts_voice`/`tts_instruction`（engine 快照，热改不生效）、runner 并发重试默认、projectsDir。入口：CLI `series create/set` 四 provider flag（set 按 `Changed` 区分未提供/显式空串）、`series show` 打印四项、新命令 `story capabilities`；server `GET /api/capabilities`；Web `labels.ts` 改 catalog 驱动（`providerOptions`/`providerLabel(value, options)`），SettingsPage/系列新建/系列详情四处取数改后端目录，保留 `ready_providers` 灰显与 bailian 恒可用；取舍：provider 展示名按能力拆分的「百炼 (CosyVoice)/(通义万相)/(Wanx Video)」收敛为每供应商一签「百炼 (bl)」，`VOICE_PROVIDER_LABELS` 不动；`cmd/story/root.go` 定位文案改通用 AI 视频流水线。回归测试全程 mock（capability race、engine 系列覆盖分流专项、app Reconfigure/发布/音色库槽、server 落盘热更 + capabilities 结构），`go build/vet/test` 与 `npm run build` 四项门禁全绿，未真实调用 bl。
+- 2026-09-23（三个新 AI 能力：图像理解/视频理解/音效生成，见新增 §22）：架构改造第二步——在 §21 注册表地基上为三个新能力落地「port 接口 + 槽位 + 默认/覆盖选择 + 使用入口」，能力目录 9→12。port：`ImageUnderstander`/`VideoUnderstander`（`DescribeImage/DescribeVideo → DescribeResult{Text}`）+ `SoundEffectGenerator`；bailian 一个 Client 实现前两个（`bl vision describe` 走 `run()` 纯文本、空结果报错、model 空省略、video 可单独调用、`--image` 可选，依据 `--help` 实测），**bl 无音效命令 → sfx 只立接口与空槽、不注册 provider**。config 加 `image_understand_provider`/`video_understand_provider`/`sfx_provider`/`vision_model`（图视频共用）/`sfx_model`（预留）+ 四个 env 覆盖。`engine.New` **13 参不变**（新槽 New 中建空槽、Bootstrap 登记），resolve helper 收 `override string`（无系列覆盖，SeriesField 空），使用入口 `DescribeImage/DescribeVideo/GenerateSoundEffect` 不挂集不落库**不进派生键（derive.go 一字未改）**；app 包装层注入 `cfg.VisionModel/SFXModel`。三端入口：CLI `story vision image|video`（`--prompt/--model/--provider`，video 另有 `--image`）、server `POST /api/vision/describe`（**本地路径限 data 目录内否则 403，防端点被借来读任意文件**；URL 放行；400/502 分支齐全）、Web 设置页 AI Tab 用新 `SYSTEM_PROVIDER_FIELDS`（7 项）+ 理解/音效模型输入 + **sfx 空实现灰色说明降级**（`PROVIDER_FIELDS` 保持 4 项、key 收窄 `SeriesProviderFieldKey`，系列表单不受污染）。断言更新（特性驱动，逐条说明见 §22.6）：`registry_test` 与 `server_test` 能力数 9→12；`server_test`「无 Providers 即 Fatalf」给 sfx 开例外（空 Providers+空 Default 合法）并断言其余能力非空；`registry_test` 新增「sfx 是唯一允许空 Providers 的能力」正向断言。新增测试：bailian 假 bl 脚本测参数拼装、engine 新槽三分支+sfx 空槽错误、app 12 项与模型注入、server 端点全分支、config env 覆盖（该目录原无测试）。四项门禁全绿，全程 mock 零真实 bl 调用。

@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
 import type { AppSettings } from '../types'
+import { SYSTEM_PROVIDER_FIELDS, providerOptions, type ProviderFieldKey } from '../labels'
 import { Card, ErrorBox } from '../components/ui'
 
 const TABS = [
@@ -98,7 +99,15 @@ function GeneralTab() {
 // 与「供应商配置」Tab 分离（2026-09-22）：
 //  本 Tab = 默认实现——每个能力选一个默认供应商 + 全局默认旁白兜底，只管「用谁」。
 //  凭据/模型在「供应商配置」Tab 填；未配置凭据的供应商在此不可选（禁用态）。
+//  可选供应商与文案来自能力目录（GET /api/capabilities），接入新供应商零前端改动。
 function AITab() {
+  const { data: caps } = useQuery({ queryKey: ['capabilities'], queryFn: api.getCapabilities })
+  const providerField = (key: ProviderFieldKey, label: string): FieldDef => ({
+    key,
+    label,
+    type: 'provider-select',
+    options: providerOptions(caps, key),
+  })
   return (
     <div className="space-y-4">
       <Card title="默认实现">
@@ -108,13 +117,22 @@ function AITab() {
           填写后即可选。
         </p>
         <SettingFields
-          fields={[
-            { key: 'text_provider', label: '文本生成', type: 'provider-select', options: ['bailian', 'deepseek'] },
-            { key: 'tts_provider', label: '语音合成', type: 'provider-select', options: ['bailian', 'minimax'] },
-            { key: 'image_provider', label: '图片生成', type: 'provider-select', options: ['bailian', 'zhipu'] },
-            { key: 'video_provider', label: '视频生成', type: 'provider-select', options: ['bailian', 'kling'] },
-          ]}
+          fields={SYSTEM_PROVIDER_FIELDS.map((f) => providerField(f.key, f.label))}
         />
+        <div className="mt-4 pt-4 border-t border-ink-800 space-y-3">
+          <div>
+            <div className="text-sm text-paper-100">视觉理解与音效</div>
+            <div className="text-[11px] text-paper-300/30 mt-0.5">
+              图像/视频理解共用一个模型（留空走 bl 默认 qwen3-vl-plus）；音效模型为预留字段
+            </div>
+          </div>
+          <SettingFields
+            fields={[
+              { key: 'vision_model', label: '理解模型', type: 'text', placeholder: '留空走 bl 默认 qwen3-vl-plus' },
+              { key: 'sfx_model', label: '音效模型', type: 'text', placeholder: '预留（接入音效供应商后生效）' },
+            ]}
+          />
+        </div>
         <div className="mt-4 pt-4 border-t border-ink-800 space-y-3">
           <div>
             <div className="text-sm text-paper-100">默认旁白</div>
@@ -249,7 +267,7 @@ type FieldDef = {
 } & (
   | { type: 'text' | 'password' | 'textarea'; options?: never; parse?: never; allowEmpty?: never }
   | { type: 'select'; options: string[]; parse?: (v: string) => any; allowEmpty?: boolean }
-  | { type: 'provider-select'; options: string[]; parse?: never; allowEmpty?: never }
+  | { type: 'provider-select'; options: { value: string; label: string; desc?: string }[]; parse?: never; allowEmpty?: never }
   | { type: 'voice-select'; options?: never; parse?: never; allowEmpty?: never }
 )
 
@@ -313,31 +331,40 @@ function SettingFields({ fields }: { fields: FieldDef[] }) {
       {fields.map((f) => {
         const val = (settings as any)[f.key] ?? ''
         if (f.type === 'provider-select') {
-          const providerDescs: Record<string, { label: string; desc: string }> = {
-            bailian: { label: '百炼 (bl)', desc: '阿里云百炼平台，CLI 驱动' },
-            deepseek: { label: 'DeepSeek', desc: 'DeepSeek API，HTTP 直连' },
-            minimax: { label: 'MiniMax', desc: 'MiniMax API，中文语音最自然' },
-            zhipu: { label: '智谱 CogView', desc: '智谱 API，中文 prompt 友好' },
-            kling: { label: '可灵 Kling', desc: '快手 API，中文视频最强' },
+          // 供应商展示名/说明来自能力目录（labels.providerOptions），此处不再硬编码。
+          const providerDescs = new Map(f.options.map((o) => [o.value, o]))
+          const labelOf = (v: string) => providerDescs.get(v)?.label ?? v
+          // §22 降级：能力目录里该能力尚无已登记实现（如音效生成）→
+          // 选项只剩「系统默认」，渲染灰色说明而非报错；空值提交合法（回系统默认）。
+          const noImpl = f.options.length <= 1
+          if (noImpl) {
+            return (
+              <div key={f.key} className="grid grid-cols-[140px_1fr] gap-3 items-start">
+                <label className="text-paper-300/70 pt-2">{f.label}</label>
+                <div className="pt-2 text-[11px] text-paper-300/40">
+                  暂未接入供应商，能力槽已预留；接入后此下拉自动出现可选项。
+                </div>
+              </div>
+            )
           }
           return (
             <div key={f.key} className="grid grid-cols-[140px_1fr] gap-3 items-start">
               <label className="text-paper-300/70 pt-2">{f.label}</label>
               <div>
                 <RadioGroup
-                  value={val || 'bailian'}
-                  options={(f.options || []).map((opt) => ({
-                    value: opt,
-                    label: providerDescs[opt]?.label ?? opt,
-                    desc: providerDescs[opt]?.desc,
+                  value={val}
+                  options={f.options.map((opt) => ({
+                    value: opt.value,
+                    label: opt.label,
+                    desc: opt.desc,
                     // 未配置凭据的供应商禁用，引导去「供应商配置」填写。
-                    disabled: readyProviders.length > 0 && !readySet.has(opt),
+                    disabled: readyProviders.length > 0 && opt.value !== '' && !readySet.has(opt.value),
                   }))}
                   onChange={(v) => mut.mutate({ [f.key]: v })}
                 />
                 {readyProviders.length > 0 && val && !readySet.has(val) && (
                   <div className="mt-1.5 text-[11px] text-amber-400/80">
-                    当前默认「{providerDescs[val]?.label ?? val}」尚未配置凭据，调用会失败；请到「供应商配置」补齐。
+                    当前默认「{labelOf(val)}」尚未配置凭据，调用会失败；请到「供应商配置」补齐。
                   </div>
                 )}
               </div>

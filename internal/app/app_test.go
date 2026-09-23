@@ -13,6 +13,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/sjzsdu/story/internal/capability"
+	"github.com/sjzsdu/story/internal/config"
 	"github.com/sjzsdu/story/internal/domain"
 	"github.com/sjzsdu/story/internal/engine"
 	"github.com/sjzsdu/story/internal/port"
@@ -45,9 +47,14 @@ func TestSlugify(t *testing.T) {
 // TestResolveVoiceBuilder 覆盖造声供应商分发：空值回退 bailian，显式未知供应商必须报错。
 func TestResolveVoiceBuilder(t *testing.T) {
 	bl := &mock.VoiceBuild{}
-	a := &App{voiceBuilders: map[string]port.VoiceBuilder{
-		domain.VoiceProviderBailian: bl,
-	}}
+	builders := capability.NewSlot[port.VoiceBuilder]("造声")
+	if err := builders.Register(domain.VoiceProviderBailian, bl); err != nil {
+		t.Fatal(err)
+	}
+	if err := builders.SetDefault(domain.VoiceProviderBailian); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{voiceBuilders: builders}
 
 	// 空值 → 默认 bailian。
 	p, b, err := a.resolveVoiceBuilder("")
@@ -82,9 +89,23 @@ func TestVoiceProviders(t *testing.T) {
 	}
 
 	lister := &mock.VoiceList{Voices: []domain.SystemVoice{{ID: "longtian_v3"}}}
+	listers := capability.NewSlot[port.VoiceLister]("音色库列举")
+	if err := listers.Register(domain.VoiceProviderBailian, lister); err != nil {
+		t.Fatal(err)
+	}
+	if err := listers.SetDefault(domain.VoiceProviderBailian); err != nil {
+		t.Fatal(err)
+	}
+	builders := capability.NewSlot[port.VoiceBuilder]("造声")
+	if err := builders.Register(domain.VoiceProviderBailian, &mock.VoiceBuild{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builders.SetDefault(domain.VoiceProviderBailian); err != nil {
+		t.Fatal(err)
+	}
 	a := &App{
-		voiceListers:  map[string]port.VoiceLister{domain.VoiceProviderBailian: lister},
-		voiceBuilders: map[string]port.VoiceBuilder{domain.VoiceProviderBailian: &mock.VoiceBuild{}},
+		voiceListers:  listers,
+		voiceBuilders: builders,
 	}
 
 	// 能力清单：bailian 既能造声也能列音色；minimax 暂无。
@@ -324,5 +345,160 @@ func TestSanitizeAudioExt(t *testing.T) {
 		if got := sanitizeAudioExt(in); got != want {
 			t.Errorf("sanitizeAudioExt(%q) = %q, 期望 %q", in, got, want)
 		}
+	}
+}
+
+// capabilityDefault 从能力快照里取某项的运行时默认 key（找不到即失败）。
+func capabilityDefault(t *testing.T, info capability.Info, key string) string {
+	t.Helper()
+	for _, c := range info.Capabilities {
+		if c.Key == key {
+			return c.Default
+		}
+	}
+	t.Fatalf("能力目录里没有 %q", key)
+	return ""
+}
+
+// TestReconfigureSwapsCapabilityDefaults 热更新（§21）：Reconfigure 必须真正
+// 换掉各能力槽的默认实现并同步生效配置，SaveConfig 把它落到 story.yaml。
+func TestReconfigureSwapsCapabilityDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DataDir = dir
+	cfgPath := filepath.Join(dir, "story.yaml")
+	a, err := Bootstrap(context.Background(), cfg, cfgPath)
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	// 初始：text 默认 bailian，语音合成默认 bailian。
+	if got := capabilityDefault(t, a.CapabilityInfo(), capability.Text); got != "bailian" {
+		t.Fatalf("text 初始默认 = %q，期望 bailian", got)
+	}
+	if got := capabilityDefault(t, a.CapabilityInfo(), capability.TTS); got != "bailian" {
+		t.Fatalf("tts 初始默认 = %q，期望 bailian", got)
+	}
+
+	// 切系统默认到 deepseek。
+	next := a.Config()
+	next.TextProvider = "deepseek"
+	if err := a.Reconfigure(next); err != nil {
+		t.Fatalf("Reconfigure: %v", err)
+	}
+	if got := capabilityDefault(t, a.CapabilityInfo(), capability.Text); got != "deepseek" {
+		t.Fatalf("Reconfigure 后 text 默认 = %q，期望 deepseek", got)
+	}
+	// 未改动的能力不受影响（整表换新但按各自配置求默认）。
+	if got := capabilityDefault(t, a.CapabilityInfo(), capability.TTS); got != "bailian" {
+		t.Fatalf("Reconfigure 后 tts 默认应保持 bailian，得到 %q", got)
+	}
+	if a.Config().TextProvider != "deepseek" {
+		t.Fatalf("生效配置未同步: TextProvider = %q", a.Config().TextProvider)
+	}
+
+	// 落盘：story.yaml 必须带上新默认，重启后能读回同一取值。
+	if err := a.SaveConfig(); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("读配置文件: %v", err)
+	}
+	if !strings.Contains(string(raw), "text_provider: deepseek") {
+		t.Fatalf("story.yaml 未落盘新默认:\n%s", raw)
+	}
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("重新加载配置: %v", err)
+	}
+	if loaded.TextProvider != "deepseek" {
+		t.Fatalf("重载后 text_provider = %q，期望 deepseek", loaded.TextProvider)
+	}
+}
+
+// TestPublishSlotSemantics 发布能力槽：Bootstrap 登记全部平台、无系统默认
+// （必须显式平台 key），Reconfigure 后整表换新仍完整。
+func TestPublishSlotSemantics(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DataDir = dir
+	a, err := Bootstrap(context.Background(), cfg, filepath.Join(dir, "story.yaml"))
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	want := map[domain.Platform]bool{
+		domain.PlatformDouyin:      false,
+		domain.PlatformKuaishou:    false,
+		domain.PlatformBilibili:    false,
+		domain.PlatformXiaohongshu: false,
+		domain.PlatformWeixin:      false,
+	}
+	pls := a.publishProviders()
+	if len(pls) != len(want) {
+		t.Fatalf("发布实现数 = %d，期望 %d", len(pls), len(want))
+	}
+	for p := range want {
+		if _, ok := pls[p]; !ok {
+			t.Fatalf("缺少平台 %q 的发布实现", p)
+		}
+	}
+
+	// 发布无系统默认：空 key 解析必须报错（不能把某个平台当默认去发）。
+	if _, _, err := a.publish.Resolve(""); err == nil {
+		t.Fatal("发布槽空 key 应报错（无系统默认）")
+	}
+	if _, _, err := a.publish.Resolve("douyin"); err != nil {
+		t.Fatalf("显式平台应可解析: %v", err)
+	}
+	if _, _, err := a.publish.Resolve("iflytek"); err == nil {
+		t.Fatal("未知平台应报错")
+	}
+
+	// Reconfigure 后整表换新仍为 5 个平台。
+	if err := a.Reconfigure(cfg); err != nil {
+		t.Fatalf("Reconfigure: %v", err)
+	}
+	if got := len(a.publishProviders()); got != len(want) {
+		t.Fatalf("Reconfigure 后发布实现数 = %d，期望 %d", got, len(want))
+	}
+	// 能力快照里 publish 的默认为空（前端不渲染「系统默认」项）。
+	if got := capabilityDefault(t, a.CapabilityInfo(), capability.Publish); got != "" {
+		t.Fatalf("publish 默认应为空，得到 %q", got)
+	}
+}
+
+// TestVoiceListerSlotSemantics 音色库列举槽：空 key 回默认 bailian、
+// 未知供应商显式报错（Resolve 语义），并核对能力清单只列已登记项。
+func TestVoiceListerSlotSemantics(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.DataDir = dir
+	a, err := Bootstrap(context.Background(), cfg, filepath.Join(dir, "story.yaml"))
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+
+	if k, _, err := a.voiceListers.Resolve(""); err != nil || k != "bailian" {
+		t.Fatalf("空 key应回 bailian，得到 (%q, %v)", k, err)
+	}
+	if _, _, err := a.voiceListers.Resolve("iflytek"); err == nil {
+		t.Fatal("未知供应商应报错")
+	}
+	var list *capability.CapabilityInfo
+	for _, c := range a.CapabilityInfo().Capabilities {
+		if c.Key == capability.VoiceList {
+			list = &c
+		}
+	}
+	if list == nil || len(list.Providers) != 1 || list.Providers[0].Key != "bailian" {
+		t.Fatalf("音色库列举能力清单异常: %+v", list)
+	}
+	if got := capabilityDefault(t, a.CapabilityInfo(), capability.VoiceBuild); got != "bailian" {
+		t.Fatalf("造声默认 = %q，期望 bailian", got)
 	}
 }
