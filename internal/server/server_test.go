@@ -983,3 +983,91 @@ func TestCapabilitiesEndpoint(t *testing.T) {
 		t.Fatalf("供应商全表缺少已知项: %+v", seen)
 	}
 }
+
+// TestUpdateSeriesModelPatch 覆盖系列级模型覆盖字段（§24 第二步）：
+// ① 创建时绝不回填系统默认模型值——四个 model 键不得出现在序列化配置里
+// （一旦回填，存量/新建 config_json 字节变化会让派生键全变、下游重复付费）；
+// ② PUT 补丁语义：只改提到的字段，未提到的保持不动；③ 显式空串＝清除该项。
+func TestUpdateSeriesModelPatch(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+
+	res, err := http.Post(ts.URL+"/api/series", "application/json", strings.NewReader(`{"name":"鬼谷子"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created domain.Series
+	json.NewDecoder(res.Body).Decode(&created)
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("创建系列状态码 = %d", res.StatusCode)
+	}
+
+	put := func(payload string) *http.Response {
+		req, err := http.NewRequest(http.MethodPut, ts.URL+"/api/series/"+created.ID, strings.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+
+	// ① 创建不回填：序列化配置里不得出现任何 model 键（config_json 同款 marshal）。
+	raw, err := json.Marshal(created.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"text_model", "tts_model", "image_model", "video_model"} {
+		if bytes.Contains(raw, []byte(`"`+key+`"`)) {
+			t.Fatalf("创建时不得回填模型默认值（会破坏派生键）: %s", raw)
+		}
+	}
+
+	// ② 补丁一：只设 text_model，其余三个保持空。
+	var onlyText domain.Series
+	r := put(`{"text_model":"deepseek-v3.2"}`)
+	json.NewDecoder(r.Body).Decode(&onlyText)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("PUT text_model 状态码 = %d", r.StatusCode)
+	}
+	if onlyText.Config.TextModel != "deepseek-v3.2" {
+		t.Fatalf("text_model 未生效: %+v", onlyText.Config)
+	}
+	if onlyText.Config.TTSModel != "" || onlyText.Config.ImageModel != "" || onlyText.Config.VideoModel != "" {
+		t.Fatalf("未提到的模型字段不应被改动: %+v", onlyText.Config)
+	}
+
+	// ② 补丁二：再设 tts/image，text_model 保持不动。
+	var more domain.Series
+	r = put(`{"tts_model":"speech-02-hd","image_model":"cogview-4"}`)
+	json.NewDecoder(r.Body).Decode(&more)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("PUT 两模型状态码 = %d", r.StatusCode)
+	}
+	if more.Config.TextModel != "deepseek-v3.2" || more.Config.TTSModel != "speech-02-hd" || more.Config.ImageModel != "cogview-4" {
+		t.Fatalf("补丁语义被破坏: %+v", more.Config)
+	}
+	if more.Config.VideoModel != "" {
+		t.Fatalf("video_model 未提及不应被改动: %q", more.Config.VideoModel)
+	}
+
+	// ③ 显式空串＝清除，且不影响其他字段。
+	var cleared domain.Series
+	r = put(`{"text_model":""}`)
+	json.NewDecoder(r.Body).Decode(&cleared)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("清除 text_model 状态码 = %d", r.StatusCode)
+	}
+	if cleared.Config.TextModel != "" {
+		t.Fatalf("空串应清除 text_model: %q", cleared.Config.TextModel)
+	}
+	if cleared.Config.TTSModel != "speech-02-hd" {
+		t.Fatalf("清除 text_model 不应影响其他字段: %+v", cleared.Config)
+	}
+}

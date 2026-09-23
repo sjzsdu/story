@@ -90,6 +90,12 @@ func (s *Server) routes() {
 
 	// §22：图像/视频理解（本地路径限制在数据目录内，见 describeImageOrVideo 注释）。
 	s.mux.HandleFunc("POST /api/vision/describe", s.describeImageOrVideo)
+
+	// §23 素材/资产：曲库列表 / 上传 / 删除 / 试听（asset:<id> 引用经此回放）。
+	s.mux.HandleFunc("GET /api/assets", s.listAssets)
+	s.mux.HandleFunc("POST /api/assets", s.uploadAsset)
+	s.mux.HandleFunc("DELETE /api/assets/{id}", s.deleteAsset)
+	s.mux.HandleFunc("GET /api/assets/{id}/file", s.serveAssetFile)
 }
 
 // Handler 返回带 SPA 回退的总 handler。
@@ -207,8 +213,13 @@ type createSeriesReq struct {
 	TTSProvider   string `json:"tts_provider"`
 	ImageProvider string `json:"image_provider"`
 	VideoProvider string `json:"video_provider"`
-	// ---- 成片 BGM 背景音乐（§20）----
-	// BGMPath 曲目路径：相对路径相对系列目录 data/projects/<series-id>/；空＝无 BGM。
+	// ---- 系列级模型覆盖（空＝跟随系统默认；绝不回填系统默认值） ----
+	TextModel  string `json:"text_model"`
+	TTSModel   string `json:"tts_model"`
+	ImageModel string `json:"image_model"`
+	VideoModel string `json:"video_model"`
+	// ---- 成片 BGM 背景音乐（§20 + §23）----
+	// BGMPath 曲目：素材引用 "asset:<id>"（推荐，§23）或字面路径（相对路径相对系列目录）；空＝无 BGM。
 	BGMPath string `json:"bgm_path"`
 	// BGMVolume 0..1 音量；0＝未设置（用默认 0.18）。
 	BGMVolume float64 `json:"bgm_volume"`
@@ -258,10 +269,19 @@ func (s *Server) createSeries(w http.ResponseWriter, r *http.Request) {
 		TTSProvider:    req.TTSProvider,
 		ImageProvider:  req.ImageProvider,
 		VideoProvider:  req.VideoProvider,
+		TextModel:      req.TextModel,
+		TTSModel:       req.TTSModel,
+		ImageModel:     req.ImageModel,
+		VideoModel:     req.VideoModel,
 		BGMPath:        req.BGMPath,
 		BGMVolume:      req.BGMVolume,
 	})
 	if err != nil {
+		// §23：asset 引用指向不存在的素材＝客户端输入问题，400 而非 500。
+		if errors.Is(err, app.ErrAssetRefInvalid) {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -25,6 +25,8 @@ type Repo struct {
 	// §19 发布任务与平台账号
 	PublishJobs      map[string]*domain.PublishJob
 	PlatformAccounts map[string]*domain.PlatformAccount
+	// §23 素材/资产
+	Assets map[string]*domain.Asset
 }
 
 // NewRepo 创建空内存仓储。
@@ -36,6 +38,7 @@ func NewRepo() *Repo {
 		Voices:           map[string]*domain.Voice{},
 		PublishJobs:      map[string]*domain.PublishJob{},
 		PlatformAccounts: map[string]*domain.PlatformAccount{},
+		Assets:           map[string]*domain.Asset{},
 	}
 }
 
@@ -270,6 +273,145 @@ func (r *Repo) CountSeriesByVoiceID(_ context.Context, voiceID string) (int, err
 	return n, nil
 }
 
+// ---- 素材/资产（§23 mock） ----
+
+func (r *Repo) CreateAsset(_ context.Context, a *domain.Asset) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.Assets[a.ID]; ok {
+		return fmt.Errorf("素材已存在: %s", a.ID)
+	}
+	r.Assets[a.ID] = a
+	return nil
+}
+
+func (r *Repo) GetAsset(_ context.Context, id string) (*domain.Asset, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	a, ok := r.Assets[id]
+	if !ok {
+		return nil, fmt.Errorf("%w: 素材 %s", port.ErrNotFound, id)
+	}
+	return a, nil
+}
+
+func (r *Repo) ListAssets(_ context.Context, kind string) ([]*domain.Asset, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*domain.Asset, 0, len(r.Assets))
+	for _, a := range r.Assets {
+		if kind == "" || a.Kind == kind {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
+func (r *Repo) UpdateAsset(_ context.Context, a *domain.Asset) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.Assets[a.ID]; !ok {
+		return fmt.Errorf("%w: 素材 %s", port.ErrNotFound, a.ID)
+	}
+	r.Assets[a.ID] = a
+	return nil
+}
+
+func (r *Repo) DeleteAsset(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	a, ok := r.Assets[id]
+	if !ok {
+		return fmt.Errorf("%w: 素材 %s", port.ErrNotFound, id)
+	}
+	count := r.countAssetRefsLocked(a)
+	if count > 0 {
+		// 与 sqlite 同款按 kind 区分文案（app/server 断言引用数）。
+		if a.Kind == domain.AssetKindImageRef {
+			return fmt.Errorf("%w: %s 被引用 %d 处（系列人物设定 / 集视觉参考），请先解除引用",
+				port.ErrAssetInUse, id, count)
+		}
+		return fmt.Errorf("%w: %s 被 %d 个系列引用", port.ErrAssetInUse, id, count)
+	}
+	delete(r.Assets, id)
+	return nil
+}
+
+func (r *Repo) CountAssetRefs(_ context.Context, kind, value string) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	switch kind {
+	case domain.AssetKindBGM:
+		for _, s := range r.Series {
+			if s.Config.BGMPath == value {
+				n++
+			}
+		}
+	case domain.AssetKindImageRef:
+		// 行级计数，与 sqlite 的 json_extract 精确匹配语义一致：
+		// 系列人物设定 + 集视觉参考里 ref_image == value 的行数。
+		for _, s := range r.Series {
+			if charsRefValue(s.Characters, value) {
+				n++
+			}
+		}
+		for _, e := range r.Episodes {
+			if refsRefValue(e.Refs, value) {
+				n++
+			}
+		}
+	}
+	return n, nil
+}
+
+// charsRefValue 判断系列人物设定中是否有条目的 RefImage 命中引用串。
+func charsRefValue(chars []domain.CharacterSetting, value string) bool {
+	for _, c := range chars {
+		if c.RefImage == value {
+			return true
+		}
+	}
+	return false
+}
+
+// refsRefValue 判断集级视觉参考中是否有条目的 RefImage 命中引用串。
+func refsRefValue(refs []domain.VisualRef, value string) bool {
+	for _, rf := range refs {
+		if rf.RefImage == value {
+			return true
+		}
+	}
+	return false
+}
+
+// countAssetRefsLocked 按素材类型统计引用（调用方须已持锁）。
+// 与 CountAssetRefs 同源（拒删路径复用）。
+func (r *Repo) countAssetRefsLocked(a *domain.Asset) int {
+	n := 0
+	ref := domain.AssetRef(a.ID)
+	switch a.Kind {
+	case domain.AssetKindBGM:
+		for _, s := range r.Series {
+			if s.Config.BGMPath == ref {
+				n++
+			}
+		}
+	case domain.AssetKindImageRef:
+		for _, s := range r.Series {
+			if charsRefValue(s.Characters, ref) {
+				n++
+			}
+		}
+		for _, e := range r.Episodes {
+			if refsRefValue(e.Refs, ref) {
+				n++
+			}
+		}
+	}
+	return n
+}
+
 // SeriesPlanner 分集策划 mock。
 type SeriesPlanner struct {
 	Result port.SeriesPlanResult
@@ -471,12 +613,15 @@ func (m *VideoGen) CallsCount() int {
 type SpeechGen struct {
 	mu    sync.Mutex
 	Calls int
+	// Requests 记录每次合成请求（供断言 TTS 模型三级优先级确实透传）。
+	Requests []port.SpeechRequest
 }
 
 // Synthesize 实现 port.SpeechSynthesizer。
 func (m *SpeechGen) Synthesize(_ context.Context, req port.SpeechRequest) (port.SpeechResult, error) {
 	m.mu.Lock()
 	m.Calls++
+	m.Requests = append(m.Requests, req)
 	m.mu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(req.OutPath), 0o755); err != nil {
 		return port.SpeechResult{}, err

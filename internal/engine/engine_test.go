@@ -817,6 +817,72 @@ func TestComposeBGMFileMissingErrors(t *testing.T) {
 	}
 }
 
+// TestComposeResolvesBGMAssetRef 验证 §23 素材收编：SeriesConfig.BGMPath 为
+// "asset:<id>" 引用时，Compose 查 assets 表把落盘绝对路径透传给 composer；
+// 素材记录悬空 / 文件丢失都必须报含「重新上传」的修复文案且不调 composer。
+func TestComposeResolvesBGMAssetRef(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	produceToMedia(t, f)
+
+	// ① 引用有效：素材文件存在 → 落盘绝对路径原样透传（派生键仍存 asset: 原始值，见 derive.go）。
+	assetPath := filepath.Join(t.TempDir(), "theme.mp3")
+	if err := os.WriteFile(assetPath, []byte("fake-mp3"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const aid = "bgm-asset-ok"
+	if err := f.repo.CreateAsset(ctx, &domain.Asset{
+		ID: aid, Kind: domain.AssetKindBGM, Name: "主题曲", Path: assetPath, Origin: "upload",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setSeriesConfig(t, f, func(c *domain.SeriesConfig) { c.BGMPath = domain.AssetRef(aid) })
+	if _, err := f.eng.Compose(ctx, f.epID, DeriveOptions{}); err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	got := f.composr.ComposeRequests[len(f.composr.ComposeRequests)-1]
+	if got.BGMPath != assetPath {
+		t.Fatalf("asset 引用应解析为素材落盘路径: got %q, want %q", got.BGMPath, assetPath)
+	}
+
+	// ② 引用悬空（assets 表查不到）→ 清晰报错 + 不调 composer。
+	before := f.composr.ComposeCalls
+	setSeriesConfig(t, f, func(c *domain.SeriesConfig) { c.BGMPath = domain.AssetRef("bgm-deleted") })
+	_, err := f.eng.Compose(ctx, f.epID, DeriveOptions{})
+	if err == nil {
+		t.Fatal("素材记录不存在时 Compose 必须报错")
+	}
+	for _, want := range []string{"背景音乐素材不存在", "bgm-deleted", "重新上传", "改选其他曲目"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误信息应含 %q: %v", want, err)
+		}
+	}
+	if f.composr.ComposeCalls != before {
+		t.Fatalf("素材悬空时不应调用 composer: %d → %d", before, f.composr.ComposeCalls)
+	}
+
+	// ③ 记录在、文件丢 → 报素材 ID/名称 + 修复文案，不调 composer。
+	lost := filepath.Join(t.TempDir(), "gone.mp3")
+	if err := f.repo.CreateAsset(ctx, &domain.Asset{
+		ID: "bgm-lost", Kind: domain.AssetKindBGM, Name: "丢失曲", Path: lost, Origin: "upload",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setSeriesConfig(t, f, func(c *domain.SeriesConfig) { c.BGMPath = domain.AssetRef("bgm-lost") })
+	_, err = f.eng.Compose(ctx, f.epID, DeriveOptions{})
+	if err == nil {
+		t.Fatal("素材文件丢失时 Compose 必须报错")
+	}
+	for _, want := range []string{"背景音乐素材文件不存在", "bgm-lost", "丢失曲", "重新上传"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误信息应含 %q: %v", want, err)
+		}
+	}
+	if f.composr.ComposeCalls != before {
+		t.Fatalf("素材文件丢失时不应调用 composer: %d → %d", before, f.composr.ComposeCalls)
+	}
+}
+
 func sampleCandidates() []domain.StoryCandidate {
 	// 新流程每次只生成一篇定稿故事（单元素切片）。
 	return []domain.StoryCandidate{

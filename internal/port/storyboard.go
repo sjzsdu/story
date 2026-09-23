@@ -22,6 +22,8 @@ type StoryboardRequest struct {
 	// Brief 创作要求（templates.BoardBrief 组装：讲述口吻/受众/镜头数/用户自定义指令）。
 	// 空串＝全部默认，provider 不得因此改变 prompt（默认产出与历史行为逐字一致）。
 	Brief string
+	// Model 模型覆盖（系列级 text_model，分镜与故事共用文本模型）：空＝系统默认。
+	Model string
 }
 
 // StoryboardPlanner 将完整故事拆为可生产的分镜脚本。

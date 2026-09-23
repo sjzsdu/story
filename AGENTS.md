@@ -792,6 +792,113 @@ type SoundEffectGenerator interface {
 - `internal/config/config_test.go`（新建，该目录原无测试）：四个新 env 覆盖生效、空 env 不覆盖、未设置保持原值。
 - mock 补 `Visioner`（两接口共用）与 `SfxGen`。
 
+## 23. 素材/资产 Asset：统一资源管理第一步（2026-09-23 增补）
+
+> 统一资源管理规划的第 (c) 步落地：新建第二类资源「素材/资产 Asset」，并把 §20 的 `SeriesConfig.BGMPath` 收编为 `asset:<id>` 引用。第 (a) 步（`Voice` 已在 §16 完成）、第 (b) 步（`PlatformAccount` 已在 §19 完成）此前落地；第 (d) 步（ImageGenerateRequest 收编 ImageGenerator/Keyframe/SceneRef 三处同构输入）在本节一并顺带完成。**本轮不碰 `characters_json`/`refs_json`，不给 port 请求结构加 `Model` 字段**（见 §24）。
+
+### 23.1 数据模型与持久化
+
+- `domain.Asset{ID,Kind,Name,Path,Description,DurationSec,Params,Origin,CreatedAt,UpdatedAt}`（`internal/domain/asset.go`）：`Kind` 取 `bgm` / `image_ref`（**本轮只实现 bgm**，image_ref 为第二步预留，见 §24——**已接通**）；`Params` 存 JSON 字符串（如响度/调性等元数据，本轮留空）；`Origin` 取 `upload` / `import` / `generate`（generate 供第二步 AI 生成素材用）。`NormalizeAssetKind` 空/未知返回**空串**（由调用方报错，不静默归一）。
+- 持久化：SQLite 表 `assets`（`internal/store/sqlite/assets.go` + schema `ensureColumn` 幂等建表），经 `port.Repository` 访问；engine 不知道 SQLite 的存在（§3）。
+- 库目录：`config.AssetsDir()` = `data/assets/<kind>/`（`config.AssetDir(kind)` 为单个素材落盘根）；**素材文件与 `data/` 一样不入库**。
+- **Asset 不进 `internal/capability` 注册表**——capability 只登记「AI 能力实现」，素材是数据实体。
+
+### 23.2 Repository 六件套（`internal/port/repository.go`）
+
+```go
+CreateAsset(ctx, *domain.Asset) error
+GetAsset(ctx, id string) (*domain.Asset, error)
+ListAssets(ctx, kind string) ([]*domain.Asset, error)   // kind 空串＝全部（SQL: WHERE ? = '' OR kind = ?）
+UpdateAsset(ctx, *domain.Asset) error
+DeleteAsset(ctx, id string) error                        // 引用中 → ErrAssetInUse
+CountAssetRefs(ctx, kind, value string) (int, error)
+```
+
+- 引用计数：`CountAssetRefs` 对 `kind='bgm'` 精确匹配 `json_extract(config_json,'$.bgm_path') = value`，`value` 是完整 `"asset:<id>"` 串（不做 LIKE 子串匹配，避免误伤）；`image_ref` 当时恒 0 留给第二步——**【§24 修订】已接通行级计数（characters_json/refs_json），见 §24.1**。mock（`testutil/mock`）与 sqlite 两套实现行为一致。
+- 删除两态验证（`app.DeleteAsset`）：**①引用中** → `repo.DeleteAsset` 返回 `port.ErrAssetInUse`（`%w: %s 被 %d 个系列引用`）→ 直接上抛，**素材文件不动**（引用方还能用）；**②引用已解除** → 落库删除 + `os.Remove` 物理文件（`errors.Is(err, fs.ErrNotExist)` 忽略）。
+- 库目录白名单：`app.DeleteAsset` 先校验 `Asset.Path` 必须在 `data/assets/<kind>/` 内，**库外路径一律拒绝删除**（「拒绝删除：…请人工确认后处理」），防止误删用户任意文件。
+
+### 23.3 `asset:` 引用解析（engine，`derive.go` 一字未改）
+
+- `finalParams{BGM, BGMVolume}` 继续存 `series.Config.BGMPath` 的**原始值**——现在该值就是 `asset:<id>` 串本身，`internal/engine/derive.go` **零改动**（已 `git diff` 验证为空）。
+  > **【§24 修订】**：第一步结束时 `derive.go` 确为 0 行；第二步（§24.2）按 §18 omitempty 模式为 `storyParams`/`storyboardParams`/`mediaParams` 新增了 4 个 model 覆盖字段——**BGM/finalParams 相关仍零改动**，存量派生键字节不变有 `engine/model_test.go` 的 legacy 逐字节比对为证。
+- `resolveBGMPath(ctx, series)`（未导出，唯一调用点 `Compose`）三分支，**`asset:` 分支排第一顺位**：
+  1. 空值 → 返回空串（无 BGM，逐字节兼容 §20 历史行为）；
+  2. `asset:` 前缀 → `repo.GetAsset` → `filepath.Abs(Path)` → `os.Stat` + `fi.IsDir()` 校验；
+     - 素材行不存在：`背景音乐素材不存在: %s（系列 %s 的 bgm_path=%q）；请在素材库重新上传该曲目，或在系列设置里改选其他曲目后重试`
+     - 文件丢失：`背景音乐素材文件不存在: %s（素材 %s「%s」，系列 %s 引用 %q）；…请在素材库重新上传该曲目…`
+  3. 非 `asset:` 前缀 → 既有相对/绝对分支原样保留（相对路径按 `data/projects/<series-id>/` 解析，错误文案与 §20 逐字一致）。
+- 悬空引用（素材行不存在 / 文件丢失）在 **Compose 期**直接报错并中止，**不静默降级为无 BGM**——避免成片悄悄少一条音轨。
+
+### 23.4 三处设值校验（写入口对称）
+
+`asset:<id>` 引用在写入时即校验存在性（哨兵 `app.ErrAssetRefInvalid = errors.New("素材引用无效")`，`validateAssetRef` 双 `%w` 包装为 `fmt.Errorf("%w: %q %w", …)` 同时可 `errors.Is` 到 `ErrAssetRefInvalid` 与 `ErrAssetNotFound`）：
+
+1. `App.CreateSeries`（空值放行，仅校验非空 `asset:` 引用）；
+2. `App.UpdateSeriesBGM`（`path != nil` 才校验——补丁语义，未提到的字段不校验）；
+3. `App.UpdateSeries`（**本轮补挂**：Web `PUT /api/series/{id}` 与 CLI `series set` 走整对象写回，若不挂则 Web 可写入悬空引用且无即时反馈，与 CreateSeries 不对称）。
+
+server 侧：`createSeries` 与 `updateSeries` 对 `ErrAssetRefInvalid` 返回 **400**（列出「请先在素材库上传」）；其余 `ErrAssetNotFound`/`ErrAssetInUse` 仍 500（create/update 的 bgm_path 分支无法可预期地产生这两类错）。
+
+### 23.5 四条链路与安全校验点
+
+| 链路 | 入口 | 安全校验点 |
+| --- | --- | --- |
+| 上传 | `POST /api/assets`（multipart 字段 `file`，**50MB 上限 `maxAssetBytes`**，app 与 server 各一份常量）、CLI `story asset add`、app `UploadAsset` | 文件名经 `sanitizeAudioExt`（**先 `filepath.Base` 再只放行字母数字、长度 ≤5**，绝不拿上传文件名拼路径）→ 落 `data/assets/<kind>/<nanos>.<ext>` → `filepath.Abs` 后**再验一次在库目录内**（双保险）→ 可选 `assetProber`（`composer.ProbeDuration`，nil/失败一律 DurationSec=0 容错）→ 未知 kind 报「未知素材类型」 |
+| 导入 | `POST /api/assets/import`（body `{path,kind,…}`，服务器本地路径）、CLI `story asset add --from`、app `ImportAsset` | 源路径必须**已存在且是普通文件** → 复制进库目录（copy 后再 Abs 复验在库内）→ 源文件不动；拒绝把库目录外的路径直接登记成素材 Path |
+| 试听 | `GET /api/assets/{id}/file` | `repo.GetAsset` → `filepath.Abs` → **`filepath.Rel` 白名单**（越出 `data/assets/` 即 **403**，防路径穿越）→ `Accept-Ranges: bytes` + `http.ServeFile`（原生 Range，音频可拖进度）→ 素材不存在 404 |
+| 删除 | `DELETE /api/assets/{id}`、CLI `story asset rm`、app `DeleteAsset` | 库目录白名单（库外拒绝）→ `repo.DeleteAsset` **引用中拒删（server 映射 409，文案含「素材被 N 个系列引用」，与 §16 `ErrVoiceInUse` 同款）**、文件保留 → 引用解除后删除行 + `os.Remove` 物理文件 |
+
+- CLI 与 `series create/set` 的 `--bgm`（字面路径）/`--bgm-asset`（`asset:<id>` 或裸素材 ID）**互斥**（`bgmFlagsConflict`）；`--bgm-asset` 提交前把裸 ID 规范化为 `asset:<id>`，与 `currentBGMPathValue`（未指定时读现有值，保持补丁语义）配合。
+- 素材四命令：`story asset list [--kind]` / `add --kind --name [--from 本地路径] [--desc]` / `show <id>` / `rm <id>`。
+
+### 23.6 server 端点（`internal/server/assets.go`，注册于 `routes()`）
+
+`GET /api/assets?kind=`（kind 空＝全部，未知 kind 400）、`POST /api/assets`（201 + Asset）、`POST /api/assets/import`（201）、`DELETE /api/assets/{id}`（204；引用中 409、不存在 404、库外拒绝 500）、`GET /api/assets/{id}/file`（200/403/404）。
+
+### 23.7 Web（`web/src`）
+
+- `types.ts` 新增 `Asset` 接口；`bgm_path` 注释更新为「`asset:<id>` 引用或字面相对路径」。
+- `api.ts` 新增 `listAssets/uploadAsset/deleteAsset/assetFileUrl`（上传用 multipart，**必须 `headers: {}` 覆盖默认 JSON Content-Type**，否则 boundary 丢失——与 §16 `uploadVoiceSample` 同款陷阱）。
+- `SeriesDetailPage.tsx` 顶部常量 `ASSET_REF_PREFIX = 'asset:'` + 助手 `assetIdOf`/`isCustomBGM`；BGM 编辑控件改造为：**曲库下拉**（`kind=bgm` 列表，选项值 `asset:<id>`；含「手动填写路径…」`__custom__` 模式切换回字面路径输入）+ **上传按钮**（hidden `<input type=file>` 直传）+ **选中即地试听**（`assetFileUrl` 内嵌 `<audio controls>`）+ **曲库列表**（每项试听 + 删除按钮，**409 文案原样进 err 展示**）；只读态 `bgmLabel` 解析素材名、`asset:` 引用走 `assetFileUrl` 试听、字面相对路径保留 `seriesMediaUrl`。
+
+### 23.8 门禁与铁律核验（2026-09-23）
+
+- `GOTOOLCHAIN=local go build ./...`、`go test ./...`、`go vet ./...`、`cd web && npm run build` **四项全绿**。
+- `git diff internal/engine/derive.go` = **0 行**；`engine/creative_test.go`、`server/server_test.go` diff = **0 行**；`engine/engine_test.go` 仅新增测试。
+- 既有断言零改动；新增测试：`TestComposeResolvesBGMAssetRef`（engine）、`TestUploadAssetLandsInLibrary`/`TestImportAssetCopiesIntoLibrary`/`TestDeleteAssetTwoStates`/`TestUpdateSeriesBGMValidatesAssetRef`（app）、`TestAssetEndpoints`（server）、`assets_test.go`（store）。全程 mock/临时库，未真实调用 `bl`（§10）。
+- `store/sqlite/assets_test.go` 的 sqlite 删除两态与 `mock.GetSeries` 的行为差异提示：**mock 的 `GetSeries` 返回共享指针**（sqlite 返回副本），测试断言「校验失败不落库」前须值拷贝再改。
+
+## 24. 统一资源管理第二步：视觉参考收编 + 模型名系列覆盖（2026-09-23 立项并落地）
+
+> 原为 §23 的预留清单，本轮在 §23 的 Asset 地基上全部完成（动手前先读 §23 与 §15/§16/§18）。
+
+### 24.1 视觉参考收编为 `image_ref` 素材
+
+- **双语义（零迁移）**：`ref_image`/`RefImage` 值 = 字面路径（存量数据，原样工作）或 `asset:<id>`（新生成的自动登记）；`domain.IsAssetRef`/`AssetIDFromRef` 判别。§15 `mergeVisualRefs`（两级合并、集级覆盖系列级）与 `preserveRefImages`（重跑分镜延续已付费图）**核心语义未动**——二者只操作值字符串，对两种值一视同仁。
+- **生成链路自动登记（库的填充方式，方案 A）**：`characters.go` 系列定妆照 / `visualrefs.go` 集级参考图落盘 → **复制一份进 `data/assets/image_ref/`** → `CreateAsset`（`Kind=image_ref`、`Origin=generate`、`Name`=人名/场景名）→ 引用改写 `asset:<id>`；**原位文件 `refs/` 照旧保留**（§15 目录约定与既有渲染依赖）。统一 helper `Engine.adoptImageRefAsset`：force 重生成凭 `prevRef` 复用同一素材行保持 id 稳定；幂等跳过路径仅当引用为空时回填（已是 `asset:` 的引用必须原样保住，否则素材行变孤儿）。**登记失败不阻断生成链路**——回退写字面路径，产物保留。
+- **解引用**：`refImagesForScene` 遇 `asset:` → `repo.GetAsset` → 文件绝对路径；素材行/文件悬空报清晰中文错误、**不静默跳过**（静默会让 video 模式悄悄退化成无参考图）。
+- **引用计数**：`CountAssetRefs("image_ref", value)` 行级计数——`series.characters_json` 与 `episodes.refs_json` 各自 `json_each` 展开取 `$.ref_image` 精确 `= value`（`json_valid` 守卫坏 JSON；行内多处引用同素材计 1，拒删语义只需知道「有没有人在用」）；拒删文案按 kind 区分（image_ref：`被引用 N 处（系列人物设定 / 集视觉参考），请先解除引用`）。两态测试 `TestCountAssetRefsImageRefTwoStates`（sqlite）+ server 409 复用既有 `ErrAssetInUse` 映射。
+- **上传图片**：`sanitizeAudioExt` 白名单（先 `filepath.Base` 再只放行字母数字、长度 ≤5）天然放行 jpg/png/webp，无音频专用校验需放开；`POST /api/assets` 传 `kind=image_ref` 即可。
+- **Web 渲染兼容**：集页本集视觉参考卡片与系列页人物卡片遇 `asset:` 值改走 `GET /api/assets/{id}/file` 缩略图（`assetFileUrl`）。**「从库选择」从简（取舍）**：Web 不加下拉选择器——库靠生成链路自动登记 + 既有上传端点填充；跨系列复用的选择入口留待后续（CLI/server 写值串天然可用）。
+
+### 24.2 模型名系列覆盖
+
+- **`domain.SeriesConfig` 四字段** `TextModel`/`TTSModel`/`ImageModel`/`VideoModel`（json tag 全 `omitempty`）。**铁律：创建/更新绝不回填系统默认模型值**——空串＝跟随系统；一旦回填，存量/新建 `config_json` 字节变化 → 派生键全变 → 下游重复付费（§17/§18 灾难场景）。测试守住（`TestUpdateSeriesModelPatch` 断言创建后序列化配置不含四个 model 键）。
+- **优先级（§16 模型一致性铁律）**：TTS = `voice.Model` 非空**必用不可被覆盖**（造声音色必须用其驱动模型）→ 系列 `TTSModel` → 空（provider 构造期全局默认）；文本/图片/视频 = `req.Model` 非空覆盖 → 构造期默认。`resolveVoice` 用 `firstNonEmpty(v.Model, cfg.TTSModel)` 落实。
+- **per-request 透传**：port `StoryRequest`/`StoryboardRequest`/`ClipRequest`/`ImageGenerateRequest` 加 `Model`（**策划 `SeriesPlanRequest` 不加**——不进版本树、无系列消费场景，控制范围）；engine 调用点（GenerateStory/PlanStoryboard/produceComic 图与 video 片段/characters/visualrefs）从 `series.Config` 取覆盖值，空不填；provider 侧 bailian（story/storyboard/image/video generate+ref、speech，`appendModel(firstNonEmpty(req.Model, c.XModel))`）、deepseek（`chat(req.Model,…)`）、kling（`ModelName`）、zhipu（`imgReq.Model`）、minimax（`ttsReq.Model`）——**非空才覆盖、空省略**。
+- **进派生键（本轮唯一获准动 `derive.go`）**：`storyParams.Model`、`storyboardParams.Model`、`mediaParams.ImgModel/VIDModel/TTSModel`（json tag `model`/`image_model`/`video_model`/`tts_model`，全 `omitempty`）；`finalParams` 不加。**存系列原始覆盖值、不存解析后生效值**——改全局默认模型不得让存量系列派生键失效；换模型后需「换一版」(reroll) 才产生新节点，与 provider 覆盖同语义。`derivationSchemaVersion` **不递增**（omitempty 已保证存量键字节不变）。`legacy.go` 同步填写。
+- **三端入口**：CLI `series create/set` 四 flag（set 按 `cmd.Flags().Changed` 区分「未提供＝保持」与「显式空串＝清除」）+ `printModels`（空＝跟随系统）；server `createSeriesReq`/`updateSeriesReq` 四字段（补丁语义）；Web 系列设置编辑态四个文本输入框（placeholder「留空跟随系统默认」）+ 只读态显示；**新建系列表单不加**（默认跟随系统，保持表单精简——取舍）。
+
+### 24.3 回归测试（成本红线内全程 mock/假脚本/临时库）
+
+- `internal/engine/model_test.go`：以 legacy 结构体（无新字段）**逐字节比对**四个 params 零值 + 正向含字段用例 + `derivationSchemaVersion==1` 断言 + `resolveVoice` 优先级 + 系列覆盖透传到 provider 槽。
+- `internal/provider/bailian/model_test.go`（假 bl 脚本回显参数）：story/storyboard/image/video（generate 与 ref 双路径）/speech 的请求级覆盖、空回落系统默认、双空省略。
+- `internal/provider/{deepseek,zhipu,kling,minimax}/model_test.go`（httptest 捕获 body）：各自 `model`/`model_name` 字段随请求变化、空则回落构造期默认。
+- `internal/store/sqlite/assets_test.go`：`image_ref` 两态（characters+refs_json 行级计数、拒删文案、解除后可删）。
+- `internal/server/server_test.go` `TestUpdateSeriesModelPatch`：创建不回填 + PUT 补丁语义 + 空串清除。
+- 既有断言零改动（§23 与历史条目的断言全部原样通过）。
+
 ## 变更记录
 
 - 2026-09-18：初始决策（Go + cobra + SQLite；接口驱动；系列/集模型；并发上限 3、重试 3；百炼为首家 provider；ffmpeg 合成与硬字幕；默认 9:16）。
@@ -822,3 +929,5 @@ type SoundEffectGenerator interface {
 - 2026-09-23（成片 BGM 背景音乐轨，见 §20）：系列可配置一首背景音乐，`Compose` 时循环混入成片（音量可配、开头淡入、结尾淡出、总时长不变）。`SeriesConfig` 加 `BGMPath`/`BGMVolume`（**均 omitempty**，否则存量 config_json 与 final 派生键全变）；相对路径相对 `data/projects/<series-id>/`（过 `serveSeriesMedia` 白名单、Web 可试听），绝对路径也接受；音量 0..1、0/未设＝默认 0.18（归一化在 ffmpeg `bgmMixFilter`，engine/params 存原始值）。`finalParams` 加 `bgm`/`bgm_vol`（omitempty，`legacy.go` 同步）；engine `resolveBGMPath` 解析+校验，文件不存在报含绝对路径的清晰中文错误、不静默跳过；ffmpeg 侧 Stage 4 混音覆盖烧字幕与无字幕两条分支（`-stream_loop -1`、`amix duration=first normalize=0` 需 ffmpeg ≥4.4、视频 `-c:v copy`、临时文件再 move，BGM 为空行为逐字节不变）。配置入口四层同步：app `UpdateSeriesBGM` 补丁语义、server create/update 对称（越界 400）、CLI `--bgm`/`--bgm-volume`（set 按 `Changed` 提交）、Web types/api/SeriesDetailPage（编辑态两控件 + 只读态相对路径 `<audio controls>`）。回归测试全程 mock + 本机 ffmpeg 集成测试（`TestComposeWithBGMIntegration`），未真实调用 bl。
 - 2026-09-23（能力注册表与选择链路，见新增 §21）：新增零依赖泛型注册表 `internal/capability`（`Slot[T]`：`NewSlot/Register/SetDefault/Default/Keys/Has/Resolve/ReplaceAll` + 9 项能力目录与供应商静态表），把 engine 手写 map 与 `RegisterProvider(any)` 类型 switch（**首命中即返回，曾致 board/plan/tts/image/video 的 bailian 系列覆盖静默失效**）、app 手写 map 全部注册表化，统一「系列覆盖 → 系统默认」两级选择链与**显式未知报错**（错误含能力中文名与已登记项）；Plan 槽 override 取 `cfg.TextProvider`、`PreviewVoice` 走 `TTS.Resolve("")`。签名：`engine.New` 13 参**不变**（New 注册到 `capability.DefaultKey` 并设默认，Bootstrap 后 `ReplaceAll` 升级具名 key），`app.Bootstrap(ctx, cfg, configPath)` 增 configPath，`App.Cfg` 私有化 + `Config()` + `Reconfigure/SaveConfig/CapabilityInfo`，`config.Save` 原子写。修 `PUT /api/settings` 只改内存不落盘：副本打补丁 → `Reconfigure`（构建→整表换 9 槽→写 cfg，槽失败不写）→ `SaveConfig` 落盘（失败 `Reconfigure(old)` 回滚 + 500）；热更立即生效 engine 6 槽 + app 3 槽 + 生效配置，**需重启**：composer/ffmpeg/字幕字体、`tts_voice`/`tts_instruction`（engine 快照，热改不生效）、runner 并发重试默认、projectsDir。入口：CLI `series create/set` 四 provider flag（set 按 `Changed` 区分未提供/显式空串）、`series show` 打印四项、新命令 `story capabilities`；server `GET /api/capabilities`；Web `labels.ts` 改 catalog 驱动（`providerOptions`/`providerLabel(value, options)`），SettingsPage/系列新建/系列详情四处取数改后端目录，保留 `ready_providers` 灰显与 bailian 恒可用；取舍：provider 展示名按能力拆分的「百炼 (CosyVoice)/(通义万相)/(Wanx Video)」收敛为每供应商一签「百炼 (bl)」，`VOICE_PROVIDER_LABELS` 不动；`cmd/story/root.go` 定位文案改通用 AI 视频流水线。回归测试全程 mock（capability race、engine 系列覆盖分流专项、app Reconfigure/发布/音色库槽、server 落盘热更 + capabilities 结构），`go build/vet/test` 与 `npm run build` 四项门禁全绿，未真实调用 bl。
 - 2026-09-23（三个新 AI 能力：图像理解/视频理解/音效生成，见新增 §22）：架构改造第二步——在 §21 注册表地基上为三个新能力落地「port 接口 + 槽位 + 默认/覆盖选择 + 使用入口」，能力目录 9→12。port：`ImageUnderstander`/`VideoUnderstander`（`DescribeImage/DescribeVideo → DescribeResult{Text}`）+ `SoundEffectGenerator`；bailian 一个 Client 实现前两个（`bl vision describe` 走 `run()` 纯文本、空结果报错、model 空省略、video 可单独调用、`--image` 可选，依据 `--help` 实测），**bl 无音效命令 → sfx 只立接口与空槽、不注册 provider**。config 加 `image_understand_provider`/`video_understand_provider`/`sfx_provider`/`vision_model`（图视频共用）/`sfx_model`（预留）+ 四个 env 覆盖。`engine.New` **13 参不变**（新槽 New 中建空槽、Bootstrap 登记），resolve helper 收 `override string`（无系列覆盖，SeriesField 空），使用入口 `DescribeImage/DescribeVideo/GenerateSoundEffect` 不挂集不落库**不进派生键（derive.go 一字未改）**；app 包装层注入 `cfg.VisionModel/SFXModel`。三端入口：CLI `story vision image|video`（`--prompt/--model/--provider`，video 另有 `--image`）、server `POST /api/vision/describe`（**本地路径限 data 目录内否则 403，防端点被借来读任意文件**；URL 放行；400/502 分支齐全）、Web 设置页 AI Tab 用新 `SYSTEM_PROVIDER_FIELDS`（7 项）+ 理解/音效模型输入 + **sfx 空实现灰色说明降级**（`PROVIDER_FIELDS` 保持 4 项、key 收窄 `SeriesProviderFieldKey`，系列表单不受污染）。断言更新（特性驱动，逐条说明见 §22.6）：`registry_test` 与 `server_test` 能力数 9→12；`server_test`「无 Providers 即 Fatalf」给 sfx 开例外（空 Providers+空 Default 合法）并断言其余能力非空；`registry_test` 新增「sfx 是唯一允许空 Providers 的能力」正向断言。新增测试：bailian 假 bl 脚本测参数拼装、engine 新槽三分支+sfx 空槽错误、app 12 项与模型注入、server 端点全分支、config env 覆盖（该目录原无测试）。四项门禁全绿，全程 mock 零真实 bl 调用。
+- 2026-09-23（素材/资产 Asset：统一资源管理第一步，见新增 §23）：新建第二类顶层资源 `domain.Asset`（ID/Kind/Name/Path/Description/DurationSec/Params/Origin，kind `bgm`/`image_ref` 本轮只实现 bgm），照 §16 Voice 样板落地：SQLite `assets` 表 + `port.Repository` 六件套（`CreateAsset/GetAsset/ListAssets(kind 空=全部)/UpdateAsset/DeleteAsset/CountAssetRefs`）+ mock 同步实现 + `port.ErrAssetInUse`（引用中拒删，server 映射 409「素材被 N 个系列引用」）；库目录 `data/assets/<kind>/`（`config.AssetsDir/AssetDir`）。§20 `SeriesConfig.BGMPath` 收编为 `asset:<id>` 引用：engine `resolveBGMPath` 新增第一顺位 `asset:` 分支（`repo.GetAsset`→Abs→Stat 校验，悬空引用/文件丢失在 Compose 期报错中止、不静默降级），**`internal/engine/derive.go` 一字未改**（finalParams 仍存原始 `bgm_path` 串，`git diff` 为 0 行），既有相对/绝对分支与错误文案逐字保留。写入口三处对称校验（`CreateSeries`/`UpdateSeriesBGM`/`App.UpdateSeries` 本轮补挂）经 `validateAssetRef` 包装哨兵 `app.ErrAssetRefInvalid`，server create/update 对其返回 400。四链路：上传（multipart `file` 50MB 上限、`sanitizeAudioExt` 防路径穿越、落盘后 Abs 双保险复验、可选 `assetProber` 探时长容错 0）、导入（源文件必须存在且为普通文件、复制进库、源不动）、试听（`GET /api/assets/{id}/file`，`filepath.Rel` 白名单越界 403、`Accept-Ranges`+`ServeFile` 原生 Range）、删除（库外路径拒绝删除 → 引用中拒删文件保留 → 解除后删行+`os.Remove`）。CLI 新增 `story asset list|add|show|rm` 与 `series create/set --bgm-asset`（与 `--bgm` 互斥，裸 ID 规范化为 `asset:<id>`）；server 四端点 `internal/server/assets.go`；Web `types.ts`/`api.ts`（multipart 须 `headers:{}` 覆盖 JSON Content-Type）与 `SeriesDetailPage` BGM 控件改造为曲库下拉（含「手动填写路径…」）+ 上传 + 即地试听 + 曲库列表删除（409 文案原样展示），只读态 `bgmLabel` 双路试听。顺带完成第 (d) 步：`port.ImageGenerateRequest` 收编 `ImageGenerator/Keyframe/SceneRef` 三处同构输入。**本轮不碰 `characters_json`/`refs_json`、不给 port 请求结构加 `Model` 字段**（见 §24；该预留已在第二步完成）。新增测试 `TestComposeResolvesBGMAssetRef`、`internal/app/asset_test.go` 四例、`internal/server/assets_test.go` 一例；`derive.go`/`creative_test.go`/`server_test.go` 零改动，既有断言零改动。四项门禁全绿，全程 mock/临时库，未真实调用 `bl`（§10）。
+- 2026-09-23（统一资源管理第二步：视觉参考收编 `image_ref` + 模型名系列覆盖，见 §24）：在 §23 Asset 地基上完成预留清单两项。**视觉参考双语义（零迁移）**：`ref_image` 值＝字面路径（存量原样工作）或 `asset:<id>`（新生成自动登记），`domain.IsAssetRef`/`AssetIDFromRef` 判别；§15 `mergeVisualRefs`/`preserveRefImages` 只操作值字符串、核心语义未动，已付费图片不丢关联。生成链路统一经 `Engine.adoptImageRefAsset` 复制进 `data/assets/image_ref/` 并登记（`Origin=generate`，force 重生成凭 prevRef 复用素材行保 id 稳定，登记失败回退字面路径不阻断），原位 `refs/` 文件保留；`refImagesForScene` 解引用遇悬空报清晰错误不静默跳过；`CountAssetRefs("image_ref")` 行级计数接通（characters_json + refs_json 各自 json_each 精确匹配、json_valid 守卫），拒删文案按 kind 区分，`sanitizeAudioExt` 白名单天然放行 jpg/png/webp，Web 集页/系列页人物卡片遇 `asset:` 走 `assetFileUrl` 缩略图，「从库选择」从简（不加下拉，靠自动登记+上传填充）。**模型名系列覆盖**：`SeriesConfig` 四字段 `TextModel/TTSModel/ImageModel/VideoModel`（全 omitempty，**创建/更新绝不回填系统默认值**——回填会致 config_json 字节变化→派生键全变→重复付费）；port `StoryRequest/StoryboardRequest/ClipRequest/ImageGenerateRequest` 加 `Model`（策划 `SeriesPlanRequest` 不加）；TTS 优先级 `voice.Model` 必用（§16）→ 系列 `TTSModel` → 构造期默认；provider 侧 bailian/deepseek/kling/zhipu/minimax 全部实现「非空才覆盖、空省略」；**`derive.go` 本轮唯一获准改动**＝`storyParams.Model`/`storyboardParams.Model`/`mediaParams.ImgModel/VIDModel/TTSModel` 五个 omitempty 字段（存系列原始覆盖值不存生效值、`finalParams` 不加、`derivationSchemaVersion` 不递增），legacy.go 同步。三端入口：CLI create/set 四 flag（set 按 Changed 区分保持/清除）、server create/put 四字段补丁语义、Web 系列设置四输入框（新建表单不加）。回归测试：`engine/model_test.go` legacy 逐字节比对+优先级、bailian 假 bl 脚本、deepseek/zhipu/kling/minimax httptest 捕获 body、sqlite `TestCountAssetRefsImageRefTwoStates` 两态、server `TestUpdateSeriesModelPatch`（创建不回填+补丁+空串清除）。四项门禁全绿，全程 mock/假脚本/临时库，未真实调用 `bl`（§10）。

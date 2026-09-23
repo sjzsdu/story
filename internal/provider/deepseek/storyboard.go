@@ -40,7 +40,7 @@ func (c *Client) PlanStoryboard(ctx context.Context, req port.StoryboardRequest)
 		req.EpisodeRefs,
 	)
 
-	raw, err := c.chat(ctx, systemPrompt, userPrompt, 0.7, 16384)
+	raw, err := c.chat(ctx, req.Model, systemPrompt, userPrompt, 0.7, 16384)
 	if err != nil {
 		return nil, err
 	}

@@ -74,9 +74,13 @@ type chatResponse struct {
 }
 
 // chat 发起一次 chat completion 请求，返回模型输出文本。
-func (c *Client) chat(ctx context.Context, systemPrompt, userPrompt string, temperature float64, maxTokens int) (string, error) {
+// model 为请求级覆盖（系列级模型覆盖），空则回落到客户端系统默认模型。
+func (c *Client) chat(ctx context.Context, model, systemPrompt, userPrompt string, temperature float64, maxTokens int) (string, error) {
+	if model == "" {
+		model = c.Model
+	}
 	reqBody := chatRequest{
-		Model: c.Model,
+		Model: model,
 		Messages: []chatMessage{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},

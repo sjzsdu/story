@@ -21,6 +21,8 @@ type ClipRequest struct {
 	RefImages []string
 	// Watermark 是否保留 AI 生成水印（合规要求，默认 true）。
 	Watermark bool
+	// Model 模型覆盖（系列级 video_model）：空＝用 provider 构造期的系统默认模型。
+	Model string
 }
 
 // ClipResult 片段生成结果。

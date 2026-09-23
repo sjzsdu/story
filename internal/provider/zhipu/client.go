@@ -82,6 +82,10 @@ func (c *Client) GenerateImage(ctx context.Context, req port.ImageRequest) (port
 		N:              1,
 		ResponseFormat: "url",
 	}
+	// 系列级模型覆盖优先（req.Model），否则用系统默认图片模型。
+	if req.Model != "" {
+		imgReq.Model = req.Model
+	}
 
 	body, err := json.Marshal(imgReq)
 	if err != nil {

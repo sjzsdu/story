@@ -10,6 +10,10 @@ import (
 // ErrNotFound 持久化层「记录不存在」的统一哨兵（各 store 实现的同名错误应等价于它）。
 var ErrNotFound = errors.New("记录不存在")
 
+// ErrAssetInUse 素材删除被拒：仍被系列引用（§23 统一资源管理 · 素材引用计数）。
+// store 层用 %w 包装并附「N 个系列引用」细节，server 用 errors.Is 映射 409。
+var ErrAssetInUse = errors.New("素材被系列引用")
+
 // Repository 持久化端口。engine 只面向本接口，不感知 SQLite。
 type Repository interface {
 	// 系列
@@ -59,6 +63,18 @@ type Repository interface {
 	DeletePublishJob(ctx context.Context, id string) error
 	// ListPendingScheduledPublishJobs 返回已上传且到达定时时间的发布任务（定时发布调度用）。
 	ListPendingScheduledPublishJobs(ctx context.Context) ([]*domain.PublishJob, error)
+
+	// 素材/资产（§23 统一资源管理；kind 见 domain.NormalizeAssetKind）。
+	CreateAsset(ctx context.Context, a *domain.Asset) error
+	GetAsset(ctx context.Context, id string) (*domain.Asset, error)
+	// ListAssets kind 为空列出全部，非空按类型过滤。
+	ListAssets(ctx context.Context, kind string) ([]*domain.Asset, error)
+	UpdateAsset(ctx context.Context, a *domain.Asset) error
+	// DeleteAsset 引用计数 >0 时拒绝并返回 %w 包装的 ErrAssetInUse。
+	DeleteAsset(ctx context.Context, id string) error
+	// CountAssetRefs 统计被引用次数：value 是配置里的完整引用串（如 "asset:<id>"）。
+	// bgm 统计 series.config_json 的 $.bgm_path 精确匹配；image_ref 等后续类型由第二步扩展。
+	CountAssetRefs(ctx context.Context, kind, value string) (int, error)
 
 	// 平台账号（§19）。
 	CreatePlatformAccount(ctx context.Context, a *domain.PlatformAccount) error

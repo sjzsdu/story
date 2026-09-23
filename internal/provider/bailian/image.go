@@ -34,7 +34,8 @@ func (c *Client) GenerateImage(ctx context.Context, req port.ImageRequest) (port
 	if req.NegativePrompt != "" {
 		args = append(args, "--negative-prompt", req.NegativePrompt)
 	}
-	args = appendModel(args, c.ImageModel)
+	// 系列级模型覆盖优先（req.Model），否则用系统默认图片模型。
+	args = appendModel(args, firstNonEmptyStr(req.Model, c.ImageModel))
 
 	if _, err := c.run(ctx, args...); err != nil {
 		return port.ImageResult{}, err

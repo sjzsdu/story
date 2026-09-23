@@ -29,7 +29,8 @@ func (c *Client) GenerateClip(ctx context.Context, req port.ClipRequest) (port.C
 		"--watermark", "true",
 		"--timeout", intArg(videoTimeoutSec),
 	}
-	args = appendModel(args, c.VideoModel)
+	// 系列级模型覆盖优先（req.Model），否则用系统默认视频模型。
+	args = appendModel(args, firstNonEmptyStr(req.Model, c.VideoModel))
 
 	if req.ImagePath != "" {
 		args = append(args, "--image", req.ImagePath)
@@ -77,6 +78,9 @@ func (c *Client) generateClipRef(ctx context.Context, req port.ClipRequest) (por
 	if !req.Watermark {
 		args = append(args, "--watermark", "false")
 	}
+	// ref 路径此前不传 --model，导致系列/系统视频模型覆盖对参考图生视频不生效；
+	// 与 generate 路径统一：req.Model 优先，否则用系统默认视频模型。
+	args = appendModel(args, firstNonEmptyStr(req.Model, c.VideoModel))
 	if _, err := c.run(ctx, args...); err != nil {
 		return port.ClipResult{}, err
 	}

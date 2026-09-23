@@ -148,6 +148,10 @@ func (c *Client) GenerateClip(ctx context.Context, req port.ClipRequest) (port.C
 		Duration:    duration,
 		AspectRatio: req.Ratio,
 	}
+	// 系列级模型覆盖优先（req.Model），否则用系统默认视频模型。
+	if req.Model != "" {
+		v2Req.ModelName = req.Model
+	}
 	if req.ImagePath != "" {
 		v2Req.ReferenceImage = &refImage{ImageURL: req.ImagePath}
 	}

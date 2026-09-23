@@ -50,6 +50,30 @@ export const PROVIDER_FIELDS: { key: SeriesProviderFieldKey; label: string }[] =
   { key: 'video_provider', label: '视频生成' },
 ]
 
+// ---- 模型字段（§24 第二步：系列级模型覆盖）----
+//
+// 与 PROVIDER_FIELDS 一一对应（同四能力）：值为模型名字符串，空＝跟随系统默认模型。
+// 与 Provider 不同，模型名没有能力目录可驱动（模型随供应商走），故这里保留显式标签；
+// 键集合必须与后端 SeriesConfig 的 model 字段严格一致。
+export type SeriesModelFieldKey =
+  | 'text_model'
+  | 'tts_model'
+  | 'image_model'
+  | 'video_model'
+
+export const MODEL_FIELDS: { key: SeriesModelFieldKey; label: string }[] = [
+  { key: 'text_model', label: '文本模型' },
+  { key: 'tts_model', label: '旁白模型' },
+  { key: 'image_model', label: '图片模型' },
+  { key: 'video_model', label: '视频模型' },
+]
+
+// modelLabel 渲染模型覆盖取值：空＝「跟随系统默认」，非空原样显示（含历史值）。
+export function modelLabel(v: string | undefined): string {
+  const s = (v ?? '').trim()
+  return s || '跟随系统默认'
+}
+
 // SYSTEM_PROVIDER_FIELDS 系统默认（story.yaml 级）能力字段：PROVIDER_FIELDS 的
 // 四项 + §22 三个新能力（图像理解 / 视频理解 / 音效生成）。
 // 新能力**没有系列级覆盖**（后端 SeriesField 为空），故它们只出现在设置页，

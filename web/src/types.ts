@@ -75,8 +75,14 @@ export interface SeriesConfig {
   tts_provider?: string
   image_provider?: string
   video_provider?: string
+  // 系列级模型覆盖（§24 第二步）：空＝跟随系统默认模型，创建/更新绝不回填系统默认值。
+  text_model?: string
+  tts_model?: string
+  image_model?: string
+  video_model?: string
   creative?: CreativeStyle // 创作控制参数（全部 omitempty，未设置即不出现）
   // §20 成片 BGM：path 相对 data/projects/<series-id>/（绝对路径也接受）；volume 0..1，0/缺省＝0.18。
+  // §23：path 可为素材引用 "asset:<id>"（曲库条目），此时试听走 /api/assets/{id}/file。
   bgm_path?: string
   bgm_volume?: number
 }
@@ -140,6 +146,21 @@ export interface Voice {
   pitch?: number
   style_note?: string
   is_builtin: boolean
+  created_at: string
+  updated_at: string
+}
+
+// §23：素材/资产顶层实体（BGM 曲库等，与 Voice 同级）。
+// series.config.bgm_path 为 "asset:<id>" 引用时指向本表；文件经 /api/assets/{id}/file 试听。
+export interface Asset {
+  id: string
+  kind: string // bgm（当前唯一实现）| image_ref（第二步）
+  name: string
+  path: string // 服务器落盘绝对路径
+  description?: string
+  duration_sec?: number
+  params?: string
+  origin?: string // upload（Web 上传）| import（CLI 导入）
   created_at: string
   updated_at: string
 }

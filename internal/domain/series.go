@@ -61,6 +61,20 @@ type SeriesConfig struct {
 	// VideoProvider 视频生成供应商覆盖（bailian / kling）。
 	VideoProvider string `json:"video_provider,omitempty"`
 
+	// ---- 系列级模型覆盖（第二步统一资源管理；空＝跟随系统默认，见 app.resolveProviders） ----
+	// 四个字段与上方四个 Provider 字段同构：Provider 决定用哪家供应商，
+	// Model 决定用该供应商的哪个模型；都为空时用 config 里的系统默认。
+	// 必须 omitempty——创建/更新绝不回填系统默认值，否则存量系列 config_json
+	// 字节变化、派生键全变（§17/§18 派生键铁律）。
+	// TextModel 文本模型覆盖（故事 / 分镜 / 策划共用文本 provider 的模型）。
+	TextModel string `json:"text_model,omitempty"`
+	// TTSModel 旁白模型覆盖。优先级：voice.Model 非空必用 → 本字段 → 空（provider 默认）。
+	TTSModel string `json:"tts_model,omitempty"`
+	// ImageModel 图片模型覆盖（插画 / 定妆照 / 视觉参考图）。
+	ImageModel string `json:"image_model,omitempty"`
+	// VideoModel 视频模型覆盖（AI 视频片段）。
+	VideoModel string `json:"video_model,omitempty"`
+
 	// ---- 成片 BGM 背景音乐（§20）----
 	// BGMPath 背景音乐曲目路径；空＝无 BGM。
 	// 约定：相对路径相对系列目录 data/projects/<series-id>/（能过 serveSeriesMedia

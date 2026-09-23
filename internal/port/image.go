@@ -12,6 +12,8 @@ type ImageRequest struct {
 	NegativePrompt string
 	// Size 尺寸，比例（3:4 / 1:1 / 16:9）或像素（W*H）。空用默认。
 	Size string
+	// Model 模型覆盖（系列级 image_model）：空＝用 provider 构造期的系统默认模型。
+	Model string
 }
 
 // ImageResult 图片生成结果。

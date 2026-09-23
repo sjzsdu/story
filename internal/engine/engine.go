@@ -207,6 +207,9 @@ func (e *Engine) GenerateStory(ctx context.Context, episodeID string, opts Deriv
 		Dynasty:  series.Config.Dynasty,
 		Brief:    storyBrief,
 		Note:     note,
+		// 系列级文本模型覆盖：进派生键（换模型＝换版本，避免新旧模型产物混用）；
+		// 未覆盖（空串）omitempty 不入字节，存量派生键逐字不变。
+		Model: series.Config.TextModel,
 	}
 	node := ensureNode(ep, domain.StageStory, nil, params, opts.Reroll)
 	node.Note = note
@@ -232,6 +235,7 @@ func (e *Engine) GenerateStory(ctx context.Context, episodeID string, opts Deriv
 		Dynasty:    series.Config.Dynasty,
 		Topic:      ep.Topic,
 		Brief:      storyBrief,
+		Model:      series.Config.TextModel, // 空＝provider 构造期系统默认
 	})
 	if err != nil {
 		return nil, e.failNode(ctx, ep, node, err)
@@ -285,6 +289,8 @@ func (e *Engine) PlanStoryboard(ctx context.Context, episodeID string, opts Deri
 		RefsDigest: refsDigest(visualRefs),
 		Brief:      boardBrief,
 		Note:       note,
+		// 分镜与故事共用文本模型覆盖；同上，omitempty 保证未覆盖时派生键不变。
+		Model: series.Config.TextModel,
 	}
 	node := ensureNode(ep, domain.StageStoryboard, parent, params, opts.Reroll)
 	node.Note = note
@@ -314,6 +320,7 @@ func (e *Engine) PlanStoryboard(ctx context.Context, episodeID string, opts Deri
 		Characters:  characterLines(series.Characters),
 		EpisodeRefs: visualRefLines(ep.Refs),
 		Brief:       boardBrief,
+		Model:       series.Config.TextModel, // 分镜与故事共用文本模型覆盖
 	})
 	if err != nil {
 		return nil, e.failNode(ctx, ep, node, err)
@@ -427,6 +434,11 @@ func (e *Engine) Produce(ctx context.Context, episodeID string, opts DeriveOptio
 		Motion: series.Config.Creative.Motion,
 		// 本版附加要求（换一版画面时用户填的迭代方向）：进派生键并追加到每镜画面描述。
 		Note: note,
+		// 三个系列级模型覆盖原始值：进派生键（换模型＝换版本，防止新旧模型产物混用）；
+		// 未覆盖（空串）omitempty 不入字节，存量派生键逐字不变。
+		ImgModel: series.Config.ImageModel,
+		VIDModel: series.Config.VideoModel,
+		TTSModel: series.Config.TTSModel,
 	}
 	node := ensureNode(ep, domain.StageMedia, parent, params, opts.Reroll)
 	node.Note = note
@@ -645,6 +657,7 @@ func (e *Engine) produceClip(ctx context.Context, series *domain.Series, mode st
 				OutPath: m.PanelPath,
 				Prompt:  withNote(buildImagePrompt(sc, style), note),
 				Size:    panelImageSize(series.Config.Ratio),
+				Model:   series.Config.ImageModel, // 空＝provider 系统默认
 			}); err != nil {
 				return domain.MediaResult{}, fmt.Errorf("插画生成: %w", err)
 			}
@@ -666,7 +679,16 @@ func (e *Engine) produceClip(ctx context.Context, series *domain.Series, mode st
 		prompt := withNote(buildVideoPrompt(sc, style), note)
 		refImgs := refImagesForScene(sc.VisualPrompt, visualRefs)
 		if len(refImgs) > 0 {
-			prompt = refPromptPrefix(visualRefs, refImgs) + prompt
+			// §23 第二步：参考图可存 "asset:<id>" 引用，先解引用成素材库绝对路径
+			//（悬空引用直接报错，绝不静默跳过——否则形象一致性会悄悄失效）。
+			// 只解析本次匹配到的项；字面路径原样透传。
+			resolved, err := e.resolveRefImages(ctx, refImgs)
+			if err != nil {
+				return domain.MediaResult{}, err
+			}
+			// prompt 前缀按解析后的路径在视觉参考里反查条目（asset: 与字面都能命中）。
+			prompt = refPromptPrefix(replaceRefImages(visualRefs, refImgs, resolved), resolved) + prompt
+			refImgs = resolved
 		}
 		vid, err := e.resolveVideo(series.Config)
 		if err != nil {
@@ -680,6 +702,7 @@ func (e *Engine) produceClip(ctx context.Context, series *domain.Series, mode st
 			Ratio:       series.Config.Ratio,
 			Resolution:  series.Config.Resolution,
 			Watermark:   true,
+			Model:       series.Config.VideoModel, // 空＝provider 系统默认
 		}); err != nil {
 			return domain.MediaResult{}, fmt.Errorf("视频生成: %w", err)
 		}
@@ -744,7 +767,7 @@ func (e *Engine) Compose(ctx context.Context, episodeID string, opts DeriveOptio
 
 	// §20 成片 BGM：先解析路径（相对路径 → 系列目录下的绝对路径）。
 	// 配置了却找不到文件时直接报错，不静默跳过——否则用户会以为 BGM 生效了。
-	bgmPath, err := e.resolveBGMPath(series)
+	bgmPath, err := e.resolveBGMPath(ctx, series) // §23：asset:<id> 引用在此解析
 	if err != nil {
 		return "", err
 	}
@@ -830,14 +853,39 @@ func (e *Engine) Compose(ctx context.Context, episodeID string, opts DeriveOptio
 	return res.FinalPath, nil
 }
 
-// resolveBGMPath 解析系列配置的 BGM 曲目路径为绝对路径（§20）。
-// 约定：相对路径相对系列目录 data/projects/<series-id>/（这样能过 serveSeriesMedia
-// 白名单、Web 可试听）；绝对路径原样使用。空值＝无 BGM，返回空串。
+// resolveBGMPath 解析系列配置的 BGM 曲目路径为绝对路径（§20 + §23 素材收编）。
+// 约定：
+//   - 空值＝无 BGM，返回空串；
+//   - "asset:<id>"（§23 曲库素材引用）→ 查 assets 表取落盘路径，文件必须真实存在；
+//   - 相对路径相对系列目录 data/projects/<series-id>/（这样能过 serveSeriesMedia
+//     白名单、Web 可试听）；绝对路径原样使用。
+//
 // 配置了但文件不存在时返回清晰错误（绝不静默跳过）。
-func (e *Engine) resolveBGMPath(series *domain.Series) (string, error) {
+// 注：素材引用要查 repo，故签名带 ctx（唯一调用点 Compose）。
+func (e *Engine) resolveBGMPath(ctx context.Context, series *domain.Series) (string, error) {
 	raw := strings.TrimSpace(series.Config.BGMPath)
 	if raw == "" {
 		return "", nil
+	}
+	// §23 素材引用第一顺位：asset:<id> → assets 表。
+	if domain.IsAssetRef(raw) {
+		aid := domain.AssetIDFromRef(raw)
+		asset, err := e.repo.GetAsset(ctx, aid)
+		if err != nil {
+			return "", fmt.Errorf(
+				"背景音乐素材不存在: %s（系列 %s 的 bgm_path=%q）；"+
+					"请在素材库重新上传该曲目，或在系列设置里改选其他曲目后重试",
+				raw, series.ID, raw)
+		}
+		p := filepath.Clean(asset.Path)
+		fi, err := os.Stat(p)
+		if err != nil || fi.IsDir() {
+			return "", fmt.Errorf(
+				"背景音乐素材文件不存在: %s（素材 %s「%s」，系列 %s 引用 %q）；"+
+					"请在素材库重新上传该曲目，或在系列设置里改选其他曲目后重试",
+				p, asset.ID, asset.Name, series.ID, raw)
+		}
+		return p, nil
 	}
 	abs := raw
 	if !filepath.IsAbs(abs) {

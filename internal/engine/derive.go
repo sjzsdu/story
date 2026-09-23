@@ -48,6 +48,9 @@ type storyParams struct {
 	Brief string `json:"brief,omitempty"`
 	// Note 本版附加要求（换一版时用户填的迭代方向）；同上，必须 omitempty。
 	Note string `json:"note,omitempty"`
+	// Model 系列级文本模型覆盖（text_model）原始值；同上，必须 omitempty：
+	// 未覆盖时（空串）json.Marshal 字节必须与加字段前完全一致，否则存量派生键全变。
+	Model string `json:"model,omitempty"`
 }
 
 type storyboardParams struct {
@@ -61,6 +64,8 @@ type storyboardParams struct {
 	Brief string `json:"brief,omitempty"`
 	// Note 本版附加要求（换一版时用户填的迭代方向）；同上，必须 omitempty。
 	Note string `json:"note,omitempty"`
+	// Model 系列级文本模型覆盖（text_model，分镜与故事共用）；同上，必须 omitempty。
+	Model string `json:"model,omitempty"`
 }
 
 type mediaParams struct {
@@ -75,6 +80,11 @@ type mediaParams struct {
 	Motion string `json:"motion,omitempty"`
 	// Note 本版附加要求（换一版画面时用户填的迭代方向，追加到每镜画面描述）；同上。
 	Note string `json:"note,omitempty"`
+	// ImgModel/VIDModel/TTSModel 系列级模型覆盖原始值（image_model / video_model / tts_model）；
+	// 同上，必须 omitempty：未覆盖时字节与加字段前完全一致，否则存量派生键全变。
+	ImgModel string `json:"image_model,omitempty"`
+	VIDModel string `json:"video_model,omitempty"`
+	TTSModel string `json:"tts_model,omitempty"`
 }
 
 type finalParams struct {

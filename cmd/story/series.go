@@ -31,14 +31,21 @@ var (
 	seriesPreset     string
 	seriesStoryInstr string
 	seriesVideoStyle string
-	// 成片 BGM（§20）：--bgm 路径（相对系列目录），--bgm-volume 音量（0＝未设置）。
+	// 成片 BGM（§20 + §23）：--bgm 路径（相对系列目录），--bgm-asset 曲库素材 ID，
+	// 两者互斥；--bgm-volume 音量（0＝未设置）。
 	seriesBGM       string
+	seriesBGMAsset  string
 	seriesBGMVolume float64
 	// 系列级 Provider 覆盖（§21）：空＝跟随系统默认；四个能力各自独立。
 	seriesTextProvider  string
 	seriesTTSProvider   string
 	seriesImageProvider string
 	seriesVideoProvider string
+	// 系列级模型覆盖（第二步统一资源管理）：空＝跟随系统默认。
+	seriesTextModel  string
+	seriesTTSModel   string
+	seriesImageModel string
+	seriesVideoModel string
 )
 
 var seriesCmd = &cobra.Command{
@@ -61,6 +68,15 @@ var seriesCreateCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		// 成片 BGM：--bgm / --bgm-asset 互斥（§23），asset 引用在此转换与校验。
+		bgmPath, _, err := currentBGMPathValue(cmd)
+		if err != nil {
+			return err
+		}
+		bgm := ""
+		if bgmPath != nil {
+			bgm = *bgmPath
+		}
 		se, err := application.CreateSeries(rootCtx, app.CreateSeriesInput{
 			Name:           seriesName,
 			Dynasty:        seriesDynasty,
@@ -76,13 +92,18 @@ var seriesCreateCmd = &cobra.Command{
 			Retries:        seriesRetries,
 			VideoStyle:     videoStyle,
 			Creative:       creative,
-			BGMPath:        seriesBGM,
+			BGMPath:        bgm,
 			BGMVolume:      seriesBGMVolume,
 			// 系列级 Provider 覆盖（§21）：空＝跟随系统默认。
 			TextProvider:  strings.TrimSpace(seriesTextProvider),
 			TTSProvider:   strings.TrimSpace(seriesTTSProvider),
 			ImageProvider: strings.TrimSpace(seriesImageProvider),
 			VideoProvider: strings.TrimSpace(seriesVideoProvider),
+			// 系列级模型覆盖：空＝跟随系统默认（绝不回填系统默认模型值）。
+			TextModel:  strings.TrimSpace(seriesTextModel),
+			TTSModel:   strings.TrimSpace(seriesTTSModel),
+			ImageModel: strings.TrimSpace(seriesImageModel),
+			VideoModel: strings.TrimSpace(seriesVideoModel),
 		})
 		if err != nil {
 			return err
@@ -94,7 +115,9 @@ var seriesCreateCmd = &cobra.Command{
 		fmt.Printf("  声音: %s（创建后锁定，不可改）\n", se.VoiceID)
 		fmt.Printf("  并发: %d  重试: %d\n", se.Config.MaxConcurrency, se.Config.MaxRetries)
 		printProviders(se)
+		printModels(se)
 		printCreative(se)
+		printBGMAssetInCreate(se)
 		return nil
 	},
 }
@@ -112,8 +135,11 @@ var seriesSetCmd = &cobra.Command{
 		if !cmd.Flags().Changed("preset") {
 			preset = "" // 未显式指定预设＝不套用（补丁语义）
 		}
-		// 成片 BGM（§20）：只有显式出现在命令行上的 flag 才提交（补丁语义）。
-		bgmChanged := cmd.Flags().Changed("bgm")
+		// 成片 BGM（§20 + §23）：只有显式出现在命令行上的 flag 才提交（补丁语义）。
+		bgmPath, bgmChanged, err := currentBGMPathValue(cmd)
+		if err != nil {
+			return err
+		}
 		volChanged := cmd.Flags().Changed("bgm-volume")
 		// Provider 覆盖（§21）：同样按 Changed 区分「未提供＝保持原值」与
 		// 「显式空串＝清除该项、回到系统默认」。
@@ -122,11 +148,18 @@ var seriesSetCmd = &cobra.Command{
 			"tts-provider":   cmd.Flags().Changed("tts-provider"),
 			"image-provider": cmd.Flags().Changed("image-provider"),
 			"video-provider": cmd.Flags().Changed("video-provider"),
+			// 模型覆盖（第二步）：与 Provider 覆盖同一套 Changed 补丁语义。
+			"text-model":  cmd.Flags().Changed("text-model"),
+			"tts-model":   cmd.Flags().Changed("tts-model"),
+			"image-model": cmd.Flags().Changed("image-model"),
+			"video-model": cmd.Flags().Changed("video-model"),
 		}
 		anyProvider := providerChanged["text-provider"] || providerChanged["tts-provider"] ||
-			providerChanged["image-provider"] || providerChanged["video-provider"]
+			providerChanged["image-provider"] || providerChanged["video-provider"] ||
+			providerChanged["text-model"] || providerChanged["tts-model"] ||
+			providerChanged["image-model"] || providerChanged["video-model"]
 		if len(knobs) == 0 && preset == "" && !bgmChanged && !volChanged && !anyProvider {
-			return fmt.Errorf("没有要修改的项：请用 --preset / --creative key=value / --story-instruction / --video-style / --bgm / --bgm-volume / --text-provider / --tts-provider / --image-provider / --video-provider")
+			return fmt.Errorf("没有要修改的项：请用 --preset / --creative key=value / --story-instruction / --video-style / --bgm 或 --bgm-asset / --bgm-volume / --text-provider / --tts-provider / --image-provider / --video-provider / --text-model / --tts-model / --image-model / --video-model")
 		}
 		if len(knobs) > 0 || preset != "" {
 			if _, err := application.UpdateSeriesCreative(rootCtx, args[0], preset, knobs); err != nil {
@@ -150,6 +183,18 @@ var seriesSetCmd = &cobra.Command{
 			if providerChanged["video-provider"] {
 				se.Config.VideoProvider = strings.TrimSpace(seriesVideoProvider)
 			}
+			if providerChanged["text-model"] {
+				se.Config.TextModel = strings.TrimSpace(seriesTextModel)
+			}
+			if providerChanged["tts-model"] {
+				se.Config.TTSModel = strings.TrimSpace(seriesTTSModel)
+			}
+			if providerChanged["image-model"] {
+				se.Config.ImageModel = strings.TrimSpace(seriesImageModel)
+			}
+			if providerChanged["video-model"] {
+				se.Config.VideoModel = strings.TrimSpace(seriesVideoModel)
+			}
 			// 与 server updateSeries 同一条链路（补丁后整条写回）。
 			if err := application.UpdateSeries(rootCtx, se); err != nil {
 				return err
@@ -159,7 +204,7 @@ var seriesSetCmd = &cobra.Command{
 			var path *string
 			var volume *float64
 			if bgmChanged {
-				path = &seriesBGM
+				path = bgmPath
 			}
 			if volChanged {
 				volume = &seriesBGMVolume
@@ -234,10 +279,19 @@ func printSeries(se *domain.Series) {
 	fmt.Printf("  画面: %s / %s / %s\n", se.Config.Ratio, se.Config.Resolution, visualModeLabel(se.Config.VisualMode))
 	fmt.Printf("  并发上限: %d  重试次数: %d\n", se.Config.MaxConcurrency, se.Config.MaxRetries)
 	if se.Config.BGMPath != "" {
+		// §23：asset:<id> 引用显示曲库素材名，字面路径原样显示。
+		bgmLabel := se.Config.BGMPath
+		if domain.IsAssetRef(se.Config.BGMPath) {
+			aid := domain.AssetIDFromRef(se.Config.BGMPath)
+			bgmLabel = "曲库素材 " + aid
+			if a, err := application.GetAsset(rootCtx, aid); err == nil {
+				bgmLabel = fmt.Sprintf("曲库「%s」（%s）", a.Name, a.ID)
+			}
+		}
 		if se.Config.BGMVolume > 0 {
-			fmt.Printf("  BGM: %s（音量 %.2f）\n", se.Config.BGMPath, se.Config.BGMVolume)
+			fmt.Printf("  BGM: %s（音量 %.2f）\n", bgmLabel, se.Config.BGMVolume)
 		} else {
-			fmt.Printf("  BGM: %s（音量 默认 0.18）\n", se.Config.BGMPath)
+			fmt.Printf("  BGM: %s（音量 默认 0.18）\n", bgmLabel)
 		}
 	} else {
 		fmt.Println("  BGM: 未设置")
@@ -249,6 +303,7 @@ func printSeries(se *domain.Series) {
 		fmt.Printf("  音色: %s（旧字段，重启后会迁移到 voice_id）\n", se.Config.TTSVoice)
 	}
 	printProviders(se)
+	printModels(se)
 	printCreative(se)
 }
 
@@ -267,6 +322,17 @@ func printProviders(se *domain.Series) {
 		providerLabel(se.Config.TTSProvider),
 		providerLabel(se.Config.ImageProvider),
 		providerLabel(se.Config.VideoProvider),
+	)
+}
+
+// printModels 打印系列的四项模型覆盖（第二步统一资源管理）：
+// 空＝跟随系统默认（复用 providerLabel 的展示语义）。
+func printModels(se *domain.Series) {
+	fmt.Printf("  模型覆盖: 文本=%s  语音=%s  图片=%s  视频=%s\n",
+		providerLabel(se.Config.TextModel),
+		providerLabel(se.Config.TTSModel),
+		providerLabel(se.Config.ImageModel),
+		providerLabel(se.Config.VideoModel),
 	)
 }
 
@@ -394,8 +460,11 @@ func init() {
 
 // registerBGMFlags 注册成片 BGM 相关 flag（create 与 set 共用同一组变量，§20）。
 func registerBGMFlags(cmd *cobra.Command) {
+	// 成片 BGM（§20 + §23）：create 与 set 共用同一组变量，两通路互斥。
 	cmd.Flags().StringVar(&seriesBGM, "bgm", "",
-		"成片背景音乐路径（相对系列目录 data/projects/<系列ID>/，如 bgm/theme.mp3；留空＝无 BGM）")
+		"成片背景音乐路径（相对系列目录 data/projects/<系列ID>/，如 bgm/theme.mp3；留空＝无 BGM；与 --bgm-asset 互斥）")
+	cmd.Flags().StringVar(&seriesBGMAsset, "bgm-asset", "",
+		"成片背景音乐的曲库素材 ID（§23，`story asset list` 查看；显式空串＝清除；与 --bgm 互斥）")
 	cmd.Flags().Float64Var(&seriesBGMVolume, "bgm-volume", 0,
 		"BGM 音量 0..1（含 0 与 1；0＝未设置，用默认 0.18）")
 }
@@ -420,6 +489,15 @@ func registerProviderFlags(cmd *cobra.Command) {
 		"系列级图片生成供应商覆盖（空＝跟随系统默认）")
 	cmd.Flags().StringVar(&seriesVideoProvider, "video-provider", "",
 		"系列级视频生成供应商覆盖（空＝跟随系统默认）")
+	// 系列级模型覆盖（第二步统一资源管理）：与 Provider 覆盖同款 Changed 补丁语义。
+	cmd.Flags().StringVar(&seriesTextModel, "text-model", "",
+		"系列级文本模型覆盖（故事/分镜共用；空＝跟随系统默认）")
+	cmd.Flags().StringVar(&seriesTTSModel, "tts-model", "",
+		"系列级旁白模型覆盖（声音条目自带模型时优先；空＝跟随系统默认）")
+	cmd.Flags().StringVar(&seriesImageModel, "image-model", "",
+		"系列级图片模型覆盖（插画/定妆照；空＝跟随系统默认）")
+	cmd.Flags().StringVar(&seriesVideoModel, "video-model", "",
+		"系列级视频模型覆盖（空＝跟随系统默认）")
 }
 
 // visualModeLabel 展示用的画面模式中文名（空值按默认 comic 显示）。

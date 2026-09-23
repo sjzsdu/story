@@ -33,8 +33,12 @@ func (e *Engine) GenerateKeyframe(ctx context.Context, series *domain.Series, ch
 	outPath := filepath.Join(refsDir, slugFileName(ch.Name)+".png")
 	if !force {
 		if fi, err := os.Stat(outPath); err == nil && fi.Size() > 0 {
-			ch.RefImage = outPath
-			return outPath, nil
+			// 已生成过：仅当尚未登记时回填生效引用（§23 第二步）——
+			// 已是 "asset:<id>" 的引用必须原样保住，否则素材行变孤儿、派生键漂移。
+			if strings.TrimSpace(ch.RefImage) == "" {
+				ch.RefImage = e.adoptImageRefAsset(ctx, outPath, "", ch.Name, ch.Appearance)
+			}
+			return ch.RefImage, nil
 		}
 	}
 	style := templates.MatchStyle(series.Config.VideoStyle)
@@ -42,12 +46,19 @@ func (e *Engine) GenerateKeyframe(ctx context.Context, series *domain.Series, ch
 		firstNonEmpty(series.Config.Dynasty, series.Dynasty),
 		ch.Name, ch.Identity, ch.Appearance, ch.Temperament,
 	)
-	req := port.ImageRequest{OutPath: outPath, Prompt: prompt, Size: "3:4"}
+	// 覆盖前的旧引用：force 重新生成时凭它复用同一素材行（保持 id 稳定）。
+	prevRef := strings.TrimSpace(ch.RefImage)
+	req := port.ImageRequest{
+		OutPath: outPath, Prompt: prompt, Size: "3:4",
+		Model: series.Config.ImageModel, // 系列级图片模型覆盖，空＝provider 系统默认
+	}
 	if _, err := img.GenerateImage(ctx, req); err != nil {
 		return "", fmt.Errorf("生成 %s 定妆照: %w", ch.Name, err)
 	}
-	ch.RefImage = outPath
-	return outPath, nil
+	// §23 第二步：生成成功后把图复制进素材库并登记 image_ref 条目，
+	// 引用改写为 "asset:<id>"（登记失败不阻断链路，回退字面路径）。
+	ch.RefImage = e.adoptImageRefAsset(ctx, outPath, prevRef, ch.Name, ch.Appearance)
+	return ch.RefImage, nil
 }
 
 // GenerateSeriesKeyframes 为系列人物设定集批量生成定妆照（并发复用 runner）。

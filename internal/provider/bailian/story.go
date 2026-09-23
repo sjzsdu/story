@@ -29,7 +29,8 @@ func (c *Client) GenerateCandidates(ctx context.Context, req port.StoryRequest) 
 		// 定稿口播稿数百字，默认 4096 有截断风险。
 		"--max-tokens", "16384",
 	}
-	args = appendModel(args, c.TextModel)
+	// 系列级模型覆盖优先（req.Model），否则用系统默认文本模型。
+	args = appendModel(args, firstNonEmptyStr(req.Model, c.TextModel))
 
 	raw, err := c.runJSON(ctx, args...)
 	if err != nil {

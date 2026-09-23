@@ -8,6 +8,8 @@ import (
 	"strconv"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sjzsdu/story/internal/domain"
 )
 
 // Config 全局配置。
@@ -240,6 +242,21 @@ func (c Config) DBPath() string {
 // ProjectsDir 返回媒体项目根目录。
 func (c Config) ProjectsDir() string {
 	return filepath.Join(c.DataDir, "projects")
+}
+
+// AssetsDir 返回素材库根目录 data/assets/（§23 统一资源管理）。
+func (c Config) AssetsDir() string {
+	return filepath.Join(c.DataDir, "assets")
+}
+
+// AssetDir 返回某类素材的落盘目录 data/assets/<kind>/。
+// kind 必须已归一（domain.NormalizeAssetKind），非法值直接报错防目录穿越。
+func (c Config) AssetDir(kind string) (string, error) {
+	n := domain.NormalizeAssetKind(kind)
+	if n == "" {
+		return "", fmt.Errorf("未知素材类型 %q（可用: %s）", kind, domain.AssetKindsLabel())
+	}
+	return filepath.Join(c.AssetsDir(), n), nil
 }
 
 // FFProbeBin 由 ffmpeg 路径推导 ffprobe 路径（同目录同名规则）。

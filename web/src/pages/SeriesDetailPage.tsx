@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, seriesMediaUrl } from '../api'
+import { api, assetFileUrl, seriesMediaUrl } from '../api'
 import type {
+  Asset,
   CharacterSetting,
   CreativeCatalog,
   CreativeKnob,
@@ -31,16 +32,25 @@ import VoiceProfileCard from '../components/VoiceProfileCard'
 import { STAGE_LABEL, activePath } from '../components/VersionTree'
 import { useSeriesEvents } from '../useSeriesEvents'
 import {
+  MODEL_FIELDS,
   PROVIDER_FIELDS,
   RATIO_OPTIONS,
   RESOLUTION_OPTIONS,
   formatTime,
+  modelLabel,
   providerLabel,
   providerOptions,
   visualModeLabel,
 } from '../labels'
 
 const STAGE_ORDER = ['story', 'storyboard', 'media', 'final'] as const
+
+// §23 素材引用：series.config.bgm_path 以此前缀开头时指向素材库条目（与 Go domain.AssetRefPrefix 一致）。
+const ASSET_REF_PREFIX = 'asset:'
+const assetIdOf = (v: string | undefined): string =>
+  v && v.startsWith(ASSET_REF_PREFIX) ? v.slice(ASSET_REF_PREFIX.length) : ''
+// 手填路径模式：非空且不是素材引用（§20 字面路径历史语义）。
+const isCustomBGM = (v: string | undefined): boolean => !!v && !v.startsWith(ASSET_REF_PREFIX)
 
 // 一集在活跃路径上的推进情况（供集列表一眼看清：做到哪一步、有没有成片）。
 type EpisodeState = {
@@ -531,7 +541,12 @@ type MetaDraft = {
   tts_provider: string
   image_provider: string
   video_provider: string
-  // §20 成片 BGM：路径相对系列目录（留空＝无 BGM）；音量 0..1（0＝默认 0.18）。
+  // 系列级模型覆盖（§24）：空＝跟随系统默认模型（占位符提示留空即可）。
+  text_model: string
+  tts_model: string
+  image_model: string
+  video_model: string
+  // §23：path 优先为素材引用 "asset:<id>"（曲库下拉选择）；isCustomPath 模式下为字面路径。
   bgm_path: string
   bgm_volume: number
 }
@@ -549,6 +564,10 @@ function metaDraftOf(s: Series): MetaDraft {
     tts_provider: s.config.tts_provider ?? '',
     image_provider: s.config.image_provider ?? '',
     video_provider: s.config.video_provider ?? '',
+    text_model: s.config.text_model ?? '',
+    tts_model: s.config.tts_model ?? '',
+    image_model: s.config.image_model ?? '',
+    video_model: s.config.video_model ?? '',
     bgm_path: s.config.bgm_path ?? '',
     bgm_volume: s.config.bgm_volume ?? 0,
   }
@@ -567,9 +586,17 @@ function SeriesMetaSection({
   const queryClient = useQueryClient()
   // 供应商下拉/标签由能力目录驱动（展示名以后端 catalog 为准，前端只兜底）。
   const { data: caps } = useQuery({ queryKey: ['capabilities'], queryFn: api.getCapabilities })
+  // §23 曲库：BGM 下拉、试听与删除都从这份列表取数（kind=bgm 为当前唯一素材类型）。
+  const { data: assets, refetch: refetchAssets } = useQuery({
+    queryKey: ['assets', 'bgm'],
+    queryFn: () => api.listAssets('bgm'),
+  })
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<MetaDraft>(() => metaDraftOf(series))
   const [err, setErr] = useState('')
+  // 手填路径模式（字面路径，§20 历史语义）；其余情况 bgm_path 为空或 "asset:<id>"。
+  const [customPath, setCustomPath] = useState(() => isCustomBGM(series.config.bgm_path))
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const mutation = useMutation({
     mutationFn: (v: MetaDraft) => api.updateSeries(series.id, { ...v, name: v.name.trim() }),
@@ -580,6 +607,40 @@ function SeriesMetaSection({
     },
     onError: (e) => setErr((e as Error).message),
   })
+
+  // 上传曲目：成功后选中新素材（asset 引用），不必手填路径。
+  const uploadMut = useMutation({
+    mutationFn: (f: File) =>
+      api.uploadAsset(f, f.name, { kind: 'bgm', name: f.name.replace(/\.[^.]+$/, '') }),
+    onSuccess: (a: Asset) => {
+      void refetchAssets()
+      setCustomPath(false)
+      setDraft((d) => ({ ...d, bgm_path: `asset:${a.id}` }))
+      setErr('')
+    },
+    onError: (e) => setErr((e as Error).message),
+  })
+
+  // 删除素材：被系列引用时后端 409，文案（含引用数与改选指引）原样展示在错误框。
+  const deleteAssetMut = useMutation({
+    mutationFn: (id: string) => api.deleteAsset(id),
+    onSuccess: () => {
+      void refetchAssets()
+      setErr('')
+    },
+    onError: (e) => setErr((e as Error).message),
+  })
+
+  // 只读态展示：asset 引用解析成曲库素材名。
+  const bgmAssetId = assetIdOf(series.config.bgm_path)
+  const bgmAsset = assets?.find((a: Asset) => a.id === bgmAssetId)
+  const bgmLabel = series.config.bgm_path
+    ? bgmAssetId
+      ? bgmAsset
+        ? `曲库「${bgmAsset.name}」`
+        : `曲库素材 ${bgmAssetId}`
+      : series.config.bgm_path
+    : '未设置'
 
   if (editing) {
     const set = <K extends keyof MetaDraft>(k: K, val: MetaDraft[K]) => setDraft((d) => ({ ...d, [k]: val }))
@@ -639,13 +700,98 @@ function SeriesMetaSection({
               onChange={(e) => set('max_retries', Number(e.target.value) || 0)}
             />
           </Field>
-          <Field label="成片 BGM 路径（留空＝无 BGM）">
-            <TextInput
-              value={draft.bgm_path}
-              onChange={(e) => set('bgm_path', e.target.value)}
-              placeholder="相对系列目录，如 bgm/theme.mp3；或服务器绝对路径"
-            />
+          <Field label="成片背景音乐（曲库优先）">
+            <div className="flex gap-2">
+              <Select
+                value={customPath ? '__custom__' : draft.bgm_path}
+                onChange={(e) => {
+                  const v = e.target.value
+                  if (v === '__custom__') {
+                    setCustomPath(true)
+                    set('bgm_path', '')
+                    return
+                  }
+                  setCustomPath(false)
+                  set('bgm_path', v)
+                }}
+              >
+                <option value="">无 BGM</option>
+                {(assets ?? []).map((a) => (
+                  <option key={a.id} value={`asset:${a.id}`}>
+                    {a.name}
+                    {a.duration_sec ? `（${a.duration_sec.toFixed(1)}s）` : ''}
+                  </option>
+                ))}
+                <option value="__custom__">手动填写路径…</option>
+              </Select>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={uploadMut.isPending}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {uploadMut.isPending && <Spinner />} 上传曲目
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="audio/*"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  e.target.value = ''
+                  if (f) uploadMut.mutate(f)
+                }}
+              />
+            </div>
           </Field>
+          {customPath && (
+            <Field label="BGM 路径（相对系列目录，如 bgm/theme.mp3；或服务器绝对路径）">
+              <TextInput
+                value={draft.bgm_path}
+                onChange={(e) => set('bgm_path', e.target.value)}
+                placeholder="留空＝无 BGM"
+              />
+            </Field>
+          )}
+          {/* 选中曲库素材时就地试听（Range 拖进度由后端 Accept-Ranges 支持）。 */}
+          {!customPath && assetIdOf(draft.bgm_path) && (
+            <audio
+              className="w-full max-w-md"
+              controls
+              src={assetFileUrl(assetIdOf(draft.bgm_path))}
+            />
+          )}
+          <div>
+            <div className="text-xs text-paper-300/40 mb-1">
+              曲库（{(assets ?? []).length} 首；被系列引用的曲目不可删除）
+            </div>
+            {(assets ?? []).length === 0 ? (
+              <p className="text-xs text-paper-300/40">
+                暂无曲目——点「上传曲目」把本机音频存进素材库，之后按系列复用。
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {(assets ?? []).map((a) => (
+                  <li key={a.id} className="flex items-center gap-2 text-xs">
+                    <span className="text-paper-300/80 shrink-0">{a.name}</span>
+                    {a.duration_sec ? (
+                      <span className="text-paper-300/40 shrink-0">{a.duration_sec.toFixed(1)}s</span>
+                    ) : null}
+                    <audio className="h-7 w-56" controls preload="none" src={assetFileUrl(a.id)} />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      disabled={deleteAssetMut.isPending}
+                      onClick={() => deleteAssetMut.mutate(a.id)}
+                    >
+                      删除
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           <Field label="BGM 音量（0~1，0＝默认 0.18）">
             <TextInput
               type="number"
@@ -667,6 +813,15 @@ function SeriesMetaSection({
               </Select>
             </Field>
           ))}
+          {MODEL_FIELDS.map((f) => (
+            <Field key={f.key} label={f.label}>
+              <TextInput
+                value={draft[f.key]}
+                onChange={(e) => set(f.key, e.target.value)}
+                placeholder="留空跟随系统默认"
+              />
+            </Field>
+          ))}
         </div>
         <p className="text-xs text-paper-300/40">
           画面模式（{visualModeLabel(series.config.visual_mode)}）与声音在创建时锁定，不能在此修改。
@@ -682,6 +837,7 @@ function SeriesMetaSection({
             disabled={mutation.isPending}
             onClick={() => {
               setDraft(metaDraftOf(series))
+              setCustomPath(isCustomBGM(series.config.bgm_path))
               setEditing(false)
               setErr('')
             }}
@@ -713,10 +869,16 @@ function SeriesMetaSection({
             value={providerLabel(series.config[f.key], providerOptions(caps, f.key))}
           />
         ))}
-        <InfoTile label="成片 BGM" value={series.config.bgm_path || '未设置'} />
+        {MODEL_FIELDS.map((f) => (
+          <InfoTile key={f.key} label={f.label} value={modelLabel(series.config[f.key])} />
+        ))}
+        <InfoTile label="成片 BGM" value={bgmLabel} />
       </div>
-      {/* 相对路径的 BGM 位于系列目录内，可经 seriesMedia 白名单直接试听；绝对路径不提供试听。 */}
-      {series.config.bgm_path && !series.config.bgm_path.startsWith('/') && (
+      {/* 试听：素材引用走 /api/assets/{id}/file（白名单 data/assets/）；字面相对路径走系列目录白名单。绝对路径不提供试听。 */}
+      {bgmAssetId && (
+        <audio className="mt-3 w-full max-w-md" controls src={assetFileUrl(bgmAssetId)} />
+      )}
+      {!bgmAssetId && series.config.bgm_path && !series.config.bgm_path.startsWith('/') && (
         <audio
           className="mt-3 w-full max-w-md"
           controls
@@ -900,7 +1062,13 @@ function CharactersCard({
                 <div className="aspect-[3/4] bg-ink-900 grid place-items-center overflow-hidden">
                   {c.ref_image ? (
                     <img
-                      src={seriesMediaUrl(seriesId, c.ref_image)}
+                      // §24：ref_image 可为素材引用 "asset:<id>"（走素材库文件端点），
+                      // 也可能是历史字面相对路径（走系列目录媒体端点）。
+                      src={
+                        assetIdOf(c.ref_image)
+                          ? assetFileUrl(assetIdOf(c.ref_image))
+                          : seriesMediaUrl(seriesId, c.ref_image)
+                      }
                       alt={`${c.name} 视觉参考图`}
                       className="w-full h-full object-contain"
                       loading="lazy"

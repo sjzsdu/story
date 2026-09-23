@@ -74,6 +74,18 @@ CREATE TABLE IF NOT EXISTS voices (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS assets (
+    id          TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL DEFAULT 'bgm',
+    name        TEXT NOT NULL DEFAULT '',
+    path        TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    duration_sec REAL NOT NULL DEFAULT 0,
+    params      TEXT NOT NULL DEFAULT '{}',
+    origin      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS publish_jobs (
     id                TEXT PRIMARY KEY,
     episode_id        TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,

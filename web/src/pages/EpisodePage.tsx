@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, mediaUrl } from '../api'
+import { api, assetFileUrl, mediaUrl } from '../api'
 import type {
   ActionName,
   Episode,
@@ -656,7 +656,13 @@ function RefGroup({ title, refs, ep }: { title: string; refs: VisualRef[]; ep: E
           <div key={`${r.kind}-${r.name}`} className="rounded-lg border border-ink-800 bg-ink-950/40 p-3 flex gap-3">
             {r.ref_image ? (
               <img
-                src={mediaUrl(ep.id, r.ref_image)}
+                // §24：ref_image 可为素材引用 "asset:<id>"（走素材库文件端点），
+                // 也可能是历史字面相对路径（走本集目录媒体端点）。
+                src={
+                  r.ref_image.startsWith('asset:')
+                    ? assetFileUrl(r.ref_image.slice('asset:'.length))
+                    : mediaUrl(ep.id, r.ref_image)
+                }
                 alt={r.name}
                 className="w-16 h-24 shrink-0 rounded object-cover border border-ink-700"
                 loading="lazy"

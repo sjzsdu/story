@@ -4,12 +4,62 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjzsdu/story/internal/domain"
 )
+
+// imageRefTestRef 校验一条 RefImage 引用（§23 第二步：视觉参考收编为 image_ref 素材）：
+//   - "asset:<id>" 引用 → 查素材行，断言 kind=image_ref、素材文件存在非空且位于
+//     素材库目录 data/assets/image_ref/ 内（防路径穿越）；
+//   - 字面路径（登记失败回退 / 历史数据）→ 断言位于 refs 目录内且文件有效；
+//   - 两种形态都断言原位文件 refs/<slug>.png 仍在——幂等跳过靠原位文件判定，
+//     无论引用形态如何都不能丢。
+func imageRefTestRef(t *testing.T, f *fixture, ref, wantDir, name string) {
+	t.Helper()
+	if domain.IsAssetRef(ref) {
+		as, err := f.repo.GetAsset(context.Background(), domain.AssetIDFromRef(ref))
+		if err != nil || as == nil {
+			t.Fatalf("素材引用 %s 无法解析: %v", ref, err)
+		}
+		if as.Kind != domain.AssetKindImageRef {
+			t.Fatalf("素材 kind = %s, 期望 image_ref: %+v", as.Kind, as)
+		}
+		assetDir := filepath.Join(filepath.Dir(f.eng.projectsDir), "assets", domain.AssetKindImageRef)
+		if !strings.Contains(as.Path, assetDir) {
+			t.Fatalf("素材副本应位于素材库目录 %s: %s", assetDir, as.Path)
+		}
+		if fi, err := os.Stat(as.Path); err != nil || fi.Size() == 0 {
+			t.Fatalf("素材文件不存在或为空: %s (%v)", as.Path, err)
+		}
+	} else {
+		if !filepath.IsAbs(ref) {
+			t.Fatalf("字面路径引用应为绝对路径: %s", ref)
+		}
+		if !strings.Contains(ref, wantDir) {
+			t.Fatalf("引用应位于 refs 目录 %s: %s", wantDir, ref)
+		}
+		if fi, err := os.Stat(ref); err != nil || fi.Size() == 0 {
+			t.Fatalf("引用文件不存在或为空: %s (%v)", ref, err)
+		}
+	}
+	orig := filepath.Join(wantDir, slugFileName(name)+".png")
+	if fi, err := os.Stat(orig); err != nil || fi.Size() == 0 {
+		t.Fatalf("原位参考图不存在或为空: %s (%v)", orig, err)
+	}
+}
+
+// charRefImages 提取人物设定集的 RefImage 引用串列表（顺序稳定），供关联稳定性断言。
+func charRefImages(chars []domain.CharacterSetting) []string {
+	out := make([]string, 0, len(chars))
+	for _, c := range chars {
+		out = append(out, c.RefImage)
+	}
+	return out
+}
 
 func sampleCharacters() []domain.CharacterSetting {
 	return []domain.CharacterSetting{
@@ -43,16 +93,12 @@ func TestGenerateSeriesKeyframes(t *testing.T) {
 	if len(cs) != 2 {
 		t.Fatalf("人物数 = %d", len(cs))
 	}
+	wantDir := filepath.Join(f.eng.projectsDir, "guiguzi", RefsDirName)
 	for _, ch := range cs {
 		if ch.RefImage == "" {
 			t.Fatalf("%s 的 RefImage 未回填", ch.Name)
 		}
-		if fi, err := os.Stat(ch.RefImage); err != nil || fi.Size() == 0 {
-			t.Fatalf("%s 定妆照不存在或为空: %s", ch.Name, ch.RefImage)
-		}
-		if !strings.Contains(ch.RefImage, filepath.Join("guiguzi", RefsDirName)) {
-			t.Fatalf("定妆照应位于系列 refs/ 目录: %s", ch.RefImage)
-		}
+		imageRefTestRef(t, f, ch.RefImage, wantDir, ch.Name)
 	}
 	if calls := f.images.CallsCount(); calls != 2 {
 		t.Fatalf("图片调用次数 = %d, 期望 2", calls)
@@ -65,6 +111,11 @@ func TestGenerateSeriesKeyframes(t *testing.T) {
 	if calls := f.images.CallsCount(); calls != 2 {
 		t.Fatalf("幂等复跑不应再次调用图片生成, 调用次数 = %d", calls)
 	}
+	seBefore, err := f.repo.GetSeries(ctx, "guiguzi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeRefs := charRefImages(seBefore.Characters)
 
 	// force=true 重新生成。
 	if _, err := f.eng.GenerateSeriesKeyframes(ctx, "guiguzi", true); err != nil {
@@ -74,12 +125,17 @@ func TestGenerateSeriesKeyframes(t *testing.T) {
 		t.Fatalf("force 复跑应重新生成, 调用次数 = %d", calls)
 	}
 
-	// 已持久化回系列。
+	// 已持久化回系列；force 重生后引用必须保持同一素材行（防孤儿 image_ref 素材，
+	// adoptImageRefAsset 路 1 复用原 id）。
 	se, _ := f.repo.GetSeries(ctx, "guiguzi")
+	if after := charRefImages(se.Characters); !reflect.DeepEqual(beforeRefs, after) {
+		t.Fatalf("force 重生改变了素材行关联:\n before=%v\n after=%v", beforeRefs, after)
+	}
 	for _, ch := range se.Characters {
 		if ch.RefImage == "" {
 			t.Fatalf("系列中的 %s 未持久化 RefImage", ch.Name)
 		}
+		imageRefTestRef(t, f, ch.RefImage, wantDir, ch.Name)
 	}
 }
 
@@ -216,16 +272,12 @@ func TestGenerateEpisodeRefs(t *testing.T) {
 	if len(refs) != 2 {
 		t.Fatalf("参考数 = %d", len(refs))
 	}
+	wantDir := filepath.Join(ep.WorkDir, EpisodeRefsDirName)
 	for _, r := range refs {
 		if r.RefImage == "" {
 			t.Fatalf("%s 的 RefImage 未回填", r.Name)
 		}
-		if fi, err := os.Stat(r.RefImage); err != nil || fi.Size() == 0 {
-			t.Fatalf("%s 参考图不存在或为空: %s", r.Name, r.RefImage)
-		}
-		if !strings.Contains(r.RefImage, filepath.Join(ep.ID, EpisodeRefsDirName)) {
-			t.Fatalf("参考图应位于集 refs/ 目录: %s", r.RefImage)
-		}
+		imageRefTestRef(t, f, r.RefImage, wantDir, r.Name)
 	}
 	if calls := f.images.CallsCount(); calls != 2 {
 		t.Fatalf("图片调用次数 = %d, 期望 2", calls)
@@ -239,12 +291,13 @@ func TestGenerateEpisodeRefs(t *testing.T) {
 		t.Fatalf("幂等复跑不应再次出图, 调用次数 = %d", calls)
 	}
 
-	// 已持久化回集。
+	// 已持久化回集；幂等复跑后引用仍可解析（asset: 与字面路径都有效）。
 	got, _ := f.repo.GetEpisode(ctx, f.epID)
 	for _, r := range got.Refs {
 		if r.RefImage == "" {
 			t.Fatalf("集中的 %s 未持久化 RefImage", r.Name)
 		}
+		imageRefTestRef(t, f, r.RefImage, wantDir, r.Name)
 	}
 }
 

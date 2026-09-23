@@ -16,6 +16,8 @@ type StoryRequest struct {
 	// Brief 创作要求（templates.StoryBrief 组装：叙事风格/受众/篇幅/用户自定义指令）。
 	// 空串＝全部默认，provider 不得因此改变 prompt（默认产出与历史行为逐字一致）。
 	Brief string
+	// Model 模型覆盖（系列级 text_model）：空＝用 provider 构造期的系统默认模型。
+	Model string
 
 	// Count 已废弃：2026-09-19 起取消多候选人工选择，每次只生成一篇定稿。
 	// 字段保留仅为兼容旧调用，provider 忽略。

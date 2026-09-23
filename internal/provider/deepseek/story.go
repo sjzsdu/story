@@ -25,7 +25,7 @@ func (c *Client) GenerateCandidates(ctx context.Context, req port.StoryRequest) 
 	systemPrompt := templates.StorySystemPrompt
 	userPrompt := templates.StoryUserPrompt(req.SeriesName, req.Dynasty, req.Topic, req.Brief)
 
-	raw, err := c.chat(ctx, systemPrompt, userPrompt, 0.9, 16384)
+	raw, err := c.chat(ctx, req.Model, systemPrompt, userPrompt, 0.9, 16384)
 	if err != nil {
 		return nil, err
 	}

@@ -30,7 +30,13 @@ func (e *Engine) DeriveLegacyChain(ctx context.Context, ep *domain.Episode, seri
 
 	var storyNode *domain.VersionNode
 	if in.Story != nil {
-		params := storyParams{SeriesID: series.ID, Topic: ep.Topic, Dynasty: series.Config.Dynasty}
+		// Model 与「现在重新执行该步骤」取同源的 series.Config 原始值（第二步模型覆盖）：
+		// 迁移键＝当前键，旧集续跑才不会因系列设置了模型覆盖而整链重做。
+		// （未覆盖时 omitempty 不入字节，与迁移前逐字一致。）
+		params := storyParams{
+			SeriesID: series.ID, Topic: ep.Topic, Dynasty: series.Config.Dynasty,
+			Model: series.Config.TextModel,
+		}
 		storyNode = ensureNode(ep, domain.StageStory, nil, params, false)
 		storyNode.Story = in.Story
 		storyNode.Mark(domain.NodeDone, "")
@@ -48,6 +54,7 @@ func (e *Engine) DeriveLegacyChain(ctx context.Context, ep *domain.Episode, seri
 			Resolution: series.Config.Resolution,
 			VideoStyle: series.Config.VideoStyle,
 			RefsDigest: refsDigest(visualRefs),
+			Model:      series.Config.TextModel, // 与 storyboardParams 同源（分镜共用文本模型）
 		}
 		boardNode = ensureNode(ep, domain.StageStoryboard, storyNode, params, false)
 		boardNode.Storyboard = in.Storyboard
@@ -69,6 +76,10 @@ func (e *Engine) DeriveLegacyChain(ctx context.Context, ep *domain.Episode, seri
 			Resolution:    series.Config.Resolution,
 			VoiceID:       series.VoiceID,
 			VoiceDigest:   voiceDigest(voice, model, rate, pitch, instr),
+			// 三个模型覆盖与 Produce 的 mediaParams 取同源原始值；同上，omitempty 零值不入字节。
+			ImgModel: series.Config.ImageModel,
+			VIDModel: series.Config.VideoModel,
+			TTSModel: series.Config.TTSModel,
 		}
 		mediaNode = ensureNode(ep, domain.StageMedia, boardNode, params, false)
 		mediaNode.Clips = in.Clips

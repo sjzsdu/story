@@ -144,6 +144,11 @@ type updateSeriesRequest struct {
 	TTSProvider    *string `json:"tts_provider"`
 	ImageProvider  *string `json:"image_provider"`
 	VideoProvider  *string `json:"video_provider"`
+	// 系列级模型覆盖（第二步）：nil＝保持原值；显式空串＝清除（跟随系统默认）。
+	TextModel  *string `json:"text_model"`
+	TTSModel   *string `json:"tts_model"`
+	ImageModel *string `json:"image_model"`
+	VideoModel *string `json:"video_model"`
 	// 成片 BGM（§20）：path 为曲目路径（相对系列目录），volume 为 0..1 音量（0＝默认 0.18）。
 	BGMPath   *string  `json:"bgm_path"`
 	BGMVolume *float64 `json:"bgm_volume"`
@@ -219,6 +224,19 @@ func (s *Server) updateSeries(w http.ResponseWriter, r *http.Request) {
 	if req.VideoProvider != nil {
 		se.Config.VideoProvider = strings.TrimSpace(*req.VideoProvider)
 	}
+	// 模型覆盖：nil＝保持原值；空串＝清除（回到跟随系统默认）。绝不回填系统默认模型值。
+	if req.TextModel != nil {
+		se.Config.TextModel = strings.TrimSpace(*req.TextModel)
+	}
+	if req.TTSModel != nil {
+		se.Config.TTSModel = strings.TrimSpace(*req.TTSModel)
+	}
+	if req.ImageModel != nil {
+		se.Config.ImageModel = strings.TrimSpace(*req.ImageModel)
+	}
+	if req.VideoModel != nil {
+		se.Config.VideoModel = strings.TrimSpace(*req.VideoModel)
+	}
 	// 成片 BGM（§20）：nil＝保持原值；空串路径＝清除，音量 0＝回到默认 0.18。
 	if req.BGMVolume != nil && (*req.BGMVolume < 0 || *req.BGMVolume > 1) {
 		writeErr(w, http.StatusBadRequest,
@@ -234,6 +252,11 @@ func (s *Server) updateSeries(w http.ResponseWriter, r *http.Request) {
 	if err := s.app.UpdateSeries(r.Context(), se); err != nil {
 		if errors.Is(err, app.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "系列不存在")
+			return
+		}
+		// §23：bgm_path 的 asset 引用指向不存在的素材 → 400（客户端可修正的输入问题）。
+		if errors.Is(err, app.ErrAssetRefInvalid) {
+			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, err.Error())

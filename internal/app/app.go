@@ -61,6 +61,9 @@ type App struct {
 	// audioNormalizer 参考音频归一化（§16 声音复刻：浏览器录音/上传件统一转
 	// 16kHz 单声道 wav 再提交）；由 ffmpeg provider 实现（不随热更新换，见 §21）。
 	audioNormalizer port.AudioNormalizer
+	// assetProber 素材时长探测（§23，ffmpeg ProbeDuration 注入）。
+	// 可为 nil，且探测失败一律容错置 0——单测不依赖本机 ffprobe。
+	assetProber func(ctx context.Context, path string) (float64, error)
 }
 
 // Config 返回当前生效配置的副本（加锁读，热更新后立即可见新值）。
@@ -387,6 +390,7 @@ func Bootstrap(ctx context.Context, cfg config.Config, configPath string) (*App,
 		voiceListers:    capability.NewSlot[port.VoiceLister]("音色库列举"),
 		publish:         capability.NewSlot[port.PlatformPublisher]("平台发布"),
 		audioNormalizer: composer, // 参考音频归一化复用 ffmpeg composer（§16）
+		assetProber:     composer.ProbeDuration, // §23 素材时长探测（容错，见 asset.go）
 		configPath:      configPath,
 	}
 	// 整表登记 + 设默认（engine 6 槽一并升级为具名 key）。
@@ -447,6 +451,13 @@ type CreateSeriesInput struct {
 	TTSProvider   string
 	ImageProvider string
 	VideoProvider string
+	// ---- 系列级模型覆盖（第二步统一资源管理；空＝跟随系统默认） ----
+	// 绝不回填系统默认模型值：存进 config_json 会让存量/默认系列字节不一致、
+	// 派生键全变（§17/§18 铁律）。空串即「跟随系统」。
+	TextModel  string
+	TTSModel   string
+	ImageModel string
+	VideoModel string
 }
 
 // CreateSeries 创建一个新系列（ID 由名称生成拼音 slug，冲突时追加序号）。
@@ -458,6 +469,10 @@ func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.S
 		return nil, err
 	}
 	if err := validateBGMVolume(in.BGMVolume); err != nil {
+		return nil, err
+	}
+	// §23：BGM 为 asset:<id> 引用时校验素材存在（创建即校验，避免带病引用）。
+	if err := a.validateAssetRef(ctx, strings.TrimSpace(in.BGMPath)); err != nil {
 		return nil, err
 	}
 
@@ -501,6 +516,11 @@ func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.S
 			TTSProvider:   in.TTSProvider,
 			ImageProvider: in.ImageProvider,
 			VideoProvider: in.VideoProvider,
+			// 系列级模型覆盖：原样存入，空串＝跟随系统（绝不回填 cfg.TextModel 等默认值）。
+			TextModel:  in.TextModel,
+			TTSModel:   in.TTSModel,
+			ImageModel: in.ImageModel,
+			VideoModel: in.VideoModel,
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -725,7 +745,12 @@ func (a *App) UpdateSeriesBGM(ctx context.Context, seriesID string, path *string
 		return translateErr(err)
 	}
 	if path != nil {
-		s.Config.BGMPath = strings.TrimSpace(*path)
+		v := strings.TrimSpace(*path)
+		// §23：asset:<id> 引用设值前快速校验素材存在（字面路径保持 §20 语义，交引擎验收）。
+		if err := a.validateAssetRef(ctx, v); err != nil {
+			return err
+		}
+		s.Config.BGMPath = v
 	}
 	if volume != nil {
 		if err := validateBGMVolume(*volume); err != nil {
@@ -1139,6 +1164,11 @@ func (a *App) MatchVoiceProfile(ctx context.Context, key string) domain.VoicePro
 // UpdateSeries 更新系列（配置/人物等），供系列级设置修改用。
 // 注意：voice_id 不在此处更新（创建后锁定，store.UpdateSeries SQL 不含该列）。
 func (a *App) UpdateSeries(ctx context.Context, series *domain.Series) error {
+	// §23：本方法是 Web PUT /api/series/{id} 与 CLI series set 的整对象写回链路，
+	// 与 CreateSeries / UpdateSeriesBGM 同款校验 asset 引用，避免悬空引用静默落库。
+	if err := a.validateAssetRef(ctx, strings.TrimSpace(series.Config.BGMPath)); err != nil {
+		return err
+	}
 	return a.Repo.UpdateSeries(ctx, series)
 }
 

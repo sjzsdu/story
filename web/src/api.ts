@@ -1,6 +1,7 @@
 import type {
   ActionName,
   AppSettings,
+  Asset,
   CapabilityCatalog,
   CharacterSetting,
   CreativeCatalog,
@@ -53,6 +54,11 @@ export const api = {
     tts_provider?: string
     image_provider?: string
     video_provider?: string
+    // 系列级模型覆盖（空＝跟随系统默认模型，服务端不回填）
+    text_model?: string
+    tts_model?: string
+    image_model?: string
+    video_model?: string
     // §20 成片 BGM：path 相对 data/projects/<series-id>/；volume 0..1，0/缺省＝默认 0.18。
     bgm_path?: string
     bgm_volume?: number
@@ -89,7 +95,13 @@ export const api = {
       tts_provider?: string
       image_provider?: string
       video_provider?: string
-      // §20 成片 BGM（补丁语义；因后端 DisallowUnknownFields，字段名必须与 Go 侧一致）
+      // 系列级模型覆盖（补丁语义：显式空串＝清除，回到系统默认模型）。
+      text_model?: string
+      tts_model?: string
+      image_model?: string
+      video_model?: string
+      // §20 成片 BGM（补丁语义；因后端 DisallowUnknownFields，字段名必须与 Go 侧一致）。
+      // §23：path 可为素材引用 "asset:<id>"（推荐，经曲库下拉选择）或字面路径；引用不存在时后端 400。
       bgm_path?: string
       bgm_volume?: number
     },
@@ -322,6 +334,32 @@ export const api = {
     body: JSON.stringify(body),
   }),
 
+  // ---- 素材库（§23 顶层资源）----
+  // listAssets 列出素材；kind 为空列出全部，非空按类型过滤（未知 kind 后端 400）。
+  listAssets: (kind?: string) =>
+    request<Asset[]>(`/api/assets${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`),
+
+  // uploadAsset 上传素材文件（multipart）。
+  // 必须用 headers: {} 覆盖 request 默认的 JSON Content-Type，否则 boundary 丢失、后端解析失败。
+  uploadAsset: (
+    file: Blob,
+    filename: string,
+    opts?: { kind?: string; name?: string; description?: string },
+  ) => {
+    const fd = new FormData()
+    fd.append('file', file, filename)
+    if (opts?.kind) fd.append('kind', opts.kind)
+    if (opts?.name) fd.append('name', opts.name)
+    if (opts?.description) fd.append('description', opts.description)
+    return request<Asset>('/api/assets', { method: 'POST', body: fd, headers: {} })
+  },
+
+  // deleteAsset 删除素材：被系列引用时后端 409（错误文案含引用数），不存在 404。
+  deleteAsset: (id: string) =>
+    request<{ status: string; id: string }>(`/api/assets/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+
   // ---- 平台发布（§19） ----
   listPlatforms: () => request<PlatformInfo[]>('/api/platforms'),
 
@@ -404,4 +442,9 @@ export function mediaUrl(episodeId: string, absPath: string): string {
 /** 系列级媒体 URL（系列视觉参考图等，位于系列项目目录内）。 */
 export function seriesMediaUrl(seriesId: string, absPath: string): string {
   return `/api/series/${encodeURIComponent(seriesId)}/media?path=${encodeURIComponent(absPath)}`
+}
+
+/** 素材库文件 URL（试听/回放，白名单限 data/assets/ 内，支持 Range 拖进度）。 */
+export function assetFileUrl(assetId: string): string {
+  return `/api/assets/${encodeURIComponent(assetId)}/file`
 }
