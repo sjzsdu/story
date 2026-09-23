@@ -76,6 +76,9 @@ export interface SeriesConfig {
   image_provider?: string
   video_provider?: string
   creative?: CreativeStyle // 创作控制参数（全部 omitempty，未设置即不出现）
+  // §20 成片 BGM：path 相对 data/projects/<series-id>/（绝对路径也接受）；volume 0..1，0/缺省＝0.18。
+  bgm_path?: string
+  bgm_volume?: number
 }
 
 // 创作控制参数：字段名即 GET /api/creative-catalog 里的 knob key。

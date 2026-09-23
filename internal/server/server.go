@@ -201,6 +201,11 @@ type createSeriesReq struct {
 	TTSProvider   string `json:"tts_provider"`
 	ImageProvider string `json:"image_provider"`
 	VideoProvider string `json:"video_provider"`
+	// ---- 成片 BGM 背景音乐（§20）----
+	// BGMPath 曲目路径：相对路径相对系列目录 data/projects/<series-id>/；空＝无 BGM。
+	BGMPath string `json:"bgm_path"`
+	// BGMVolume 0..1 音量；0＝未设置（用默认 0.18）。
+	BGMVolume float64 `json:"bgm_volume"`
 }
 
 func (s *Server) createSeries(w http.ResponseWriter, r *http.Request) {
@@ -215,6 +220,12 @@ func (s *Server) createSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := validateCreative(req.Preset, req.Creative); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// 成片 BGM 音量校验（与 PUT /api/series/{id} 的补丁校验同语义）。
+	if req.BGMVolume < 0 || req.BGMVolume > 1 {
+		writeErr(w, http.StatusBadRequest,
+			fmt.Sprintf("bgm_volume 必须在 0 到 1 之间（含 0 与 1，0＝默认 0.18），收到 %g", req.BGMVolume))
 		return
 	}
 	creative, videoStyle, err := app.ExpandCreative(req.Preset, req.Creative)
@@ -241,6 +252,8 @@ func (s *Server) createSeries(w http.ResponseWriter, r *http.Request) {
 		TTSProvider:    req.TTSProvider,
 		ImageProvider:  req.ImageProvider,
 		VideoProvider:  req.VideoProvider,
+		BGMPath:        req.BGMPath,
+		BGMVolume:      req.BGMVolume,
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())

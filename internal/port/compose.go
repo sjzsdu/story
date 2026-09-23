@@ -24,6 +24,10 @@ type ComposeRequest struct {
 	FinalPath string
 	// BurnSubtitles 是否烧录硬字幕。
 	BurnSubtitles bool
+	// BGMPath 背景音乐曲目绝对路径（由 engine 从系列配置解析后传入；空＝无 BGM）。
+	BGMPath string
+	// BGMVolume 0..1 相对音量；0＝由实现归一为默认值 0.18（存原始值以保证派生键稳定）。
+	BGMVolume float64
 }
 
 // ComposeResult 合成结果。

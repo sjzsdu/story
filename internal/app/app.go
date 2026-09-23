@@ -210,6 +210,11 @@ type CreateSeriesInput struct {
 	// Creative 创作控制参数（叙事/受众/篇幅/运镜/自定义指令）。
 	// 零值＝内置默认，产出与历史行为完全一致。
 	Creative domain.CreativeStyle
+	// ---- 成片 BGM 背景音乐（§20）----
+	// BGMPath 曲目路径：相对路径相对系列目录 data/projects/<series-id>/，空＝无 BGM。
+	BGMPath string
+	// BGMVolume 0..1 相对音量；0＝未设置（用默认 0.18）。
+	BGMVolume float64
 	// ---- 系列级 Provider 覆盖（空＝用系统默认） ----
 	TextProvider  string
 	TTSProvider   string
@@ -223,6 +228,9 @@ func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.S
 	id := Slugify(in.Name)
 	id, err := a.uniqueSeriesID(ctx, id)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateBGMVolume(in.BGMVolume); err != nil {
 		return nil, err
 	}
 
@@ -257,6 +265,9 @@ func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.S
 			MaxRetries:     orDefault(in.Retries, a.Cfg.MaxRetries),
 			VideoStyle:     in.VideoStyle,
 			Creative:       in.Creative,
+			// 成片 BGM（§20）：相对路径相对系列目录，音量 0＝默认 0.18。
+			BGMPath:   strings.TrimSpace(in.BGMPath),
+			BGMVolume: in.BGMVolume,
 			// 系列级 Provider 覆盖：空＝用系统默认（engine resolveProviders 时回退）。
 			TextProvider:  in.TextProvider,
 			TTSProvider:   in.TTSProvider,
@@ -465,6 +476,37 @@ func (a *App) UpdateSeriesCreative(ctx context.Context, seriesID, preset string,
 		return nil, translateErr(err)
 	}
 	return s, nil
+}
+
+// validateBGMVolume 校验成片 BGM 音量：必须落在 0..1（含 0 与 1）。
+// 0 表示「未设置＝用默认 0.18」，是合法值。
+func validateBGMVolume(v float64) error {
+	if v < 0 || v > 1 {
+		return fmt.Errorf("bgm_volume 必须在 0 到 1 之间（含 0 与 1，0＝默认 0.18），收到 %g", v)
+	}
+	return nil
+}
+
+// UpdateSeriesBGM 更新系列的成片背景音乐设置（§20，补丁语义）。
+//   - path 非 nil：写入 BGM 路径（相对路径相对系列目录 data/projects/<series-id>/；空串＝清除）。
+//   - volume 非 nil：写入 0..1 音量（0＝清除、回到默认 0.18），越界返回中文错误。
+//   - 任一为 nil：该项保持原值。不动 voice_id / visual_mode，二者创建后锁定。
+func (a *App) UpdateSeriesBGM(ctx context.Context, seriesID string, path *string, volume *float64) error {
+	s, err := a.Repo.GetSeries(ctx, seriesID)
+	if err != nil {
+		return translateErr(err)
+	}
+	if path != nil {
+		s.Config.BGMPath = strings.TrimSpace(*path)
+	}
+	if volume != nil {
+		if err := validateBGMVolume(*volume); err != nil {
+			return err
+		}
+		s.Config.BGMVolume = *volume
+	}
+	s.UpdatedAt = time.Now()
+	return translateErr(a.Repo.UpdateSeries(ctx, s))
 }
 
 // GenerateSeriesKeyframes 为系列人物设定集批量生成定妆照（透传 engine）。

@@ -530,6 +530,9 @@ type MetaDraft = {
   tts_provider: string
   image_provider: string
   video_provider: string
+  // §20 成片 BGM：路径相对系列目录（留空＝无 BGM）；音量 0..1（0＝默认 0.18）。
+  bgm_path: string
+  bgm_volume: number
 }
 
 function metaDraftOf(s: Series): MetaDraft {
@@ -545,6 +548,8 @@ function metaDraftOf(s: Series): MetaDraft {
     tts_provider: s.config.tts_provider ?? '',
     image_provider: s.config.image_provider ?? '',
     video_provider: s.config.video_provider ?? '',
+    bgm_path: s.config.bgm_path ?? '',
+    bgm_volume: s.config.bgm_volume ?? 0,
   }
 }
 
@@ -631,6 +636,23 @@ function SeriesMetaSection({
               onChange={(e) => set('max_retries', Number(e.target.value) || 0)}
             />
           </Field>
+          <Field label="成片 BGM 路径（留空＝无 BGM）">
+            <TextInput
+              value={draft.bgm_path}
+              onChange={(e) => set('bgm_path', e.target.value)}
+              placeholder="相对系列目录，如 bgm/theme.mp3；或服务器绝对路径"
+            />
+          </Field>
+          <Field label="BGM 音量（0~1，0＝默认 0.18）">
+            <TextInput
+              type="number"
+              min={0}
+              max={1}
+              step={0.01}
+              value={draft.bgm_volume}
+              onChange={(e) => set('bgm_volume', Number(e.target.value) || 0)}
+            />
+          </Field>
           {PROVIDER_FIELDS.map((f) => (
             <Field key={f.key} label={`${f.label} Provider`}>
               <Select value={draft[f.key]} onChange={(e) => set(f.key, e.target.value)}>
@@ -684,7 +706,16 @@ function SeriesMetaSection({
         {PROVIDER_FIELDS.map((f) => (
           <InfoTile key={f.key} label={`${f.label} Provider`} value={providerLabel(f.key, series.config[f.key])} />
         ))}
+        <InfoTile label="成片 BGM" value={series.config.bgm_path || '未设置'} />
       </div>
+      {/* 相对路径的 BGM 位于系列目录内，可经 seriesMedia 白名单直接试听；绝对路径不提供试听。 */}
+      {series.config.bgm_path && !series.config.bgm_path.startsWith('/') && (
+        <audio
+          className="mt-3 w-full max-w-md"
+          controls
+          src={seriesMediaUrl(series.id, series.config.bgm_path)}
+        />
+      )}
       {series.description && (
         <p className="mt-4 text-sm text-paper-300/60 leading-relaxed">{series.description}</p>
       )}

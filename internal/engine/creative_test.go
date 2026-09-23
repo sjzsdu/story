@@ -39,6 +39,14 @@ type legacyMediaParams struct {
 	VoiceDigest   string `json:"voice_digest"`
 }
 
+// legacyFinalParams 复刻 §20 新增 BGM 字段之前的 final 派生参数。
+type legacyFinalParams struct {
+	MediaKey      string `json:"media_key"`
+	Ratio         string `json:"ratio"`
+	Resolution    string `json:"resolution"`
+	BurnSubtitles bool   `json:"burn_subtitles"`
+}
+
 // legacyNodeKey 复刻改动前的派生键算法（只换 params 类型），作为独立参照。
 func legacyNodeKey(stage domain.Stage, parentID string, params any, attempt int) string {
 	b, _ := json.Marshal(params)
@@ -88,6 +96,26 @@ func TestDerivationKeyUnchangedForDefaultCreative(t *testing.T) {
 				Ratio: "9:16", Resolution: "1080P", VoiceID: "v1", VoiceDigest: "d2",
 			},
 		},
+		// §20：BGM 零值（未配置）时 final 派生键必须与加 bgm/bgm_vol 字段前逐字一致，
+		// 否则存量 final 节点全部被误判失效（compose 虽无模型费用，但会白跑重做）。
+		{
+			name: "final", stage: domain.StageFinal, parent: "media-abc123", attempt: 0,
+			now: finalParams{
+				MediaKey: "media-abc123", Ratio: "9:16", Resolution: "1080P", BurnSubtitles: true,
+			},
+			legacy: legacyFinalParams{
+				MediaKey: "media-abc123", Ratio: "9:16", Resolution: "1080P", BurnSubtitles: true,
+			},
+		},
+		{
+			name: "final-reroll", stage: domain.StageFinal, parent: "media-abc123", attempt: 2,
+			now: finalParams{
+				MediaKey: "media-abc123", Ratio: "16:9", Resolution: "720P",
+			},
+			legacy: legacyFinalParams{
+				MediaKey: "media-abc123", Ratio: "16:9", Resolution: "720P",
+			},
+		},
 	}
 	for _, c := range cases {
 		got := nodeKey(c.stage, c.parent, c.now, c.attempt)
@@ -95,6 +123,34 @@ func TestDerivationKeyUnchangedForDefaultCreative(t *testing.T) {
 		if got != want {
 			t.Fatalf("%s 派生键变了：默认配置下旧产物会被误判失效并重复调用付费模型\n got %s\nwant %s", c.name, got, want)
 		}
+	}
+}
+
+// TestFinalParamsZeroBGMJSONUnchanged 用硬编码 json 串锁死 final 派生参数的 marshal 字节：
+// BGM 为零值（空串/0）时必须与 §20 加字段前完全一致（omitempty 铁律）。
+func TestFinalParamsZeroBGMJSONUnchanged(t *testing.T) {
+	got, err := json.Marshal(finalParams{
+		MediaKey: "media-abc123", Ratio: "9:16", Resolution: "1080P", BurnSubtitles: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"media_key":"media-abc123","ratio":"9:16","resolution":"1080P","burn_subtitles":true}`
+	if string(got) != want {
+		t.Fatalf("BGM 零值时 final 派生参数字节变了，存量 final 派生键会全变：\n got %s\nwant %s", got, want)
+	}
+	// 非零 BGM 必须出现（否则改了 BGM 配置却不换版本、混音不生效）。
+	withBGM, err := json.Marshal(finalParams{
+		MediaKey: "media-abc123", Ratio: "9:16", Resolution: "1080P", BurnSubtitles: true,
+		BGM: "bgm/theme.mp3", BGMVolume: 0.5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wantBGM = `{"media_key":"media-abc123","ratio":"9:16","resolution":"1080P","burn_subtitles":true,` +
+		`"bgm":"bgm/theme.mp3","bgm_vol":0.5}`
+	if string(withBGM) != wantBGM {
+		t.Fatalf("配置 BGM 后字段未按预期出现：\n got %s\nwant %s", withBGM, wantBGM)
 	}
 }
 

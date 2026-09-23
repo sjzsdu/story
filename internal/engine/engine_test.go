@@ -715,6 +715,108 @@ func TestLegacyChainReusesMigratedNodes(t *testing.T) {
 	}
 }
 
+// ---- 成片 BGM（§20）----
+
+// produceToMedia 把流水线跑到 media 节点完成（Compose 的前置条件）。
+func produceToMedia(t *testing.T, f *fixture) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := f.eng.GenerateStory(ctx, f.epID, DeriveOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.eng.PlanStoryboard(ctx, f.epID, DeriveOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.eng.Produce(ctx, f.epID, DeriveOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestComposePassesBGMToComposer 验证配置 BGM 后 Compose 把解析出的绝对路径与
+// **原始**音量值（0 表示默认，不在此处归一化）透传给 composer。
+func TestComposePassesBGMToComposer(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	produceToMedia(t, f)
+
+	// 曲目按约定落在系列目录 data/projects/<series-id>/ 下，配置里写相对路径。
+	const bgmRel = "bgm/theme.mp3"
+	bgmAbs := filepath.Join(f.eng.projectsDir, "guiguzi", bgmRel)
+	if err := os.MkdirAll(filepath.Dir(bgmAbs), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bgmAbs, []byte("fake-mp3"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setSeriesConfig(t, f, func(c *domain.SeriesConfig) {
+		c.BGMPath = bgmRel
+		c.BGMVolume = 0.5
+	})
+
+	if _, err := f.eng.Compose(ctx, f.epID, DeriveOptions{}); err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if len(f.composr.ComposeRequests) == 0 {
+		t.Fatal("测试前提：应有 Compose 请求")
+	}
+	got := f.composr.ComposeRequests[len(f.composr.ComposeRequests)-1]
+	if got.BGMPath != bgmAbs {
+		t.Fatalf("BGM 应解析为系列目录下的绝对路径: got %q, want %q", got.BGMPath, bgmAbs)
+	}
+	if got.BGMVolume != 0.5 {
+		t.Fatalf("BGM 音量应原样透传（归一化在 ffmpeg provider）: got %v, want 0.5", got.BGMVolume)
+	}
+
+	// 改音量必须派生新的 final 节点（BGM 配置进派生键）。
+	before := f.composr.ComposeCalls
+	setSeriesConfig(t, f, func(c *domain.SeriesConfig) { c.BGMVolume = 0.3 })
+	final1 := activeStageNode(t, f, domain.StageFinal)
+	if _, err := f.eng.Compose(ctx, f.epID, DeriveOptions{}); err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	final2 := activeStageNode(t, f, domain.StageFinal)
+	if final2.ID == final1.ID {
+		t.Fatal("改 BGM 音量必须派生新的 final 节点，否则混音配置改了不生效")
+	}
+	if f.composr.ComposeCalls != before+1 {
+		t.Fatalf("换版本应重新合成: calls %d → %d", before, f.composr.ComposeCalls)
+	}
+	if got = f.composr.ComposeRequests[len(f.composr.ComposeRequests)-1]; got.BGMVolume != 0.3 {
+		t.Fatalf("新版本音量未透传: %v", got.BGMVolume)
+	}
+}
+
+// TestComposeBGMFileMissingErrors 配置了 BGM 但文件不存在时必须报清晰错误、
+// 绝不静默跳过（否则用户以为 BGM 生效了），且不调用 composer。
+func TestComposeBGMFileMissingErrors(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	produceToMedia(t, f)
+
+	setSeriesConfig(t, f, func(c *domain.SeriesConfig) { c.BGMPath = "bgm/missing.mp3" })
+	before := f.composr.ComposeCalls
+
+	_, err := f.eng.Compose(ctx, f.epID, DeriveOptions{})
+	if err == nil {
+		t.Fatal("BGM 文件不存在时 Compose 必须报错")
+	}
+	wantAbs := filepath.Join(f.eng.projectsDir, "guiguzi", "bgm", "missing.mp3")
+	if !strings.Contains(err.Error(), wantAbs) {
+		t.Fatalf("错误信息应写明解析后的绝对路径 %s: %v", wantAbs, err)
+	}
+	if !strings.Contains(err.Error(), "清空") {
+		t.Fatalf("错误信息应给出修复方式（清空配置）: %v", err)
+	}
+	if f.composr.ComposeCalls != before {
+		t.Fatalf("BGM 缺失时不应调用 composer: %d → %d", before, f.composr.ComposeCalls)
+	}
+	// 绝对路径同样校验。
+	setSeriesConfig(t, f, func(c *domain.SeriesConfig) { c.BGMPath = filepath.Join(f.eng.projectsDir, "nope.mp3") })
+	if _, err := f.eng.Compose(ctx, f.epID, DeriveOptions{}); err == nil {
+		t.Fatal("绝对路径 BGM 不存在时同样必须报错")
+	}
+}
+
 func sampleCandidates() []domain.StoryCandidate {
 	// 新流程每次只生成一篇定稿故事（单元素切片）。
 	return []domain.StoryCandidate{

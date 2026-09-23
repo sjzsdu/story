@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"strings"
 
 	"github.com/sjzsdu/story/internal/domain"
 )
@@ -78,11 +79,15 @@ func (e *Engine) DeriveLegacyChain(ctx context.Context, ep *domain.Episode, seri
 	}
 
 	if mediaNode != nil && len(in.Outputs) > 0 {
+		// BGM 与 Compose 取同源的 series.Config 原始值，保证迁移键＝当前键。
+		// （迁移发生在 Bootstrap 时旧集尚无 BGM 配置，两处都是零值 → omitempty 不入字节。）
 		params := finalParams{
 			MediaKey:      mediaNode.ID,
 			Ratio:         series.Config.Ratio,
 			Resolution:    series.Config.Resolution,
 			BurnSubtitles: true,
+			BGM:           strings.TrimSpace(series.Config.BGMPath),
+			BGMVolume:     series.Config.BGMVolume,
 		}
 		finalNode := ensureNode(ep, domain.StageFinal, mediaNode, params, false)
 		finalNode.Outputs = in.Outputs

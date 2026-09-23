@@ -31,6 +31,9 @@ var (
 	seriesPreset     string
 	seriesStoryInstr string
 	seriesVideoStyle string
+	// 成片 BGM（§20）：--bgm 路径（相对系列目录），--bgm-volume 音量（0＝未设置）。
+	seriesBGM       string
+	seriesBGMVolume float64
 )
 
 var seriesCmd = &cobra.Command{
@@ -68,6 +71,8 @@ var seriesCreateCmd = &cobra.Command{
 			Retries:        seriesRetries,
 			VideoStyle:     videoStyle,
 			Creative:       creative,
+			BGMPath:        seriesBGM,
+			BGMVolume:      seriesBGMVolume,
 		})
 		if err != nil {
 			return err
@@ -96,10 +101,31 @@ var seriesSetCmd = &cobra.Command{
 		if !cmd.Flags().Changed("preset") {
 			preset = "" // 未显式指定预设＝不套用（补丁语义）
 		}
-		if len(knobs) == 0 && preset == "" {
-			return fmt.Errorf("没有要修改的项：请用 --preset / --creative key=value / --story-instruction / --video-style")
+		// 成片 BGM（§20）：只有显式出现在命令行上的 flag 才提交（补丁语义）。
+		bgmChanged := cmd.Flags().Changed("bgm")
+		volChanged := cmd.Flags().Changed("bgm-volume")
+		if len(knobs) == 0 && preset == "" && !bgmChanged && !volChanged {
+			return fmt.Errorf("没有要修改的项：请用 --preset / --creative key=value / --story-instruction / --video-style / --bgm / --bgm-volume")
 		}
-		se, err := application.UpdateSeriesCreative(rootCtx, args[0], preset, knobs)
+		if len(knobs) > 0 || preset != "" {
+			if _, err := application.UpdateSeriesCreative(rootCtx, args[0], preset, knobs); err != nil {
+				return err
+			}
+		}
+		if bgmChanged || volChanged {
+			var path *string
+			var volume *float64
+			if bgmChanged {
+				path = &seriesBGM
+			}
+			if volChanged {
+				volume = &seriesBGMVolume
+			}
+			if err := application.UpdateSeriesBGM(rootCtx, args[0], path, volume); err != nil {
+				return err
+			}
+		}
+		se, err := application.GetSeries(rootCtx, args[0])
 		if err != nil {
 			return err
 		}
@@ -164,6 +190,15 @@ func printSeries(se *domain.Series) {
 	}
 	fmt.Printf("  画面: %s / %s / %s\n", se.Config.Ratio, se.Config.Resolution, visualModeLabel(se.Config.VisualMode))
 	fmt.Printf("  并发上限: %d  重试次数: %d\n", se.Config.MaxConcurrency, se.Config.MaxRetries)
+	if se.Config.BGMPath != "" {
+		if se.Config.BGMVolume > 0 {
+			fmt.Printf("  BGM: %s（音量 %.2f）\n", se.Config.BGMPath, se.Config.BGMVolume)
+		} else {
+			fmt.Printf("  BGM: %s（音量 默认 0.18）\n", se.Config.BGMPath)
+		}
+	} else {
+		fmt.Println("  BGM: 未设置")
+	}
 	if se.VoiceID != "" {
 		fmt.Printf("  声音: %s（锁定）\n", se.VoiceID)
 	} else {
@@ -284,12 +319,21 @@ func init() {
 	seriesCreateCmd.Flags().StringVar(&seriesInstruction, "instruction", "", "（旧）TTS 风格指令，配合 --voice-raw 用")
 	seriesCreateCmd.Flags().IntVar(&seriesConcurrency, "concurrency", 0, "单集最大并发镜头数（默认 3）")
 	seriesCreateCmd.Flags().IntVar(&seriesRetries, "retries", 0, "失败重试次数（默认 3）")
-	registerCreativeFlags(seriesCreateCmd)
+	registerBGMFlags(seriesCreateCmd)
 
 	registerCreativeFlags(seriesSetCmd)
+	registerBGMFlags(seriesSetCmd)
 
 	seriesCmd.AddCommand(seriesCreateCmd, seriesSetCmd, seriesListCmd, seriesShowCmd)
 	rootCmd.AddCommand(seriesCmd)
+}
+
+// registerBGMFlags 注册成片 BGM 相关 flag（create 与 set 共用同一组变量，§20）。
+func registerBGMFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&seriesBGM, "bgm", "",
+		"成片背景音乐路径（相对系列目录 data/projects/<系列ID>/，如 bgm/theme.mp3；留空＝无 BGM）")
+	cmd.Flags().Float64Var(&seriesBGMVolume, "bgm-volume", 0,
+		"BGM 音量 0..1（含 0 与 1；0＝未设置，用默认 0.18）")
 }
 
 // registerCreativeFlags 注册创作设置相关 flag（create 与 set 共用同一组变量）。

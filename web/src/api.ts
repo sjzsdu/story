@@ -52,6 +52,9 @@ export const api = {
     tts_provider?: string
     image_provider?: string
     video_provider?: string
+    // §20 成片 BGM：path 相对 data/projects/<series-id>/；volume 0..1，0/缺省＝默认 0.18。
+    bgm_path?: string
+    bgm_volume?: number
   }) => request<Series>('/api/series', { method: 'POST', body: JSON.stringify(body) }),
 
   // getCreativeCatalog 拉取创作参数注册表（knob/preset 声明式快照），前端据此渲染控件。
@@ -85,6 +88,9 @@ export const api = {
       tts_provider?: string
       image_provider?: string
       video_provider?: string
+      // §20 成片 BGM（补丁语义；因后端 DisallowUnknownFields，字段名必须与 Go 侧一致）
+      bgm_path?: string
+      bgm_volume?: number
     },
   ) =>
     request<Series>(`/api/series/${encodeURIComponent(id)}`, {

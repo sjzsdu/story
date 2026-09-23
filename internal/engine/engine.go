@@ -684,11 +684,21 @@ func (e *Engine) Compose(ctx context.Context, episodeID string, opts DeriveOptio
 		return "", fmt.Errorf("画面节点 %s 尚无媒体产物，请先生产画面", parent.ID)
 	}
 
+	// §20 成片 BGM：先解析路径（相对路径 → 系列目录下的绝对路径）。
+	// 配置了却找不到文件时直接报错，不静默跳过——否则用户会以为 BGM 生效了。
+	bgmPath, err := e.resolveBGMPath(series)
+	if err != nil {
+		return "", err
+	}
+
 	params := finalParams{
 		MediaKey:      parent.ID,
 		Ratio:         series.Config.Ratio,
 		Resolution:    series.Config.Resolution,
 		BurnSubtitles: true,
+		// 存原始配置值（0＝默认），保证派生键稳定；音量归一化在 ffmpeg provider 做。
+		BGM:       strings.TrimSpace(series.Config.BGMPath),
+		BGMVolume: series.Config.BGMVolume,
 	}
 	node := ensureNode(ep, domain.StageFinal, parent, params, opts.Reroll)
 	ep.ActiveNodeID = node.ID
@@ -741,6 +751,8 @@ func (e *Engine) Compose(ctx context.Context, episodeID string, opts DeriveOptio
 		Resolution:    series.Config.Resolution,
 		FinalPath:     finalPath,
 		BurnSubtitles: true,
+		BGMPath:       bgmPath,
+		BGMVolume:     series.Config.BGMVolume,
 	})
 	if err != nil {
 		return "", e.failNode(ctx, ep, node, err)
@@ -758,6 +770,30 @@ func (e *Engine) Compose(ctx context.Context, episodeID string, opts DeriveOptio
 		return "", err
 	}
 	return res.FinalPath, nil
+}
+
+// resolveBGMPath 解析系列配置的 BGM 曲目路径为绝对路径（§20）。
+// 约定：相对路径相对系列目录 data/projects/<series-id>/（这样能过 serveSeriesMedia
+// 白名单、Web 可试听）；绝对路径原样使用。空值＝无 BGM，返回空串。
+// 配置了但文件不存在时返回清晰错误（绝不静默跳过）。
+func (e *Engine) resolveBGMPath(series *domain.Series) (string, error) {
+	raw := strings.TrimSpace(series.Config.BGMPath)
+	if raw == "" {
+		return "", nil
+	}
+	abs := raw
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(e.projectsDir, series.ID, raw)
+	}
+	abs = filepath.Clean(abs)
+	fi, err := os.Stat(abs)
+	if err != nil || fi.IsDir() {
+		return "", fmt.Errorf(
+			"背景音乐文件不存在: %s（系列 %s 的 bgm_path=%q，相对路径按系列目录 data/projects/%s/ 解析）；"+
+				"请把音乐文件放到该位置，或清空系列设置里的 BGM 路径后重试",
+			abs, series.ID, raw, series.ID)
+	}
+	return abs, nil
 }
 
 // PreviewVoice 用指定语音画像合成一段样音（试音用，不计入流水线状态）。

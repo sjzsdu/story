@@ -637,6 +637,108 @@ func TestUpdateSeriesEndpoint(t *testing.T) {
 	}
 }
 
+// TestUpdateSeriesBGMPatch 覆盖系列 BGM 配置的补丁语义（§20）：
+// 设置、清空、volume 越界 400、volume=0 视为清除回默认；创建时同样可带 BGM 字段
+//（decodeBody 是 DisallowUnknownFields，前端会提交的字段必须都在请求体结构里）。
+func TestUpdateSeriesBGMPatch(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+
+	// 创建：带 BGM 字段必须被接受（否则 400 unknown field）。
+	res, err := http.Post(ts.URL+"/api/series", "application/json", strings.NewReader(
+		`{"name":"鬼谷子","bgm_path":"bgm/theme.mp3","bgm_volume":0.4}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created domain.Series
+	json.NewDecoder(res.Body).Decode(&created)
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("创建系列状态码 = %d", res.StatusCode)
+	}
+	if created.Config.BGMPath != "bgm/theme.mp3" || created.Config.BGMVolume != 0.4 {
+		t.Fatalf("创建时 BGM 未写入: %+v", created.Config)
+	}
+
+	put := func(url, payload string) *http.Response {
+		req, err := http.NewRequest(http.MethodPut, url, strings.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+
+	// 补丁：只改 BGM，其余字段不动。
+	var updated domain.Series
+	r := put(ts.URL+"/api/series/guiguzi", `{"bgm_path":"bgm/other.mp3","bgm_volume":0.6}`)
+	json.NewDecoder(r.Body).Decode(&updated)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("PUT BGM 状态码 = %d", r.StatusCode)
+	}
+	if updated.Config.BGMPath != "bgm/other.mp3" || updated.Config.BGMVolume != 0.6 {
+		t.Fatalf("BGM 补丁未生效: %+v", updated.Config)
+	}
+	if updated.Config.Ratio != "9:16" {
+		t.Fatalf("未提到的字段不应被改动: %q", updated.Config.Ratio)
+	}
+
+	// volume=0 视为清除回默认（omitempty 后不出现在响应里，读回为 0）。
+	var cleared domain.Series
+	r = put(ts.URL+"/api/series/guiguzi", `{"bgm_volume":0}`)
+	json.NewDecoder(r.Body).Decode(&cleared)
+	r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("volume=0 状态码 = %d", r.StatusCode)
+	}
+	if cleared.Config.BGMVolume != 0 {
+		t.Fatalf("volume=0 应清除回默认: %v", cleared.Config.BGMVolume)
+	}
+	if cleared.Config.BGMPath != "bgm/other.mp3" {
+		t.Fatalf("只提 volume 不应改路径: %q", cleared.Config.BGMPath)
+	}
+
+	// 清空路径：空串＝无 BGM；未提到的 volume 保持原值。
+	var noBGM domain.Series
+	r = put(ts.URL+"/api/series/guiguzi", `{"bgm_path":""}`)
+	json.NewDecoder(r.Body).Decode(&noBGM)
+	r.Body.Close()
+	if noBGM.Config.BGMPath != "" {
+		t.Fatalf("空串应清除 BGM 路径: %q", noBGM.Config.BGMPath)
+	}
+
+	// volume 越界 → 400。
+	for _, body := range []string{`{"bgm_volume":1.5}`, `{"bgm_volume":-0.1}`} {
+		r = put(ts.URL+"/api/series/guiguzi", body)
+		r.Body.Close()
+		if r.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s 应 400，得到 %d", body, r.StatusCode)
+		}
+	}
+	// 边界值 0 与 1 合法。
+	for _, body := range []string{`{"bgm_volume":0}`, `{"bgm_volume":1}`} {
+		r = put(ts.URL+"/api/series/guiguzi", body)
+		r.Body.Close()
+		if r.StatusCode != http.StatusOK {
+			t.Fatalf("%s 应 200，得到 %d", body, r.StatusCode)
+		}
+	}
+	// 创建时 volume 越界同样 400。
+	res, err = http.Post(ts.URL+"/api/series", "application/json",
+		strings.NewReader(`{"name":"越界","bgm_volume":2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("创建时 bgm_volume 越界应 400，得到 %d", res.StatusCode)
+	}
+}
+
 // TestUpdateEpisodeMetaEndpoint 覆盖 PATCH /api/episodes/{id}：只改元数据、
 // 版本树与产物不受影响。
 func TestUpdateEpisodeMetaEndpoint(t *testing.T) {

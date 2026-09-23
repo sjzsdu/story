@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/sjzsdu/story/internal/port"
@@ -103,6 +104,14 @@ func (c *Composer) Compose(ctx context.Context, req port.ComposeRequest) (port.C
 
 	// Stage 3：烧录硬字幕（Go 渲染透明 PNG → overlay 按时间区间叠加，
 	// 不依赖 ffmpeg 的 libass/freetype 编译选项）。
+	// 输出路径须转绝对——ffmpeg 以 cmd.Dir=WorkDir(tmp/) 运行，
+	// 若 FinalPath 是相对项目根的路径会被误解析到 tmp/ 下。
+	finalAbs := req.FinalPath
+	if !filepath.IsAbs(finalAbs) {
+		if abs, err := filepath.Abs(finalAbs); err == nil {
+			finalAbs = abs
+		}
+	}
 	if req.BurnSubtitles {
 		// 同时保留一份 SRT 旁路基，便于人工审阅/平台外挂。
 		if err := writeSRT(filepath.Join(req.WorkDir, "subs.srt"), req.Tracks, cueRanges); err != nil {
@@ -153,14 +162,6 @@ func (c *Composer) Compose(ctx context.Context, req port.ComposeRequest) (port.C
 		}
 		filter := strings.TrimSuffix(graph.String(), ";")
 
-		// 输出路径须转绝对——ffmpeg 以 cmd.Dir=WorkDir(tmp/) 运行，
-		// 若 FinalPath 是相对项目根的路径会被误解析到 tmp/ 下。
-		finalAbs := req.FinalPath
-		if !filepath.IsAbs(finalAbs) {
-			if abs, err := filepath.Abs(finalAbs); err == nil {
-				finalAbs = abs
-			}
-		}
 		args = append(args,
 			"-filter_complex", filter,
 			"-map", "["+prev+"]", "-map", "0:a?",
@@ -171,8 +172,45 @@ func (c *Composer) Compose(ctx context.Context, req port.ComposeRequest) (port.C
 		if _, err := runCmdDir(ctx, req.WorkDir, c.FFMPEG, args...); err != nil {
 			return port.ComposeResult{}, fmt.Errorf("烧录字幕: %w", err)
 		}
-	} else {
+	} else if strings.TrimSpace(req.BGMPath) == "" {
+		// 无字幕且无 BGM：拼接产物即成片，直接就位（与历史行为逐字一致）。
 		if err := moveFile(concatPath, req.FinalPath); err != nil {
+			return port.ComposeResult{}, err
+		}
+	}
+
+	// Stage 4：BGM 混音（可选，§20）。两条上游分支都要覆盖：
+	// 烧字幕分支的当前中间产物是刚写好的 FinalPath；未烧字幕分支是拼接产物
+	//（上面对无字幕且无 BGM 的情形已提前 move 结束，走到这里的必有 BGM）。
+	// 混音先写临时文件再 move 到 FinalPath，避免读写同一文件。
+	if bgm := strings.TrimSpace(req.BGMPath); bgm != "" {
+		cur := concatPath
+		if req.BurnSubtitles {
+			cur = finalAbs
+		}
+		if !filepath.IsAbs(cur) {
+			if abs, err := filepath.Abs(cur); err == nil {
+				cur = abs
+			}
+		}
+		dur, err := probeDuration(ctx, c.FFProbe, cur)
+		if err != nil {
+			return port.ComposeResult{}, fmt.Errorf("BGM 混音前探测时长: %w", err)
+		}
+		mixPath := filepath.Join(req.WorkDir, "bgm-mix.mp4")
+		// -stream_loop -1 把 BGM 循环到成片时长；视频流 copy 不重编码（省时且不损画质）；
+		// amix duration=first 保证输出时长与不加 BGM 时完全一致（engine 有 ±3s 时长验收）。
+		if _, err := runCmdDir(ctx, req.WorkDir, c.FFMPEG, "-y",
+			"-i", cur,
+			"-stream_loop", "-1", "-i", bgm,
+			"-filter_complex", bgmMixFilter(req.BGMVolume, dur),
+			"-map", "0:v", "-map", "[aout]",
+			"-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+			mixPath,
+		); err != nil {
+			return port.ComposeResult{}, fmt.Errorf("BGM 混音: %w", err)
+		}
+		if err := moveFile(mixPath, finalAbs); err != nil {
 			return port.ComposeResult{}, err
 		}
 	}
@@ -186,6 +224,30 @@ func (c *Composer) Compose(ctx context.Context, req port.ComposeRequest) (port.C
 		w, h = width, height
 	}
 	return port.ComposeResult{FinalPath: req.FinalPath, DurationSec: dur, Width: w, Height: h}, nil
+}
+
+// bgmMixFilter 生成 BGM 混音的 -filter_complex 图（纯函数，便于单测）。
+//
+// 输入 0 = 成片（旁白 + 画面），输入 1 = 循环到成片时长的 BGM（-stream_loop -1）。
+//   - volume 0（未设置）归一为默认 0.18——旁白为主体，BGM 只做底噪；
+//     归一化放在这里而不是 engine，是为了让 params 存原始值、派生键稳定。
+//   - 开头淡入 1.5s；结尾淡出 3s，起点夹到 ≥0（成片极短时淡出从 0 开始、时长＝成片时长）。
+//   - amix duration=first：输出时长跟随旁白轨，与不加 BGM 时完全一致。
+//   - normalize=0 关闭 amix 的自动音量归一，需要 ffmpeg ≥4.4
+//     （本机 Homebrew ffmpeg 满足该假设；旧版会直接报错，不会静默出错）。
+func bgmMixFilter(volume, durationSec float64) string {
+	if volume <= 0 {
+		volume = 0.18
+	}
+	if durationSec < 0 {
+		durationSec = 0
+	}
+	fadeOutStart := math.Max(0, durationSec-3)
+	fadeOutDur := math.Min(3, durationSec)
+	return fmt.Sprintf(
+		"[1:a]volume=%s,aresample=48000,afade=t=in:st=0:d=1.5,afade=t=out:st=%.2f:d=%.2f[bgm];"+
+			"[0:a][bgm]amix=inputs=2:duration=first:normalize=0[aout]",
+		strconv.FormatFloat(volume, 'g', -1, 64), fadeOutStart, fadeOutDur)
 }
 
 // normalize 把单个镜头统一到目标分辨率，并用旁白对齐时长。

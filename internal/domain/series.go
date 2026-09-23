@@ -60,6 +60,16 @@ type SeriesConfig struct {
 	ImageProvider string `json:"image_provider,omitempty"`
 	// VideoProvider 视频生成供应商覆盖（bailian / kling）。
 	VideoProvider string `json:"video_provider,omitempty"`
+
+	// ---- 成片 BGM 背景音乐（§20）----
+	// BGMPath 背景音乐曲目路径；空＝无 BGM。
+	// 约定：相对路径相对系列目录 data/projects/<series-id>/（能过 serveSeriesMedia
+	// 白名单、Web 可试听）；也接受绝对路径（此时 Web 不提供试听）。
+	// 普通 SeriesConfig 字段（语义同 subtitle_font），不走 CreativeKnob 插件通道。
+	BGMPath string `json:"bgm_path,omitempty"`
+	// BGMVolume 0..1 相对音量；0 或未设置＝用默认 0.18（旁白为主体，BGM 只做底噪）。
+	// 归一化（0→0.18）在 ffmpeg provider 做，此处存原始值以保证派生键稳定。
+	BGMVolume float64 `json:"bgm_volume,omitempty"`
 }
 
 // 画面生产模式（SeriesConfig.VisualMode）。

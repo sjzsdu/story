@@ -419,6 +419,8 @@ type Composer struct {
 	ExportCalls   int
 	FailCompose   bool
 	StillRequests []port.StillRequest
+	// ComposeRequests 记录每次 Compose 的请求（供断言 BGM 路径/音量等参数透传）。
+	ComposeRequests []port.ComposeRequest
 }
 
 // RenderStill 实现 port.VideoComposer：记录请求并写一个假片段文件。
@@ -452,7 +454,10 @@ func (m *Composer) ProbeDuration(_ context.Context, path string) (float64, error
 
 // Compose 实现 port.VideoComposer。
 func (m *Composer) Compose(_ context.Context, req port.ComposeRequest) (port.ComposeResult, error) {
+	m.mu.Lock()
 	m.ComposeCalls++
+	m.ComposeRequests = append(m.ComposeRequests, req)
+	m.mu.Unlock()
 	if m.FailCompose {
 		return port.ComposeResult{}, fmt.Errorf("模拟合成失败")
 	}

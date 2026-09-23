@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -143,6 +144,9 @@ type updateSeriesRequest struct {
 	TTSProvider    *string `json:"tts_provider"`
 	ImageProvider  *string `json:"image_provider"`
 	VideoProvider  *string `json:"video_provider"`
+	// 成片 BGM（§20）：path 为曲目路径（相对系列目录），volume 为 0..1 音量（0＝默认 0.18）。
+	BGMPath   *string  `json:"bgm_path"`
+	BGMVolume *float64 `json:"bgm_volume"`
 }
 
 // updateSeries 修改系列基础信息与规格。声音与画面模式仍锁定：本接口不写这两项。
@@ -214,6 +218,18 @@ func (s *Server) updateSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.VideoProvider != nil {
 		se.Config.VideoProvider = strings.TrimSpace(*req.VideoProvider)
+	}
+	// 成片 BGM（§20）：nil＝保持原值；空串路径＝清除，音量 0＝回到默认 0.18。
+	if req.BGMVolume != nil && (*req.BGMVolume < 0 || *req.BGMVolume > 1) {
+		writeErr(w, http.StatusBadRequest,
+			fmt.Sprintf("bgm_volume 必须在 0 到 1 之间（含 0 与 1，0＝默认 0.18），收到 %g", *req.BGMVolume))
+		return
+	}
+	if req.BGMPath != nil {
+		se.Config.BGMPath = strings.TrimSpace(*req.BGMPath)
+	}
+	if req.BGMVolume != nil {
+		se.Config.BGMVolume = *req.BGMVolume
 	}
 	if err := s.app.UpdateSeries(r.Context(), se); err != nil {
 		if errors.Is(err, app.ErrNotFound) {

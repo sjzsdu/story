@@ -82,6 +82,11 @@ type finalParams struct {
 	Ratio         string `json:"ratio"`
 	Resolution    string `json:"resolution"`
 	BurnSubtitles bool   `json:"burn_subtitles"`
+	// BGM 背景音乐曲目（系列配置 bgm_path 原始值）；同上，必须 omitempty：
+	// 未设置时（空串/0）json.Marshal 字节必须与加字段前完全一致，否则存量 final 派生键全变。
+	BGM string `json:"bgm,omitempty"`
+	// BGMVolume 背景音乐音量（原始配置值，0＝默认 0.18，归一化在 ffmpeg provider 做）；同上，必须 omitempty。
+	BGMVolume float64 `json:"bgm_vol,omitempty"`
 }
 
 // nodeKey 计算派生键：内容寻址，只哈希输入不哈希输出（bl 输出不确定）。
