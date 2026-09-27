@@ -152,6 +152,8 @@ type updateSeriesRequest struct {
 	// 成片 BGM（§20）：path 为曲目路径（相对系列目录），volume 为 0..1 音量（0＝默认 0.18）。
 	BGMPath   *string  `json:"bgm_path"`
 	BGMVolume *float64 `json:"bgm_volume"`
+	// PlanningBrief 系列级「规划要求」：nil＝保持原值；空串＝清除。
+	PlanningBrief *string `json:"planning_brief"`
 }
 
 // updateSeries 修改系列基础信息与规格。声音与画面模式仍锁定：本接口不写这两项。
@@ -249,6 +251,10 @@ func (s *Server) updateSeries(w http.ResponseWriter, r *http.Request) {
 	if req.BGMVolume != nil {
 		se.Config.BGMVolume = *req.BGMVolume
 	}
+	// 规划要求：nil＝保持原值；空串＝清除。
+	if req.PlanningBrief != nil {
+		se.Config.PlanningBrief = strings.TrimSpace(*req.PlanningBrief)
+	}
 	if err := s.app.UpdateSeries(r.Context(), se); err != nil {
 		if errors.Is(err, app.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "系列不存在")
@@ -281,17 +287,15 @@ func (s *Server) listSeriesPublishJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, jobs)
 }
 
-// updateCreativeRequest 创作设置请求体：预设 + 逐项微调。
+// updateCreativeRequest 创作设置请求体：逐项微调。
 type updateCreativeRequest struct {
-	// Preset 预设 key；留空＝不套用预设，只做逐项微调。
-	Preset string `json:"preset"`
-	// Creative 形如 {knobKey: value}（含画风 video_style、自定义指令 instruction）。
+	// Creative 形如 {knobKey: value}（含画风 video_style）。
 	// 补丁语义：未出现的参数保持原值，显式空串＝清除该参数（回到内置默认）。
 	Creative map[string]string `json:"creative"`
 }
 
 // updateCreative 覆盖系列的创作控制设置（voice_id / visual_mode 仍锁定，不在此列）。
-// 未知参数 key / 未知预设返回 400。
+// 未知参数 key 返回 400。
 func (s *Server) updateCreative(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.seriesOrError(w, r); !ok {
 		return
@@ -301,11 +305,11 @@ func (s *Server) updateCreative(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
 		return
 	}
-	if err := validateCreative(req.Preset, req.Creative); err != nil {
+	if err := validateKnobs(req.Creative); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	se, err := s.app.UpdateSeriesCreative(r.Context(), r.PathValue("id"), req.Preset, req.Creative)
+	se, err := s.app.UpdateSeriesCreative(r.Context(), r.PathValue("id"), req.Creative)
 	if err != nil {
 		if errors.Is(err, app.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "系列不存在")

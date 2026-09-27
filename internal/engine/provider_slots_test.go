@@ -105,7 +105,7 @@ func TestPlanSlotSeriesOverride(t *testing.T) {
 
 	// 覆盖 deepseek → plannerB。
 	updateSeriesConfig(t, f, func(c *domain.SeriesConfig) { c.TextProvider = "deepseek" })
-	ps, err := e.ChatSeriesPlan(ctx, "guiguzi", "再扩两集")
+	ps, err := e.ChatSeriesPlan(ctx, "guiguzi", "再扩两集", "")
 	if err != nil {
 		t.Fatalf("策划会话: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestPlanSlotSeriesOverride(t *testing.T) {
 
 	// 清空覆盖 → 默认实现（New 注册的 default 键）。
 	updateSeriesConfig(t, f, func(c *domain.SeriesConfig) { c.TextProvider = "" })
-	if _, err := e.ChatSeriesPlan(ctx, "guiguzi", "换個方向"); err != nil {
+	if _, err := e.ChatSeriesPlan(ctx, "guiguzi", "换個方向", ""); err != nil {
 		t.Fatalf("默认策划会话: %v", err)
 	}
 	if f.planner.Calls != 1 || plannerA.Calls != 0 {
@@ -128,7 +128,7 @@ func TestPlanSlotSeriesOverride(t *testing.T) {
 
 	// 未知覆盖 → 报错。
 	updateSeriesConfig(t, f, func(c *domain.SeriesConfig) { c.TextProvider = "iflytek" })
-	if _, err := e.ChatSeriesPlan(ctx, "guiguzi", "再来一次"); err == nil {
+	if _, err := e.ChatSeriesPlan(ctx, "guiguzi", "再来一次", ""); err == nil {
 		t.Fatal("未知覆盖应报错")
 	}
 }

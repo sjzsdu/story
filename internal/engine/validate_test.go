@@ -24,6 +24,23 @@ func TestValidateCandidates(t *testing.T) {
 	}
 }
 
+func TestValidateCandidatesSlopGate(t *testing.T) {
+	// 干净正文照常通过。
+	clean := []domain.StoryCandidate{{Title: "a", Source: "《史记》", Content: "他抬起头，问妻子的第一句话不是喊疼，而是舌头还在不在。"}}
+	if err := ValidateCandidates(clean); err != nil {
+		t.Fatalf("干净故事被拒: %v", err)
+	}
+	// 硬伤词 → 验收失败（节点将由 failNode 标记 failed，等人工决策换一版）。
+	slop := []domain.StoryCandidate{{Title: "b", Source: "《史记》", Content: "综上所述，他决定往东走。"}}
+	err := ValidateCandidates(slop)
+	if err == nil {
+		t.Fatal("命中硬伤词的故事应被拒")
+	}
+	if !strings.Contains(err.Error(), "硬伤") {
+		t.Fatalf("错误信息应说明硬伤原因, got %v", err)
+	}
+}
+
 func TestValidateStoryboard(t *testing.T) {
 	mk := func(n, dur int) *domain.Storyboard {
 		var sc []domain.Scene

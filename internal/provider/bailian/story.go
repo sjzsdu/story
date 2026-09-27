@@ -8,13 +8,16 @@ import (
 	"github.com/sjzsdu/story/internal/templates"
 )
 
-// storyResponse 模型返回的定稿故事 JSON（2026-09-19 起不再生成多个候选）。
+// storyResponse 模型返回的定稿故事 JSON（2026-09-19 起不再生成多个候选；
+// §27 起顺带产出五平台原生发布物料 platform_pack，可能缺省，解析不强校验）。
 type storyResponse struct {
 	Title   string `json:"title"`
 	Dynasty string `json:"dynasty"`
 	Source  string `json:"source"`
 	Summary string `json:"summary"`
 	Content string `json:"content"`
+	// PlatformPack 平台 → 原生物料；模型未产出时为 nil，消费方逐字段回退旧默认。
+	PlatformPack map[string]*domain.PlatformMeta `json:"platform_pack,omitempty"`
 }
 
 // GenerateCandidates 实现 port.StoryGenerator。
@@ -45,12 +48,13 @@ func (c *Client) GenerateCandidates(ctx context.Context, req port.StoryRequest) 
 		return nil, err
 	}
 	story := domain.StoryCandidate{
-		Index:   1,
-		Title:   resp.Title,
-		Dynasty: resp.Dynasty,
-		Source:  resp.Source,
-		Summary: resp.Summary,
-		Content: resp.Content,
+		Index:        1,
+		Title:        resp.Title,
+		Dynasty:      resp.Dynasty,
+		Source:       resp.Source,
+		Summary:      resp.Summary,
+		Content:      resp.Content,
+		PlatformPack: resp.PlatformPack,
 	}
 	return []domain.StoryCandidate{story}, nil
 }

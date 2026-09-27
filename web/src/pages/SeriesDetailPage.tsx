@@ -549,6 +549,8 @@ type MetaDraft = {
   // §23：path 优先为素材引用 "asset:<id>"（曲库下拉选择）；isCustomPath 模式下为字面路径。
   bgm_path: string
   bgm_volume: number
+  // 分集策划的长期规划要求（AI 规划分集时自动带上，不必每次重新交代）。
+  planning_brief: string
 }
 
 function metaDraftOf(s: Series): MetaDraft {
@@ -570,6 +572,7 @@ function metaDraftOf(s: Series): MetaDraft {
     video_model: s.config.video_model ?? '',
     bgm_path: s.config.bgm_path ?? '',
     bgm_volume: s.config.bgm_volume ?? 0,
+    planning_brief: s.config.planning_brief ?? '',
   }
 }
 
@@ -667,6 +670,16 @@ function SeriesMetaSection({
                 maxLength={300}
                 onChange={(e) => set('description', e.target.value)}
                 placeholder="一两句话说明这个系列讲什么"
+              />
+            </Field>
+          </div>
+          <div className="sm:col-span-2">
+            <Field label="分集规划要求（AI 规划分集时自动带上）">
+              <TextArea
+                value={draft.planning_brief}
+                maxLength={500}
+                onChange={(e) => set('planning_brief', e.target.value)}
+                placeholder="如：规划 40 集，重点覆盖合纵连横全程；以《史记》《战国策》为准；每集独立成篇但埋跨集钩子"
               />
             </Field>
           </div>
@@ -888,6 +901,12 @@ function SeriesMetaSection({
       {series.description && (
         <p className="mt-4 text-sm text-paper-300/60 leading-relaxed">{series.description}</p>
       )}
+      {series.config.planning_brief && (
+        <p className="mt-2 text-sm text-gold-500/70 leading-relaxed">
+          <span className="text-paper-300/40">规划要求：</span>
+          {series.config.planning_brief}
+        </p>
+      )}
       <div className="mt-3 flex items-center gap-4 text-xs text-paper-300/35">
         <span>创建于 {formatTime(series.created_at)}</span>
         <span>更新于 {formatTime(series.updated_at)}</span>
@@ -923,11 +942,7 @@ function CreativeSection({ series, catalog }: { series: Series; catalog?: Creati
     mutationFn: (values: CreativeStyle) => {
       if (!catalog) throw new Error('创作参数注册表尚未加载')
       // 整体覆盖写：把全部 knob 值（含空串＝清除）一次提交，避免只交差异造成回填歧义。
-      // 预设留空时回落到注册表的默认预设，显式清掉旧的溯源 key。
-      return api.updateCreative(series.id, {
-        preset: values.preset || catalog.default_preset,
-        creative: knobMap(values, catalog),
-      })
+      return api.updateCreative(series.id, { creative: knobMap(values, catalog) })
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['series', series.id] })
@@ -991,11 +1006,6 @@ function CreativeSection({ series, catalog }: { series: Series; catalog?: Creati
   return (
     <div>
       <div className="text-xs text-paper-300/40 mb-3">创作控制参数</div>
-      {current.preset && (
-        <p className="mb-3 text-xs text-paper-300/50">
-          预设：{catalog.presets.find((p) => p.key === current.preset)?.name ?? current.preset}
-        </p>
-      )}
       <div className="grid sm:grid-cols-2 gap-4 text-sm">
         {catalog.knobs.map((k) => (
           <div key={k.key}>

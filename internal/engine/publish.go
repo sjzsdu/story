@@ -32,7 +32,8 @@ func (e *Engine) Publish(ctx context.Context, episodeID string, opts port.Publis
 		return nil, fmt.Errorf("未指定发布平台，请用 --platform 指定")
 	}
 
-	// 读取故事内容
+	// 读取故事内容：标题/简介为旧默认，各平台原生物料（§27 platform_pack）
+	// 在下方平台循环内逐平台覆盖，缺失字段逐项回退到这里的默认值。
 	title := ep.Title
 	description := ""
 	if finalNode.Story != nil {
@@ -54,6 +55,20 @@ func (e *Engine) Publish(ctx context.Context, episodeID string, opts port.Publis
 			return nil, fmt.Errorf("平台 %s 未注册发布能力", domain.PlatformLabel(platform))
 		}
 
+		// §27：优先用故事生成时顺带产出的该平台原生物料，缺哪项补哪项。
+		pTitle, pDesc, pTags := title, description, buildTags(series, title)
+		if pack := storyPack(finalNode.Story, platform); pack != nil {
+			if s := strings.TrimSpace(pack.Title); s != "" {
+				pTitle = s
+			}
+			if s := strings.TrimSpace(pack.Description); s != "" {
+				pDesc = s
+			}
+			if len(pack.Tags) > 0 {
+				pTags = pack.Tags
+			}
+		}
+
 		jobID := fmt.Sprintf("%s-%s-%d", ep.ID, platform, time.Now().UnixMilli())
 		job := &domain.PublishJob{
 			ID:          jobID,
@@ -64,9 +79,9 @@ func (e *Engine) Publish(ctx context.Context, episodeID string, opts port.Publis
 			Status:      domain.PublishPending,
 			VideoPath:   videoPath,
 			CoverPath:   opts.CoverPath,
-			Title:       truncateTitle(title, platform),
-			Description: buildDescription(description, series, platform),
-			Tags:        buildTags(series, title),
+			Title:       truncateTitle(pTitle, platform),
+			Description: clampDescription(pDesc, platform),
+			Tags:        pTags,
 			Category:    opts.Category,
 			MaxRetries:  3,
 			CreatedAt:   time.Now(),
@@ -188,27 +203,32 @@ func (e *Engine) DeletePublished(ctx context.Context, jobID string, providers pu
 
 // ---- 辅助函数 ----
 
-func truncateTitle(title string, platform domain.Platform) string {
-	limit := domain.PlatformTitleLimit(platform)
-	if len(title) <= limit {
-		return title
+// storyPack 取故事 platform_pack 中某平台的原生物料（§27）。
+func storyPack(story *domain.StoryCandidate, platform domain.Platform) *domain.PlatformMeta {
+	if story == nil || len(story.PlatformPack) == 0 {
+		return nil
 	}
-	return title[:limit-3] + "..."
+	return story.PlatformPack[string(platform)]
 }
 
-func buildDescription(summary string, series *domain.Series, platform domain.Platform) string {
-	var sb strings.Builder
-	if summary != "" {
-		sb.WriteString(summary)
-		sb.WriteString("\n\n")
+func truncateTitle(title string, platform domain.Platform) string {
+	limit := domain.PlatformTitleLimit(platform)
+	r := []rune(title)
+	if len(r) <= limit {
+		return title
 	}
-	// 自动添加标签
+	return string(r[:limit-3]) + "..."
+}
+
+// clampDescription 按平台描述字数上限截断（§27 起内容优先取原生物料，
+// 这里只做兜底钳制；按 rune 截，避免旧实现的字节截断切碎汉字）。
+func clampDescription(desc string, platform domain.Platform) string {
 	limit := domain.PlatformDescLimit(platform)
-	desc := sb.String()
-	if len(desc) > limit {
-		desc = desc[:limit]
+	r := []rune(desc)
+	if len(r) <= limit {
+		return desc
 	}
-	return desc
+	return string(r[:limit])
 }
 
 func buildTags(series *domain.Series, title string) []string {

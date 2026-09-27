@@ -25,8 +25,7 @@ func TestSeriesEpisodeCRUD(t *testing.T) {
 			Ratio: "9:16", Resolution: "1080P", MaxConcurrency: 3, MaxRetries: 3,
 			// 创作控制参数走 config_json 整块 blob（加字段零迁移）。
 			Creative: domain.CreativeStyle{
-				Preset: "suspense", Narrative: "suspense", Audience: "teen",
-				Length: "short", Motion: "strong", Instruction: "多用短句",
+				Motion: "strong", Duration: "d60",
 			},
 		},
 		CreatedAt: now, UpdatedAt: now,

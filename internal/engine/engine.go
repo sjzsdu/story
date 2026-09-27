@@ -1091,9 +1091,25 @@ func writeStoryCopy(n *domain.VersionNode) error {
 	if n.Story == nil {
 		return nil
 	}
-	md := fmt.Sprintf("# %s\n\n- 朝代：%s\n- 出处：%s\n\n%s\n",
-		n.Story.Title, n.Story.Dynasty, n.Story.Source, n.Story.Content)
-	return os.WriteFile(filepath.Join(n.Dir, "story.md"), []byte(md), 0o644)
+	s := n.Story
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s\n\n- 朝代：%s\n- 出处：%s\n\n%s\n", s.Title, s.Dynasty, s.Source, s.Content)
+	// §27 平台原生物料：人工可直接在此审阅/修改各平台发布文案。
+	if len(s.PlatformPack) > 0 {
+		b.WriteString("\n## 平台发布物料\n\n")
+		for _, p := range domain.AllPlatforms() {
+			m, ok := s.PlatformPack[string(p)]
+			if !ok || m == nil {
+				continue
+			}
+			fmt.Fprintf(&b, "### %s\n\n- 标题：%s\n- 简介：%s\n", domain.PlatformLabel(p), m.Title, m.Description)
+			if len(m.Tags) > 0 {
+				fmt.Fprintf(&b, "- 标签：%s\n", strings.Join(m.Tags, "、"))
+			}
+			b.WriteString("\n")
+		}
+	}
+	return os.WriteFile(filepath.Join(n.Dir, "story.md"), []byte(b.String()), 0o644)
 }
 
 // writeStoryboardCopy 在 storyboard 节点目录落一份人工审阅副本 storyboard.json。

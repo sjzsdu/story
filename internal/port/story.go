@@ -13,7 +13,7 @@ type StoryRequest struct {
 	SeriesName string // 系列名，如「鬼谷子」
 	Dynasty    string // 朝代锚定
 	Topic      string // 本集主题/切入点（可空）
-	// Brief 创作要求（templates.StoryBrief 组装：叙事风格/受众/篇幅/用户自定义指令）。
+	// Brief 创作要求（templates.StoryBrief 组装：平台时长档位 / 本集附加指令 / 本版附加要求）。
 	// 空串＝全部默认，provider 不得因此改变 prompt（默认产出与历史行为逐字一致）。
 	Brief string
 	// Model 模型覆盖（系列级 text_model）：空＝用 provider 构造期的系统默认模型。

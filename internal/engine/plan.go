@@ -30,7 +30,8 @@ func (e *Engine) GetSeriesPlan(ctx context.Context, seriesID string) (*domain.Pl
 }
 
 // ChatSeriesPlan 追加一条用户消息，调用 AI 规划/修订分集草案，并持久化整段会话。
-func (e *Engine) ChatSeriesPlan(ctx context.Context, seriesID, userText string) (*domain.PlanSession, error) {
+// systemExtra 为本轮附加的系统级规划要求（空＝只用默认系统提示词）。
+func (e *Engine) ChatSeriesPlan(ctx context.Context, seriesID, userText, systemExtra string) (*domain.PlanSession, error) {
 	userText = strings.TrimSpace(userText)
 	if userText == "" {
 		return nil, fmt.Errorf("请先描述你对这一季分集的想法")
@@ -74,12 +75,14 @@ func (e *Engine) ChatSeriesPlan(ctx context.Context, seriesID, userText string) 
 		return nil, fmt.Errorf("未配置分集策划能力（SeriesPlanner）")
 	}
 	result, err := planner.PlanEpisodes(ctx, port.SeriesPlanRequest{
-		SeriesName:  series.Name,
-		Dynasty:     series.Config.Dynasty,
-		Description: series.Description,
-		Existing:    existing,
-		Characters:  series.Characters,
-		Messages:    ps.Messages,
+		SeriesName:    series.Name,
+		Dynasty:       series.Config.Dynasty,
+		Description:   series.Description,
+		PlanningBrief: series.Config.PlanningBrief,
+		Existing:      existing,
+		Characters:    series.Characters,
+		Messages:      ps.Messages,
+		SystemExtra:   strings.TrimSpace(systemExtra),
 	})
 	if err != nil {
 		// 失败时移除本轮用户消息，避免把没得到回复的话钉进历史。

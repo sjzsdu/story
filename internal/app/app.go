@@ -389,7 +389,7 @@ func Bootstrap(ctx context.Context, cfg config.Config, configPath string) (*App,
 		voiceBuilders:   capability.NewSlot[port.VoiceBuilder]("造声"),
 		voiceListers:    capability.NewSlot[port.VoiceLister]("音色库列举"),
 		publish:         capability.NewSlot[port.PlatformPublisher]("平台发布"),
-		audioNormalizer: composer, // 参考音频归一化复用 ffmpeg composer（§16）
+		audioNormalizer: composer,               // 参考音频归一化复用 ffmpeg composer（§16）
 		assetProber:     composer.ProbeDuration, // §23 素材时长探测（容错，见 asset.go）
 		configPath:      configPath,
 	}
@@ -438,7 +438,7 @@ type CreateSeriesInput struct {
 	Retries        int
 	// VideoStyle 全片画风（templates.VisualStyles 的 key，空＝默认画风）。
 	VideoStyle string
-	// Creative 创作控制参数（叙事/受众/篇幅/运镜/自定义指令）。
+	// Creative 创作控制参数（运镜强度 / 平台时长档位）。
 	// 零值＝内置默认，产出与历史行为完全一致。
 	Creative domain.CreativeStyle
 	// ---- 成片 BGM 背景音乐（§20）----
@@ -446,6 +446,8 @@ type CreateSeriesInput struct {
 	BGMPath string
 	// BGMVolume 0..1 相对音量；0＝未设置（用默认 0.18）。
 	BGMVolume float64
+	// PlanningBrief 系列级「规划要求」：分集策划时自动注入首轮上下文（可空）。
+	PlanningBrief string
 	// ---- 系列级 Provider 覆盖（空＝用系统默认） ----
 	TextProvider  string
 	TTSProvider   string
@@ -511,6 +513,8 @@ func (a *App) CreateSeries(ctx context.Context, in CreateSeriesInput) (*domain.S
 			// 成片 BGM（§20）：相对路径相对系列目录，音量 0＝默认 0.18。
 			BGMPath:   strings.TrimSpace(in.BGMPath),
 			BGMVolume: in.BGMVolume,
+			// 分集策划的长期规划要求：随策划请求注入首轮上下文。
+			PlanningBrief: strings.TrimSpace(in.PlanningBrief),
 			// 系列级 Provider 覆盖：空＝用系统默认（engine resolveProviders 时回退）。
 			TextProvider:  in.TextProvider,
 			TTSProvider:   in.TTSProvider,
@@ -662,8 +666,9 @@ func (a *App) GetSeriesPlan(ctx context.Context, seriesID string) (*domain.PlanS
 }
 
 // ChatSeriesPlan 向策划会话追加一条用户消息，返回更新后的会话（含最新草案）。
-func (a *App) ChatSeriesPlan(ctx context.Context, seriesID, message string) (*domain.PlanSession, error) {
-	ps, err := a.Engine.ChatSeriesPlan(ctx, seriesID, message)
+// systemExtra 为本轮附加的系统级规划要求（空＝只用默认系统提示词）。
+func (a *App) ChatSeriesPlan(ctx context.Context, seriesID, message, systemExtra string) (*domain.PlanSession, error) {
+	ps, err := a.Engine.ChatSeriesPlan(ctx, seriesID, message, systemExtra)
 	return ps, translateErr(err)
 }
 
@@ -686,35 +691,24 @@ func (a *App) UpdateSeriesCharacters(ctx context.Context, seriesID string, chara
 	return translateErr(a.Repo.UpdateSeries(ctx, s))
 }
 
-// ExpandCreative 展开「创作预设 + 逐项微调（{knobKey: value}）」为系列配置字段。
-// 未知参数 key / 未知预设报错（HTTP 入口映射为 400）；空值一律等于内置默认。
+// ExpandCreative 把逐项微调（{knobKey: value}）展开为系列配置字段。
+// 未知参数 key 报错（HTTP 入口映射为 400）；空值一律等于内置默认。
 // 参数名与合法值全部由 templates 注册表决定，本层不硬编码任何风格。
-func ExpandCreative(preset string, knobs map[string]string) (domain.CreativeStyle, string, error) {
-	cfg, err := templates.Expand(preset, knobs)
-	if err != nil {
+func ExpandCreative(knobs map[string]string) (domain.CreativeStyle, string, error) {
+	var cfg domain.SeriesConfig
+	if err := templates.ApplyKnobs(&cfg, knobs); err != nil {
 		return domain.CreativeStyle{}, "", err
 	}
 	return cfg.Creative, cfg.VideoStyle, nil
 }
 
 // UpdateSeriesCreative 更新系列的创作控制设置（不动 voice_id / visual_mode，二者创建后锁定）。
-//   - preset 非空：先套用该预设，并记录溯源 key（默认预设＝清空溯源）。
 //   - knobs 为 {knobKey: value}：逐项覆盖，未知 key 报错；显式空串＝清除该参数。
-//     「自定义创作指令」也是其中一个 key（instruction，文本型），无需单独通道。
 //   - 补丁语义：未出现在 knobs 里的参数保持原值。
-func (a *App) UpdateSeriesCreative(ctx context.Context, seriesID, preset string, knobs map[string]string) (*domain.Series, error) {
+func (a *App) UpdateSeriesCreative(ctx context.Context, seriesID string, knobs map[string]string) (*domain.Series, error) {
 	s, err := a.Repo.GetSeries(ctx, seriesID)
 	if err != nil {
 		return nil, translateErr(err)
-	}
-	if p := strings.TrimSpace(preset); p != "" {
-		if err := templates.ApplyPreset(&s.Config, p); err != nil {
-			return nil, err
-		}
-		// ApplyPreset 不落默认预设 key（保证零值＝现状），此处显式回填/清空溯源。
-		if p == templates.DefaultPresetKey {
-			s.Config.Creative.Preset = ""
-		}
 	}
 	if err := templates.ApplyKnobs(&s.Config, knobs); err != nil {
 		return nil, err

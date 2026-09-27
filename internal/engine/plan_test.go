@@ -21,7 +21,7 @@ func TestSeriesPlanChat(t *testing.T) {
 	}
 
 	// 首轮对话：消息落库、草案更新。
-	ps, err := f.eng.ChatSeriesPlan(ctx, "guiguzi", "先规划两集")
+	ps, err := f.eng.ChatSeriesPlan(ctx, "guiguzi", "先规划两集", "")
 	if err != nil {
 		t.Fatalf("chat: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestSeriesPlanChat(t *testing.T) {
 
 	// provider 失败：本轮用户消息不应留在历史里。
 	f.planner.Err = context.DeadlineExceeded
-	if _, err := f.eng.ChatSeriesPlan(ctx, "guiguzi", "再来一轮"); err == nil {
+	if _, err := f.eng.ChatSeriesPlan(ctx, "guiguzi", "再来一轮", ""); err == nil {
 		t.Fatal("应返回错误")
 	}
 	after, _ := f.eng.GetSeriesPlan(ctx, "guiguzi")

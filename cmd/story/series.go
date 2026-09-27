@@ -26,10 +26,8 @@ var (
 	seriesConcurrency int
 	seriesRetries     int
 	// 创作控制参数：--creative 可重复（key=value，天然插件化，新增参数不必加 flag）；
-	// --preset / --story-instruction / --video-style 是常用项的语法糖。
+	// --video-style 是常用项的语法糖。
 	seriesCreative   []string
-	seriesPreset     string
-	seriesStoryInstr string
 	seriesVideoStyle string
 	// 成片 BGM（§20 + §23）：--bgm 路径（相对系列目录），--bgm-asset 曲库素材 ID，
 	// 两者互斥；--bgm-volume 音量（0＝未设置）。
@@ -46,6 +44,13 @@ var (
 	seriesTTSModel   string
 	seriesImageModel string
 	seriesVideoModel string
+	// 系列级「规划要求」：分集策划时自动注入首轮上下文（--planning-brief）。
+	seriesPlanningBrief string
+	// series plan 子命令参数。
+	planMessage     string
+	planSystemExtra string
+	planApply       bool
+	planReset       bool
 )
 
 var seriesCmd = &cobra.Command{
@@ -64,7 +69,7 @@ var seriesCreateCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		creative, videoStyle, err := app.ExpandCreative(seriesPreset, knobs)
+		creative, videoStyle, err := app.ExpandCreative(knobs)
 		if err != nil {
 			return err
 		}
@@ -104,6 +109,8 @@ var seriesCreateCmd = &cobra.Command{
 			TTSModel:   strings.TrimSpace(seriesTTSModel),
 			ImageModel: strings.TrimSpace(seriesImageModel),
 			VideoModel: strings.TrimSpace(seriesVideoModel),
+			// 分集策划的长期规划要求：每次策划自动注入首轮上下文。
+			PlanningBrief: seriesPlanningBrief,
 		})
 		if err != nil {
 			return err
@@ -124,16 +131,12 @@ var seriesCreateCmd = &cobra.Command{
 
 var seriesSetCmd = &cobra.Command{
 	Use:   "set <series-id>",
-	Short: "修改系列的创作设置（预设 / 参数 / 自定义指令；声音与画面模式创建后锁定）",
+	Short: "修改系列的创作设置（画面参数；声音与画面模式创建后锁定）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		knobs, err := creativeKnobs(cmd, true)
 		if err != nil {
 			return err
-		}
-		preset := seriesPreset
-		if !cmd.Flags().Changed("preset") {
-			preset = "" // 未显式指定预设＝不套用（补丁语义）
 		}
 		// 成片 BGM（§20 + §23）：只有显式出现在命令行上的 flag 才提交（补丁语义）。
 		bgmPath, bgmChanged, err := currentBGMPathValue(cmd)
@@ -158,15 +161,16 @@ var seriesSetCmd = &cobra.Command{
 			providerChanged["image-provider"] || providerChanged["video-provider"] ||
 			providerChanged["text-model"] || providerChanged["tts-model"] ||
 			providerChanged["image-model"] || providerChanged["video-model"]
-		if len(knobs) == 0 && preset == "" && !bgmChanged && !volChanged && !anyProvider {
-			return fmt.Errorf("没有要修改的项：请用 --preset / --creative key=value / --story-instruction / --video-style / --bgm 或 --bgm-asset / --bgm-volume / --text-provider / --tts-provider / --image-provider / --video-provider / --text-model / --tts-model / --image-model / --video-model")
+		briefChanged := cmd.Flags().Changed("planning-brief")
+		if len(knobs) == 0 && !bgmChanged && !volChanged && !anyProvider && !briefChanged {
+			return fmt.Errorf("没有要修改的项：请用 --creative key=value / --video-style / --bgm 或 --bgm-asset / --bgm-volume / --planning-brief / --text-provider / --tts-provider / --image-provider / --video-provider / --text-model / --tts-model / --image-model / --video-model")
 		}
-		if len(knobs) > 0 || preset != "" {
-			if _, err := application.UpdateSeriesCreative(rootCtx, args[0], preset, knobs); err != nil {
+		if len(knobs) > 0 {
+			if _, err := application.UpdateSeriesCreative(rootCtx, args[0], knobs); err != nil {
 				return err
 			}
 		}
-		if anyProvider {
+		if anyProvider || briefChanged {
 			se, err := application.GetSeries(rootCtx, args[0])
 			if err != nil {
 				return err
@@ -194,6 +198,10 @@ var seriesSetCmd = &cobra.Command{
 			}
 			if providerChanged["video-model"] {
 				se.Config.VideoModel = strings.TrimSpace(seriesVideoModel)
+			}
+			// 规划要求：显式空串＝清除。
+			if briefChanged {
+				se.Config.PlanningBrief = strings.TrimSpace(seriesPlanningBrief)
 			}
 			// 与 server updateSeries 同一条链路（补丁后整条写回）。
 			if err := application.UpdateSeries(rootCtx, se); err != nil {
@@ -302,6 +310,9 @@ func printSeries(se *domain.Series) {
 		// 兼容旧 series（迁移前）：显示旧字段
 		fmt.Printf("  音色: %s（旧字段，重启后会迁移到 voice_id）\n", se.Config.TTSVoice)
 	}
+	if se.Config.PlanningBrief != "" {
+		fmt.Printf("  规划要求: %s\n", truncate(se.Config.PlanningBrief, 60))
+	}
 	printProviders(se)
 	printModels(se)
 	printCreative(se)
@@ -352,32 +363,10 @@ func printCreative(se *domain.Series) {
 		fmt.Println("  创作设置: 全部跟随内置默认")
 		return
 	}
-	if cfg.Creative.Preset != "" {
-		if p, ok := templates.FindPreset(cfg.Creative.Preset); ok {
-			// 预设只是起点，参数还能逐项微调：两者不一致时如实说明。
-			if presetMatches(p, cfg) {
-				fmt.Printf("  创作设置（预设「%s」）:\n", p.Name)
-			} else {
-				fmt.Printf("  创作设置（预设「%s」基础上微调）:\n", p.Name)
-			}
-		}
-	} else {
-		fmt.Println("  创作设置:")
-	}
+	fmt.Println("  创作设置:")
 	for _, l := range lines {
 		fmt.Printf("    %s\n", l)
 	}
-}
-
-// presetMatches 判断当前设置是否与预设完全一致（没有任何微调）。
-// 默认预设的 values 为空，因此「全部未设置」也会判为一致。
-func presetMatches(p templates.Preset, cfg domain.SeriesConfig) bool {
-	for _, k := range templates.CreativeKnobs() {
-		if k.Get(cfg) != p.Values[k.Key] {
-			return false
-		}
-	}
-	return true
 }
 
 // knobValueLabel 把参数的原始值转成中文名（枚举查选项；文本原样截断）。
@@ -412,7 +401,6 @@ func creativeKnobs(cmd *cobra.Command, changedOnly bool) (map[string]string, err
 		knobs[key] = value
 	}
 	add("video-style", "video_style", seriesVideoStyle)
-	add("story-instruction", "instruction", seriesStoryInstr)
 	return knobs, nil
 }
 
@@ -472,9 +460,7 @@ func registerBGMFlags(cmd *cobra.Command) {
 // registerCreativeFlags 注册创作设置相关 flag（create 与 set 共用同一组变量）。
 func registerCreativeFlags(cmd *cobra.Command) {
 	cmd.Flags().StringArrayVar(&seriesCreative, "creative", nil,
-		"创作参数，可重复，格式 key=value（如 --creative narrative=suspense）；可用 key 见 story series show 或 Web 端")
-	cmd.Flags().StringVar(&seriesPreset, "preset", "", "创作预设 key：classic（默认）/ documentary / kids / suspense / teen / first_person / long_form")
-	cmd.Flags().StringVar(&seriesStoryInstr, "story-instruction", "", "自定义创作指令（自由文本，上限 500 字；与硬性规则冲突时以硬性规则为准）")
+		"创作参数，可重复，格式 key=value（如 --creative duration=d60）；可用 key 见 story series show 或 Web 端")
 	cmd.Flags().StringVar(&seriesVideoStyle, "video-style", "", "全片画风 key（选项由 templates 的风格包给出，如 gongbi/ink）")
 }
 
@@ -498,6 +484,9 @@ func registerProviderFlags(cmd *cobra.Command) {
 		"系列级图片模型覆盖（插画/定妆照；空＝跟随系统默认）")
 	cmd.Flags().StringVar(&seriesVideoModel, "video-model", "",
 		"系列级视频模型覆盖（空＝跟随系统默认）")
+	// 系列级「规划要求」：分集策划时自动注入首轮上下文；set 用 Changed 补丁语义。
+	cmd.Flags().StringVar(&seriesPlanningBrief, "planning-brief", "",
+		"分集策划的长期规划要求（目标集数/取材范围/叙事主线等；留空＝跟随系统默认，显式空串＝清除）")
 }
 
 // visualModeLabel 展示用的画面模式中文名（空值按默认 comic 显示）。

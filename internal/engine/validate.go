@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/sjzsdu/story/internal/domain"
+	"github.com/sjzsdu/story/internal/templates"
 )
 
 // 验收阈值（与 AGENTS.md 中的验收标准一致）。
@@ -35,6 +36,15 @@ func ValidateCandidates(cs []domain.StoryCandidate) error {
 		}
 		if strings.TrimSpace(c.Content) == "" {
 			return fmt.Errorf("故事《%s》正文为空", c.Title)
+		}
+		// 去文章腔机械验收（AGENTS.md §25）：硬伤零容忍、文章腔超阈值判废，
+		// 不通过则节点 failed，由 Agent/人决策换一版或人工修改。
+		if err := templates.CheckStorySlop(c.Title, c.Summary, c.Content); err != nil {
+			return fmt.Errorf("故事《%s》%w", c.Title, err)
+		}
+		// 听觉门禁（§27）：开场背景滑落 / 结尾无关事件句判废。
+		if err := templates.CheckStoryAural(c.Title, c.Content); err != nil {
+			return fmt.Errorf("故事《%s》%w", c.Title, err)
 		}
 	}
 	return nil

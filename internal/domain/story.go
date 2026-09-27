@@ -14,4 +14,19 @@ type StoryCandidate struct {
 	Summary string `json:"summary"`
 	// Content 白话故事正文（具备画面感与叙事冲突）。
 	Content string `json:"content"`
+	// PlatformPack 各平台原生发布物料（§27），key 为平台标识
+	// （douyin/kuaishou/bilibili/xiaohongshu/weixin，与 domain.Platform 一致）。
+	// 随故事一次调用顺带产出，零额外成本；可能缺平台或缺字段——消费方
+	// （engine.Publish / Web 发布面板）必须逐字段回退到旧默认逻辑，不因缺失报错。
+	PlatformPack map[string]*PlatformMeta `json:"platform_pack,omitempty"`
+}
+
+// PlatformMeta 一个平台的原生发布物料。
+type PlatformMeta struct {
+	// Title 为该平台口吻重写的标题（非截断，已按平台字数上限生成）。
+	Title string `json:"title"`
+	// Description 该平台口吻的简介（含话题引导或信息量补全）。
+	Description string `json:"description"`
+	// Tags 该平台格式的话题标签（不带 # 前缀，发布侧按平台格式渲染）。
+	Tags []string `json:"tags,omitempty"`
 }

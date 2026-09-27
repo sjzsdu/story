@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
 import type { CharacterSetting, EpisodeDraft } from '../types'
-import { Button, ErrorBox, Spinner } from './ui'
+import { Button, ErrorBox, Spinner, TextArea } from './ui'
 
 const FIELD_CLS =
   'w-full rounded-lg border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-paper-100 placeholder:text-paper-300/30 outline-none focus:border-gold-500/60'
@@ -42,6 +42,9 @@ export default function PlanPanel({
   }, [planQuery.data])
 
   const [input, setInput] = useState('')
+  // 附加规划要求（本轮系统级，可空）：默认收起，点「附加要求」展开。
+  const [extraOpen, setExtraOpen] = useState(false)
+  const [systemExtra, setSystemExtra] = useState('')
   const [err, setErr] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -55,7 +58,8 @@ export default function PlanPanel({
   }, [messages.length, chatLoadingSentinel(messages)])
 
   const chatMut = useMutation({
-    mutationFn: (message: string) => api.planChat(seriesId, message),
+    mutationFn: (v: { message: string; systemExtra?: string }) =>
+      api.planChat(seriesId, v.message, v.systemExtra),
     onSuccess: (ps) => {
       queryClient.setQueryData(planKey, ps)
       setInput('')
@@ -93,7 +97,7 @@ export default function PlanPanel({
   const send = (text: string) => {
     const msg = text.trim()
     if (!msg || chatMut.isPending) return
-    chatMut.mutate(msg)
+    chatMut.mutate({ message: msg, systemExtra: systemExtra.trim() || undefined })
   }
 
   const updateDraft = (i: number, patch: Partial<EpisodeDraft>) => {
@@ -156,6 +160,25 @@ export default function PlanPanel({
             )}
           </div>
           <div className="border-t border-ink-800 p-3">
+            {extraOpen && (
+              <div className="mb-2">
+                <TextArea
+                  value={systemExtra}
+                  onChange={(e) => setSystemExtra(e.target.value)}
+                  rows={2}
+                  maxLength={500}
+                  placeholder="附加规划要求（本轮生效的系统级指令，如：以《史记》《战国策》为准；按人物群像而非时间线分集）"
+                  className={FIELD_CLS}
+                />
+                <button
+                  type="button"
+                  onClick={() => setSystemExtra('')}
+                  className="mt-1 text-xs text-paper-300/40 hover:text-paper-300/70"
+                >
+                  清空附加要求
+                </button>
+              </div>
+            )}
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -171,7 +194,20 @@ export default function PlanPanel({
               disabled={chatMut.isPending}
             />
             <div className="flex items-center justify-between mt-2">
-              <span className="text-xs text-paper-300/35">Enter 发送 · Shift+Enter 换行</span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-paper-300/35">Enter 发送 · Shift+Enter 换行</span>
+                <button
+                  type="button"
+                  onClick={() => setExtraOpen((v) => !v)}
+                  className={`text-xs rounded-full px-2 py-0.5 border transition-colors ${
+                    extraOpen || systemExtra.trim()
+                      ? 'text-gold-500 border-gold-500/40 bg-gold-500/10'
+                      : 'text-paper-300/40 border-ink-700 hover:text-paper-300/70'
+                  }`}
+                >
+                  附加要求{systemExtra.trim() ? ' ·已填写' : ''}
+                </button>
+              </div>
               <div className="flex gap-2">
                 {hasSession && (
                   <Button

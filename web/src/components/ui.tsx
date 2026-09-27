@@ -107,7 +107,7 @@ export function ErrorBox({ children }: { children: ReactNode }) {
   )
 }
 
-/** 模态弹窗：点击遮罩或按 Esc 关闭。wide 用于表单字段较多的弹窗；maxWidth 可直接指定宽度档位（如 max-w-4xl）。 */
+/** 模态弹窗：点击外部区域不关闭（避免误触丢失表单内容），按 Esc 或点 ✕ 关闭。wide 用于表单字段较多的弹窗；maxWidth 可直接指定宽度档位（如 max-w-4xl）。 */
 export function Modal({
   open,
   onClose,
@@ -137,14 +137,12 @@ export function Modal({
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] bg-black/60 backdrop-blur-sm"
-      onClick={onClose}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby={title ? titleID : undefined}
         className={`w-full ${maxWidth ?? (wide ? 'max-w-2xl' : 'max-w-lg')} max-h-[80vh] overflow-y-auto rounded-xl border border-ink-700 bg-ink-900 shadow-2xl`}
-        onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-center justify-between px-5 py-3.5 border-b border-ink-800">
           <h3 id={titleID} className="font-display tracking-wide text-paper-100">

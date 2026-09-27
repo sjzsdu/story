@@ -45,9 +45,8 @@ export const api = {
     visual_mode?: 'comic' | 'video'
     // §16：声音条目 ID（推荐）；未传时服务端按平迁规则建/取一个。
     voice_id?: string
-    // 创作控制参数：preset 为预设 key，creative 为 {knobKey: value}（含画风/指令）。
-    // 全部留空时不要传这两个字段——保持与历史请求逐字一致。
-    preset?: string
+    // 创作控制参数：creative 为 {knobKey: value}（含画风）。
+    // 全部留空时不要传这个字段——保持与历史请求逐字一致。
     creative?: Record<string, string>
     // 系列级 Provider 覆盖（空＝用系统默认）
     text_provider?: string
@@ -62,16 +61,15 @@ export const api = {
     // §20 成片 BGM：path 相对 data/projects/<series-id>/；volume 0..1，0/缺省＝默认 0.18。
     bgm_path?: string
     bgm_volume?: number
+    // 分集策划的长期规划要求（策划时自动注入首轮上下文）。
+    planning_brief?: string
   }) => request<Series>('/api/series', { method: 'POST', body: JSON.stringify(body) }),
 
-  // getCreativeCatalog 拉取创作参数注册表（knob/preset 声明式快照），前端据此渲染控件。
+  // getCreativeCatalog 拉取创作参数注册表（声明式快照），前端据此渲染控件。
   getCreativeCatalog: () => request<CreativeCatalog>('/api/creative-catalog'),
 
   // updateCreative 覆盖系列的创作设置（补丁语义：未出现的参数保持原值，显式空串＝清除）。
-  updateCreative: (
-    seriesId: string,
-    body: { preset?: string; creative?: Record<string, string> },
-  ) =>
+  updateCreative: (seriesId: string, body: { creative?: Record<string, string> }) =>
     request<Series>(`/api/series/${encodeURIComponent(seriesId)}/creative`, {
       method: 'PUT',
       body: JSON.stringify(body),
@@ -104,6 +102,8 @@ export const api = {
       // §23：path 可为素材引用 "asset:<id>"（推荐，经曲库下拉选择）或字面路径；引用不存在时后端 400。
       bgm_path?: string
       bgm_volume?: number
+      // 分集策划的长期规划要求（补丁语义：nil＝保持原值；空串＝清除）。
+      planning_brief?: string
     },
   ) =>
     request<Series>(`/api/series/${encodeURIComponent(id)}`, {
@@ -183,10 +183,10 @@ export const api = {
   getPlan: (seriesId: string) =>
     request<PlanSession>(`/api/series/${encodeURIComponent(seriesId)}/plan`),
 
-  planChat: (seriesId: string, message: string) =>
+  planChat: (seriesId: string, message: string, systemExtra?: string) =>
     request<PlanSession>(`/api/series/${encodeURIComponent(seriesId)}/plan/chat`, {
       method: 'POST',
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, system_extra: systemExtra || undefined }),
     }),
 
   planApply: (seriesId: string, drafts: EpisodeDraft[], characters?: CharacterSetting[]) =>

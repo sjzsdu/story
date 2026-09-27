@@ -85,20 +85,19 @@ export interface SeriesConfig {
   // §23：path 可为素材引用 "asset:<id>"（曲库条目），此时试听走 /api/assets/{id}/file。
   bgm_path?: string
   bgm_volume?: number
+  // 分集策划的长期规划要求（目标集数/取材范围/叙事主线等；策划时自动注入首轮上下文）。
+  planning_brief?: string
 }
 
 // 创作控制参数：字段名即 GET /api/creative-catalog 里的 knob key。
+// 只保留「一眼能选的画面观感项」；讲述口味是项目内建的唯一默认，不做成参数。
 // 全部可空：未设置（undefined 或空串）＝跟随内置默认，产出与历史行为一致。
 // 注：video_style 在后端响应里位于 config.video_style（独立字段），但在请求体的
 // creative map 中它与其它参数同列——前端统一按 knob 渲染，故这里一并包含。
 export interface CreativeStyle {
-  preset?: string
-  narrative?: string
-  audience?: string
-  length?: string
   motion?: string
+  duration?: string
   video_style?: string
-  instruction?: string
 }
 
 // ---- 创作参数注册表（后端 templates.Catalog() 的 JSON 快照） ----
@@ -121,17 +120,8 @@ export interface CreativeKnob {
   options: CreativeOption[] // text 时为空数组（后端保证非 null）
 }
 
-export interface CreativePreset {
-  key: string
-  name: string
-  desc: string
-  values: Record<string, string> // {knobKey: value}，未列出的一律回落默认
-}
-
 export interface CreativeCatalog {
   knobs: CreativeKnob[]
-  presets: CreativePreset[]
-  default_preset: string
 }
 
 // §16：声音顶层实体（与 Series 同级）。series.voice_id 创建后锁定不可改。

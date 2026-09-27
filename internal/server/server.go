@@ -149,24 +149,15 @@ func (s *Server) episodeOrError(w http.ResponseWriter, r *http.Request) (*domain
 
 // ---------- 创作控制参数 ----------
 
-// creativeCatalog 返回创作参数与预设的注册表快照（同步、零费用）。
-// 前端按它渲染控件，所以新增参数 / 选项 / 预设不需要改前端。
+// creativeCatalog 返回创作参数注册表快照（同步、零费用）。
+// 前端按它渲染控件，所以新增参数 / 选项不需要改前端。
 func (s *Server) creativeCatalog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, templates.Catalog())
 }
 
-// validateCreative 校验创作设置请求：未知参数 key / 未知预设一律 400。
+// validateKnobs 校验创作设置请求：未知参数 key 一律 400。
 // 参数名与合法值来自 templates 注册表，这里只做存在性校验（值非法则回落默认）。
-func validateCreative(preset string, knobs map[string]string) error {
-	if p := strings.TrimSpace(preset); p != "" {
-		if _, ok := templates.FindPreset(p); !ok {
-			keys := make([]string, 0, len(templates.CreativePresets()))
-			for _, pr := range templates.CreativePresets() {
-				keys = append(keys, pr.Key)
-			}
-			return fmt.Errorf("未知创作预设 %q（支持：%s）", p, strings.Join(keys, ", "))
-		}
-	}
+func validateKnobs(knobs map[string]string) error {
 	for key := range knobs {
 		if _, ok := templates.FindKnob(key); !ok {
 			return fmt.Errorf("未知创作参数 %q（支持：%s）", key, templates.KnobKeys())
@@ -204,9 +195,8 @@ type createSeriesReq struct {
 	TTSInstruction string `json:"tts_instruction"`
 	Concurrency    int    `json:"concurrency"`
 	Retries        int    `json:"retries"`
-	// Preset 创作预设 key（可选）；Creative 为逐项微调，形如 {knobKey: value}，
-	// 含画风（video_style）。合法 key/值见 GET /api/creative-catalog。
-	Preset   string            `json:"preset"`
+	// Creative 逐项微调，形如 {knobKey: value}，含画风（video_style）。
+	// 合法 key/值见 GET /api/creative-catalog。
 	Creative map[string]string `json:"creative"`
 	// ---- 系列级 Provider 覆盖（空＝用系统默认） ----
 	TextProvider  string `json:"text_provider"`
@@ -223,6 +213,8 @@ type createSeriesReq struct {
 	BGMPath string `json:"bgm_path"`
 	// BGMVolume 0..1 音量；0＝未设置（用默认 0.18）。
 	BGMVolume float64 `json:"bgm_volume"`
+	// PlanningBrief 系列级「规划要求」：分集策划时自动注入首轮上下文（可空）。
+	PlanningBrief string `json:"planning_brief"`
 }
 
 func (s *Server) createSeries(w http.ResponseWriter, r *http.Request) {
@@ -235,7 +227,7 @@ func (s *Server) createSeries(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name 不能为空")
 		return
 	}
-	if err := validateCreative(req.Preset, req.Creative); err != nil {
+	if err := validateKnobs(req.Creative); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -245,7 +237,7 @@ func (s *Server) createSeries(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("bgm_volume 必须在 0 到 1 之间（含 0 与 1，0＝默认 0.18），收到 %g", req.BGMVolume))
 		return
 	}
-	creative, videoStyle, err := app.ExpandCreative(req.Preset, req.Creative)
+	creative, videoStyle, err := app.ExpandCreative(req.Creative)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -275,6 +267,7 @@ func (s *Server) createSeries(w http.ResponseWriter, r *http.Request) {
 		VideoModel:     req.VideoModel,
 		BGMPath:        req.BGMPath,
 		BGMVolume:      req.BGMVolume,
+		PlanningBrief:  req.PlanningBrief,
 	})
 	if err != nil {
 		// §23：asset 引用指向不存在的素材＝客户端输入问题，400 而非 500。

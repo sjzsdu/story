@@ -18,9 +18,15 @@ type SeriesPlanRequest struct {
 	SeriesName  string
 	Dynasty     string
 	Description string
-	Existing    []ExistingEpisodeBrief
-	Characters  []domain.CharacterSetting
-	Messages    []domain.PlanMessage
+	// PlanningBrief 系列级「规划要求」（SeriesConfig.PlanningBrief），
+	// 注入首轮上下文：目标集数、取材范围、叙事主线等长期约定。
+	PlanningBrief string
+	Existing      []ExistingEpisodeBrief
+	Characters    []domain.CharacterSetting
+	Messages      []domain.PlanMessage
+	// SystemExtra 本轮附加的系统级规划要求（编辑每次可临时给出），
+	// 追加在默认 SeriesPlanSystemPrompt 之后；空＝只用默认。
+	SystemExtra string
 }
 
 // SeriesPlanResult 模型返回：给用户的本轮文字回应 + 全量最新分集草案 + 人物设定。

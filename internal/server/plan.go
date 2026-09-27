@@ -8,9 +8,10 @@ import (
 	"github.com/sjzsdu/story/internal/domain"
 )
 
-// planChatRequest 对话请求体。
+// planChatRequest 对话请求体；SystemExtra 为本轮附加的系统级规划要求（可空）。
 type planChatRequest struct {
-	Message string `json:"message"`
+	Message     string `json:"message"`
+	SystemExtra string `json:"system_extra,omitempty"`
 }
 
 // planApplyRequest 采纳请求体：客户端可编辑草案后提交；characters 非空时同步覆盖系列人物设定集。
@@ -47,7 +48,7 @@ func (s *Server) planChat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
 		return
 	}
-	ps, err := s.app.ChatSeriesPlan(r.Context(), r.PathValue("id"), req.Message)
+	ps, err := s.app.ChatSeriesPlan(r.Context(), r.PathValue("id"), req.Message, req.SystemExtra)
 	if err != nil {
 		if errors.Is(err, app.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "系列不存在")

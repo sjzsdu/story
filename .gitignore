@@ -21,3 +21,5 @@ web/npm-debug.log*
 *.swo
 *~
 .trae
+.freebuff
+.workbuddy

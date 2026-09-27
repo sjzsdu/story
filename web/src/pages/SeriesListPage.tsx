@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
 import type { CreativeStyle, Series } from '../types'
 import { Button, Card, Empty, ErrorBox, Field, Modal, Select, Spinner, TextArea, TextInput } from '../components/ui'
-import CreativeFields, { knobMap } from '../components/CreativeFields'
+import CreativeFields from '../components/CreativeFields'
 import { PROVIDER_FIELDS, RATIO_OPTIONS, RESOLUTION_OPTIONS, providerOptions, visualModeLabel } from '../labels'
 
 export default function SeriesListPage() {
@@ -59,7 +59,7 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
   const [visualMode, setVisualMode] = useState<'comic' | 'video'>('comic')
   // §16：声音条目 ID 必选（默认内置 longtian 龙天）；可在「声音」页管理条目。
   const [voiceID, setVoiceID] = useState('longtian')
-  // 创作控制参数：一个 state 装下预设 + 逐项值（预设 key 存在 values.preset 里）。
+  // 创作控制参数：画面观感项（画风 / 运镜强度 / 平台时长档位）。
   const [creative, setCreative] = useState<CreativeStyle>({})
   // 系列级 Provider 覆盖（空＝用系统默认）
   const [textProvider, setTextProvider] = useState('')
@@ -84,7 +84,7 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
     staleTime: Infinity,
   })
 
-  // 创作参数注册表（含预设）：同样缓存不失效。
+  // 创作参数注册表：缓存不失效。
   const { data: catalog } = useQuery({
     queryKey: ['creative-catalog'],
     queryFn: api.getCreativeCatalog,
@@ -93,18 +93,10 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
 
   const mutation = useMutation({
     mutationFn: () => {
-      // 组装创作字段：套用预设时必须提交全部参数（含空串），否则「清空某项」无法覆盖预设值；
-      // 未套预设时只提交非空项——全空则 creative/preset 都不出现，与历史请求逐字一致。
-      const payload: { preset?: string; creative?: Record<string, string> } = {}
-      if (creative.preset) {
-        payload.preset = creative.preset
-        if (catalog) payload.creative = knobMap(creative, catalog)
-      } else {
-        const tuned: Record<string, string> = {}
-        for (const [k, v] of Object.entries(creative)) {
-          if (k !== 'preset' && v) tuned[k] = v
-        }
-        if (Object.keys(tuned).length > 0) payload.creative = tuned
+      // 只提交非空项：全空则不传 creative，与历史请求逐字一致。
+      const tuned: Record<string, string> = {}
+      for (const [k, v] of Object.entries(creative)) {
+        if (v) tuned[k] = v
       }
       return api.createSeries({
         name: name.trim(),
@@ -114,11 +106,11 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
         resolution,
         visual_mode: visualMode,
         voice_id: voiceID,
+        ...(Object.keys(tuned).length > 0 ? { creative: tuned } : {}),
         text_provider: textProvider || undefined,
         tts_provider: ttsProvider || undefined,
         image_provider: imageProvider || undefined,
         video_provider: videoProvider || undefined,
-        ...payload,
       })
     },
     onSuccess: () => {
@@ -336,7 +328,7 @@ function CreateSeriesModal({ open, onClose }: { open: boolean; onClose: () => vo
 const STEPS = [
   { key: 1, label: '基本信息' },
   { key: 2, label: '规格与声音' },
-  { key: 3, label: '创作预设' },
+  { key: 3, label: '画面风格' },
   { key: 4, label: 'Provider' },
 ]
 

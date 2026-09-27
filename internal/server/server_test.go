@@ -410,7 +410,7 @@ func TestCreativeCatalogEndpoint(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&cat); err != nil {
 		t.Fatal(err)
 	}
-	if len(cat.Knobs) == 0 || len(cat.Presets) == 0 || cat.DefaultPreset == "" {
+	if len(cat.Knobs) == 0 {
 		t.Fatalf("catalog 内容不完整: %+v", cat)
 	}
 	// 前端靠这个 key 渲染「跟随默认」，必须存在且是合法的 knob key。
@@ -424,21 +424,15 @@ func TestCreativeCatalogEndpoint(t *testing.T) {
 	if !seen["video_style"] {
 		t.Fatal("catalog 应含画风参数 video_style")
 	}
-	// 默认预设的 values 必须为空，前端才能把「一键套用默认」渲染成不改任何参数。
-	for _, p := range cat.Presets {
-		if p.Key == cat.DefaultPreset && len(p.Values) != 0 {
-			t.Fatalf("默认预设不得带值: %+v", p)
-		}
-	}
 }
 
 // TestUpdateCreativeEndpoint 覆盖 PUT 生效、补丁语义与非法 key 的 400。
 func TestUpdateCreativeEndpoint(t *testing.T) {
 	ts, _, _ := newTestServer(t)
 
-	// 建系列：预设 + 逐项微调。
+	// 建系列：带逐项微调。
 	res, err := http.Post(ts.URL+"/api/series", "application/json", strings.NewReader(
-		`{"name":"鬼谷子","preset":"suspense","creative":{"audience":"teen"}}`))
+		`{"name":"鬼谷子","creative":{"duration":"d60","motion":"strong"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,12 +442,8 @@ func TestUpdateCreativeEndpoint(t *testing.T) {
 	var se domain.Series
 	json.NewDecoder(res.Body).Decode(&se)
 	res.Body.Close()
-	if se.Config.Creative.Preset != "suspense" || se.Config.Creative.Audience != "teen" {
+	if se.Config.Creative.Duration != "d60" || se.Config.Creative.Motion != "strong" {
 		t.Fatalf("创建系列的创作设置未生效: %+v", se.Config.Creative)
-	}
-	// 预设列出但被逐项微调覆盖：预设里 narrative=suspense、length=short 仍在。
-	if se.Config.Creative.Narrative != "suspense" || se.Config.Creative.Length != "short" {
-		t.Fatalf("预设值未展开: %+v", se.Config.Creative)
 	}
 
 	put := func(payload string) *http.Response {
@@ -486,24 +476,24 @@ func TestUpdateCreativeEndpoint(t *testing.T) {
 	if updated.Config.VideoStyle != "ink" {
 		t.Fatalf("画风未生效: %q", updated.Config.VideoStyle)
 	}
-	if updated.Config.Creative.Audience != "teen" || updated.Config.Creative.Narrative != "suspense" {
+	if updated.Config.Creative.Duration != "d60" || updated.Config.Creative.Motion != "strong" {
 		t.Fatalf("未提到的参数不应被改动: %+v", updated.Config.Creative)
 	}
 
 	// 显式空串＝清除该参数（回到内置默认）。注意用新变量解码：
 	// creative 的字段是 omitempty，清空后不会出现在响应里。
 	var cleared domain.Series
-	r = put(`{"creative":{"audience":"","instruction":"本系列只用短句"}}`)
+	r = put(`{"creative":{"motion":"","duration":"d60"}}`)
 	json.NewDecoder(r.Body).Decode(&cleared)
 	r.Body.Close()
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("PUT creative 状态码 = %d", r.StatusCode)
 	}
-	if cleared.Config.Creative.Audience != "" {
-		t.Fatalf("空串应清除参数: %q", cleared.Config.Creative.Audience)
+	if cleared.Config.Creative.Motion != "" {
+		t.Fatalf("空串应清除参数: %q", cleared.Config.Creative.Motion)
 	}
-	if cleared.Config.Creative.Instruction != "本系列只用短句" {
-		t.Fatalf("系列级指令未生效: %q", cleared.Config.Creative.Instruction)
+	if cleared.Config.Creative.Duration != "d60" {
+		t.Fatalf("时长档位未生效: %q", cleared.Config.Creative.Duration)
 	}
 
 	// 未知 knob key → 400 并列出支持的 key。
@@ -511,12 +501,6 @@ func TestUpdateCreativeEndpoint(t *testing.T) {
 	r.Body.Close()
 	if r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("未知创作参数应 400，得到 %d", r.StatusCode)
-	}
-	// 未知预设 → 400。
-	r = put(`{"preset":"nope"}`)
-	r.Body.Close()
-	if r.StatusCode != http.StatusBadRequest {
-		t.Fatalf("未知预设应 400，得到 %d", r.StatusCode)
 	}
 	// 不存在的系列 → 404。
 	req, _ = http.NewRequest(http.MethodPut, ts.URL+"/api/series/missing/creative", strings.NewReader(`{}`))

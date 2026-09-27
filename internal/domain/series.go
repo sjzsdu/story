@@ -76,6 +76,11 @@ type SeriesConfig struct {
 	VideoModel string `json:"video_model,omitempty"`
 
 	// ---- 成片 BGM 背景音乐（§20）----
+	// PlanningBrief 系列级「规划要求」：分集策划时自动注入首轮上下文的自由文本
+	// （如目标集数、取材范围、叙事主线偏好），每次策划都生效，不必重复交代。
+	// 普通 SeriesConfig 字段（语义同 bgm_path），不走 CreativeKnob 插件通道；
+	// omitempty 保证存量系列 config_json 字节不变、派生键不受影响（§17/§18）。
+	PlanningBrief string `json:"planning_brief,omitempty"`
 	// BGMPath 背景音乐曲目路径；空＝无 BGM。
 	// 约定：相对路径相对系列目录 data/projects/<series-id>/（能过 serveSeriesMedia
 	// 白名单、Web 可试听）；也接受绝对路径（此时 Web 不提供试听）。

@@ -169,7 +169,7 @@ func setSeriesConfig(t *testing.T, f *fixture, mutate func(*domain.SeriesConfig)
 }
 
 // TestCreativeSettingsAffectDerivation 验证创作参数的派生语义：
-// 改叙事风格 → story 与 storyboard 都要换版本；只改画风 → story 不重跑；
+// 改平台时长档位 → story 与 storyboard 都要换版本；只改画风 → story 不重跑；
 // 只改运镜强度 → 只有 media 换版本。
 func TestCreativeSettingsAffectDerivation(t *testing.T) {
 	f := setup(t)
@@ -187,19 +187,19 @@ func TestCreativeSettingsAffectDerivation(t *testing.T) {
 		t.Fatalf("默认配置不得注入创作要求: %q / %q", f.stories.LastRequest.Brief, f.boards.LastRequest.Brief)
 	}
 
-	// 改叙事风格：口吻变了，故事与分镜都必须换版本并重新调用模型。
-	setSeriesConfig(t, f, func(c *domain.SeriesConfig) { c.Creative.Narrative = "suspense" })
+	// 改平台时长档位：口播体量变了，故事与分镜都必须换版本并重新调用模型。
+	setSeriesConfig(t, f, func(c *domain.SeriesConfig) { c.Creative.Duration = "d60" })
 	story2, err := f.eng.GenerateStory(ctx, f.epID, DeriveOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if story2.ID == story1.ID {
-		t.Fatal("改叙事风格必须派生新的 story 节点")
+		t.Fatal("改平台时长档位必须派生新的 story 节点")
 	}
 	if f.stories.Calls != 2 {
-		t.Fatalf("改叙事风格应重新调用故事模型: %d", f.stories.Calls)
+		t.Fatalf("改平台时长档位应重新调用故事模型: %d", f.stories.Calls)
 	}
-	if !strings.Contains(f.stories.LastRequest.Brief, "悬疑倒叙") {
+	if !strings.Contains(f.stories.LastRequest.Brief, "60 秒") {
 		t.Fatalf("创作要求未透传到故事模型: %q", f.stories.LastRequest.Brief)
 	}
 	board2, err := f.eng.PlanStoryboard(ctx, f.epID, DeriveOptions{})
@@ -207,9 +207,9 @@ func TestCreativeSettingsAffectDerivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if board2.ID == board1.ID {
-		t.Fatal("改叙事风格必须派生新的 storyboard 节点")
+		t.Fatal("改平台时长档位必须派生新的 storyboard 节点")
 	}
-	if !strings.Contains(f.boards.LastRequest.Brief, "悬疑倒叙") {
+	if !strings.Contains(f.boards.LastRequest.Brief, "8-12 个") {
 		t.Fatalf("创作要求未透传到分镜模型: %q", f.boards.LastRequest.Brief)
 	}
 
