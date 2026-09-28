@@ -49,6 +49,28 @@ func TestParseChatContentStreamWrapper(t *testing.T) {
 	}
 }
 
+// bl file upload 实际输出为 key-value 多行文本，需能取到 `url:` 后的地址。
+func TestExtractUploadedURLKeyValue(t *testing.T) {
+	out := []byte(`url: oss://dashscope-instant/abc/2026-09-27/def/sample-1790485099218630000.wav
+model: cosyvoice-v3-flash
+expires_in: 48 hours
+note: "When using this URL in API calls, add header: X-DashScope-OssResourceResolve: enable"
+`)
+	want := "oss://dashscope-instant/abc/2026-09-27/def/sample-1790485099218630000.wav"
+	if got := extractUploadedURL(out); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestExtractUploadedURLPlainAndJSON(t *testing.T) {
+	if got := extractUploadedURL([]byte("oss://a/b.wav\n")); got != "oss://a/b.wav" {
+		t.Fatalf("纯 URL 行解析失败: %q", got)
+	}
+	if got := extractUploadedURL([]byte(`{"data":{"url":"https://x/y.wav"}}`)); got != "https://x/y.wav" {
+		t.Fatalf("JSON 解析失败: %q", got)
+	}
+}
+
 func TestDecodeModelJSONWithFence(t *testing.T) {
 	content := "```json\n{\"title\": \"t\", \"content\": \"c\"}\n```"
 	out, err := decodeModelJSON[storyResponse](content)

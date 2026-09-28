@@ -209,14 +209,39 @@ func extractUploadedURL(out []byte) string {
 			}
 		}
 	}
-	// 纯文本：取最后一行中形如 URL 的片段。
+	// 纯文本：逐行取 URL 片段（兼容 `url: oss://...` 这类 key-value 输出）。
 	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if looksLikeURL(line) {
-			return line
+		if u := findURLInLine(line); u != "" {
+			return u
 		}
 	}
 	return ""
+}
+
+// urlPrefixes 可识别的 URL 前缀，按长度降序无关，取行内最早出现者。
+var urlPrefixes = []string{"http://", "https://", "oss://", "data:"}
+
+// findURLInLine 从单行文本中截取 URL 片段：
+// `url: oss://a/b.wav` → `oss://a/b.wav`；纯 URL 行原样返回。
+func findURLInLine(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+	idx := -1
+	for _, p := range urlPrefixes {
+		if i := strings.Index(line, p); i >= 0 && (idx < 0 || i < idx) {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		return ""
+	}
+	u := line[idx:]
+	if j := strings.IndexAny(u, " \t\r\n\"'"); j >= 0 {
+		u = u[:j]
+	}
+	return strings.TrimRight(u, ",;.")
 }
 
 // findURLValue 递归在 JSON 对象里找形如 URL 的字符串值（优先 url 字段）。
